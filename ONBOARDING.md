@@ -93,12 +93,13 @@ Source of truth is `git log` and the active phase context file — check them, t
 snapshot may lag.
 
 - Branch: `release/v0.1`.
-- **Phase 0 (Foundation)** in progress. Done: S0.1 context, S0.2 workspace scaffold,
-  S0.3 `systui-core` contracts, S0.4 `LocalTransport`/`MockTransport`, S0.5 CLI
-  skeleton + config loading + tracing, S0.6 TUI shell (`systui-ui`).
-- **Next: S0.7** — wire-up: render a mocked collector end-to-end through
-  transport → collector → state → UI, plus tests. That closes phase 0; the
-  foundation then feeds v0.1 (phase 1).
+- **Phase 0 (Foundation) complete** (S0.1–S0.7): workspace, `systui-core` contracts,
+  Local/Mock transports, CLI skeleton + config + tracing, TUI shell, and a
+  `HostInfoCollector` wired end-to-end (transport → collector → state → UI) with
+  the sync-loop/async-runtime bridge.
+- **Next: Phase 1 / v0.1** — start with **S1.1**, the phase context file
+  (`docs/phases/phase-01-v0.1-demo.md`), then the system collectors and dashboard
+  panels. Still on `release/v0.1`; tag `v0.1` when phase 1's DoD is met.
 
 ## Starting a session
 

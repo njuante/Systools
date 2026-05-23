@@ -6,6 +6,7 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs, Wrap};
+use systui_collectors::HostInfo;
 
 use crate::app::{App, Tab, ViewState};
 
@@ -71,6 +72,16 @@ fn render_content(frame: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::new().fg(app.theme.border))
         .title(format!(" {} ", tab.title()));
 
+    // When data is ready, the dashboard/system tabs show the collected host info.
+    if app.view_state == ViewState::Ready {
+        if let Some(info) = &app.host_info {
+            if matches!(tab, Tab::Dashboard | Tab::System) {
+                frame.render_widget(Paragraph::new(host_info_text(app, info)).block(block), area);
+                return;
+            }
+        }
+    }
+
     let (heading, body) = content_message(app, tab);
     let text = Text::from(vec![
         Line::from(""),
@@ -96,10 +107,30 @@ fn content_message(app: &App, tab: Tab) -> (String, String) {
             tab.title().to_owned(),
             "No data wired yet — collectors arrive in v0.1.".to_owned(),
         ),
+        ViewState::Ready => (
+            tab.title().to_owned(),
+            "No data for this module yet.".to_owned(),
+        ),
         ViewState::PartialData(msg) => ("Partial data".to_owned(), msg.clone()),
         ViewState::PermissionDenied(msg) => ("Permission denied".to_owned(), msg.clone()),
         ViewState::Error(msg) => ("Error".to_owned(), msg.clone()),
     }
+}
+
+fn host_info_text(app: &App, info: &HostInfo) -> Text<'static> {
+    let label = Style::new().fg(app.theme.dim);
+    let value = Style::new().fg(app.theme.text).add_modifier(Modifier::BOLD);
+    Text::from(vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Hostname   ", label),
+            Span::styled(info.hostname.clone(), value),
+        ]),
+        Line::from(vec![
+            Span::styled("  Kernel     ", label),
+            Span::styled(info.kernel.clone(), value),
+        ]),
+    ])
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
@@ -212,5 +243,21 @@ mod tests {
         assert!(out.contains("Help"));
         assert!(out.contains("next tab"));
         assert!(out.contains("quit"));
+    }
+
+    #[test]
+    fn renders_collected_host_info_when_ready() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.host_info = Some(HostInfo {
+            hostname: "prod-01".to_owned(),
+            kernel: "6.1.0".to_owned(),
+        });
+        app.view_state = ViewState::Ready;
+
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("Hostname"));
+        assert!(out.contains("prod-01"));
+        assert!(out.contains("Kernel"));
+        assert!(out.contains("6.1.0"));
     }
 }

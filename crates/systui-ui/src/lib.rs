@@ -4,6 +4,7 @@
 //! actions; it never executes them.
 
 pub mod app;
+pub mod data;
 pub mod input;
 pub mod theme;
 pub mod ui;
@@ -15,30 +16,49 @@ use std::time::Duration;
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
-use systui_core::{ExecutionMode, Result};
+use systui_core::{CoreError, ExecutionMode, Result, Transport};
+use tokio::runtime::Runtime;
 
 /// Launch the interactive TUI for a host and run until the user quits.
 ///
 /// Sets up and tears down the terminal (alternate screen, raw mode) around a
-/// synchronous render/event loop. Restores the terminal even on error.
-pub fn run(host_label: impl Into<String>, mode: ExecutionMode) -> Result<()> {
+/// synchronous render/event loop. Collectors run through the given transport on
+/// a private current-thread runtime. Restores the terminal even on error.
+pub fn run(
+    transport: Box<dyn Transport>,
+    host_label: impl Into<String>,
+    mode: ExecutionMode,
+) -> Result<()> {
+    let runtime = Runtime::new().map_err(CoreError::Io)?;
+    let mut app = App::new(host_label, mode);
+    data::refresh_blocking(&runtime, transport.as_ref(), &mut app);
+
     let mut terminal = ratatui::try_init()?;
-    let app = App::new(host_label, mode);
-    let result = event_loop(&mut terminal, app);
+    let result = event_loop(&mut terminal, &mut app, &runtime, transport.as_ref());
     let _ = ratatui::try_restore();
     result
 }
 
-fn event_loop(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
+fn event_loop(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    runtime: &Runtime,
+    transport: &dyn Transport,
+) -> Result<()> {
     while !app.should_quit {
-        terminal.draw(|frame| ui::render(frame, &app))?;
+        terminal.draw(|frame| ui::render(frame, app))?;
 
         if event::poll(Duration::from_millis(250))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    input::handle_key(&mut app, key);
+                    input::handle_key(app, key);
                 }
             }
+        }
+
+        if app.refresh_requested {
+            app.refresh_requested = false;
+            data::refresh_blocking(runtime, transport, app);
         }
     }
     Ok(())

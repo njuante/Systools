@@ -17,6 +17,7 @@ workspace = true
 [dependencies]
 systui-core.workspace = true
 systui-storage.workspace = true
+systui-transport.workspace = true
 systui-ui.workspace = true
 clap.workspace = true
 anyhow.workspace = true

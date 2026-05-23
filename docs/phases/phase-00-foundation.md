@@ -76,7 +76,13 @@ a simple addition instead of an architecture rewrite.
   navigation, dark theme, key bindings, help overlay, empty dashboard and UI
   states (loading/empty/partial/permission-denied/error). Rendering is a pure
   function tested headlessly with `TestBackend`. `systui` (local) launches it.
-- **S0.7 — Wire-up & tests**: render a mocked collector end-to-end; unit tests; gates green.
+- **S0.7 — Wire-up & tests** *(done)*: `HostInfoCollector` (reads hostname/kernel
+  via `uname`) rendered end-to-end through transport → collector → state → UI. The
+  sync UI loop drives async collectors via a tokio runtime (`block_on`), with `r`
+  to refresh. Headless tests prove the full path with `MockTransport`.
+
+**Phase 0 complete.** All sessions done; the foundation now feeds v0.1 (phase 1) on
+the same `release/v0.1` branch.
 
 ## Definition of Done
 

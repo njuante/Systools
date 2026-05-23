@@ -1,5 +1,6 @@
 //! Global application state for the TUI.
 
+use systui_collectors::HostInfo;
 use systui_core::{ExecutionMode, ModuleId};
 
 use crate::theme::Theme;
@@ -62,6 +63,7 @@ impl Tab {
 pub enum ViewState {
     Loading,
     Empty,
+    Ready,
     PartialData(String),
     PermissionDenied(String),
     Error(String),
@@ -75,8 +77,10 @@ pub struct App {
     pub theme: Theme,
     pub active_tab: usize,
     pub view_state: ViewState,
+    pub host_info: Option<HostInfo>,
     pub show_help: bool,
     pub should_quit: bool,
+    pub refresh_requested: bool,
 }
 
 impl App {
@@ -88,8 +92,10 @@ impl App {
             theme: Theme::dark(),
             active_tab: 0,
             view_state: ViewState::Empty,
+            host_info: None,
             show_help: false,
             should_quit: false,
+            refresh_requested: false,
         }
     }
 
@@ -118,6 +124,11 @@ impl App {
     /// Toggle the help overlay.
     pub fn toggle_help(&mut self) {
         self.show_help = !self.show_help;
+    }
+
+    /// Ask the event loop to re-run collectors on its next tick.
+    pub fn request_refresh(&mut self) {
+        self.refresh_requested = true;
     }
 
     /// Request application exit.

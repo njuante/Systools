@@ -12,4 +12,9 @@ workspace = true
 
 [dependencies]
 systui-core.workspace = true
+systui-collectors.workspace = true
 ratatui.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+systui-transport.workspace = true

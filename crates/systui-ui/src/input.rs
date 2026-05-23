@@ -26,6 +26,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char('q') => app.quit(),
         KeyCode::Char('?') => app.toggle_help(),
+        KeyCode::Char('r') => app.request_refresh(),
         KeyCode::Tab | KeyCode::Right => app.next_tab(),
         KeyCode::BackTab | KeyCode::Left => app.prev_tab(),
         KeyCode::Char(c @ '1'..='9') => app.select_tab(c as usize - '1' as usize),

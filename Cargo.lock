@@ -790,6 +790,7 @@ dependencies = [
  "clap",
  "systui-core",
  "systui-storage",
+ "systui-transport",
  "systui-ui",
  "tracing",
  "tracing-subscriber",
@@ -798,6 +799,13 @@ dependencies = [
 [[package]]
 name = "systui-collectors"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "systui-core",
+ "systui-transport",
+ "tokio",
+]
 
 [[package]]
 name = "systui-core"
@@ -845,7 +853,10 @@ name = "systui-ui"
 version = "0.1.0"
 dependencies = [
  "ratatui",
+ "systui-collectors",
  "systui-core",
+ "systui-transport",
+ "tokio",
 ]
 
 [[package]]

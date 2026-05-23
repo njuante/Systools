@@ -59,7 +59,9 @@ fn resolve_mode(args: &Cli) -> ExecutionMode {
 fn dispatch(command: Command, mode: ExecutionMode, _config: &Config) -> anyhow::Result<()> {
     match command {
         Command::Local => {
-            systui_ui::run(systui_core::HostId::LOCAL, mode)?;
+            let transport: Box<dyn systui_core::Transport> =
+                Box::new(systui_transport::LocalTransport::new());
+            systui_ui::run(transport, systui_core::HostId::LOCAL, mode)?;
         }
         Command::Ssh { target } => {
             println!("systui: ssh mode -> {target} ({mode}) — implemented in phase 5");

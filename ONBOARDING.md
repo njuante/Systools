@@ -95,10 +95,10 @@ snapshot may lag.
 - Branch: `release/v0.1`.
 - **Phase 0 (Foundation)** in progress. Done: S0.1 context, S0.2 workspace scaffold,
   S0.3 `systui-core` contracts, S0.4 `LocalTransport`/`MockTransport`, S0.5 CLI
-  skeleton + config loading + tracing.
-- **Next: S0.6** — TUI shell (ratatui event loop, app state, navigation, theme,
-  empty dashboard, UI states), then S0.7 wire-up. After phase 0 the foundation
-  feeds v0.1 (phase 1).
+  skeleton + config loading + tracing, S0.6 TUI shell (`systui-ui`).
+- **Next: S0.7** — wire-up: render a mocked collector end-to-end through
+  transport → collector → state → UI, plus tests. That closes phase 0; the
+  foundation then feeds v0.1 (phase 1).
 
 ## Starting a session
 

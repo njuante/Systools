@@ -21,8 +21,7 @@ fn main() -> anyhow::Result<()> {
     let mode = resolve_mode(&args);
     tracing::info!(%mode, "starting systui");
 
-    dispatch(args.command.unwrap_or(Command::Local), mode, &config);
-    Ok(())
+    dispatch(args.command.unwrap_or(Command::Local), mode, &config)
 }
 
 /// Initialise tracing to stderr. Verbosity is controlled by `SYSTUI_LOG`
@@ -57,10 +56,10 @@ fn resolve_mode(args: &Cli) -> ExecutionMode {
     }
 }
 
-fn dispatch(command: Command, mode: ExecutionMode, _config: &Config) {
+fn dispatch(command: Command, mode: ExecutionMode, _config: &Config) -> anyhow::Result<()> {
     match command {
         Command::Local => {
-            println!("systui: local mode ({mode}) — interactive TUI arrives in S0.6");
+            systui_ui::run(systui_core::HostId::LOCAL, mode)?;
         }
         Command::Ssh { target } => {
             println!("systui: ssh mode -> {target} ({mode}) — implemented in phase 5");
@@ -74,4 +73,5 @@ fn dispatch(command: Command, mode: ExecutionMode, _config: &Config) {
             println!("systui: report for {host} as {format} ({mode}) — implemented in phase 6");
         }
     }
+    Ok(())
 }

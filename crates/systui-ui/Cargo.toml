@@ -11,3 +11,5 @@ description = "SysTUI terminal UI: ratatui components, navigation and app state"
 workspace = true
 
 [dependencies]
+systui-core.workspace = true
+ratatui.workspace = true

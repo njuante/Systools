@@ -72,8 +72,10 @@ a simple addition instead of an architecture rewrite.
   `fleet`/`report`, global `--read-only`/`--config`), config loading in
   `systui-storage` (defaults when absent), `tracing` to stderr via `SYSTUI_LOG`,
   execution-mode resolution.
-- **S0.6 — TUI shell**: event loop, app state, navigation, theme, empty dashboard,
-  UI states.
+- **S0.6 — TUI shell** *(done)*: ratatui/crossterm event loop, `App` state, tab
+  navigation, dark theme, key bindings, help overlay, empty dashboard and UI
+  states (loading/empty/partial/permission-denied/error). Rendering is a pure
+  function tested headlessly with `TestBackend`. `systui` (local) launches it.
 - **S0.7 — Wire-up & tests**: render a mocked collector end-to-end; unit tests; gates green.
 
 ## Definition of Done

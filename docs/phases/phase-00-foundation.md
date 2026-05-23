@@ -68,7 +68,10 @@ a simple addition instead of an architecture rewrite.
   dependency cycle.
 - **S0.4 — Transport implementations** *(done)*: `LocalTransport` and
   `MockTransport` in `systui-transport` (the trait already lives in core).
-- **S0.5 — CLI & config**: `clap` subcommand skeleton, config load/merge, `tracing`.
+- **S0.5 — CLI & config** *(done)*: `clap` subcommand skeleton (`local`/`ssh`/
+  `fleet`/`report`, global `--read-only`/`--config`), config loading in
+  `systui-storage` (defaults when absent), `tracing` to stderr via `SYSTUI_LOG`,
+  execution-mode resolution.
 - **S0.6 — TUI shell**: event loop, app state, navigation, theme, empty dashboard,
   UI states.
 - **S0.7 — Wire-up & tests**: render a mocked collector end-to-end; unit tests; gates green.

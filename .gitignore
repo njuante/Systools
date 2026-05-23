@@ -1,0 +1,23 @@
+# Rust
+/target/
+**/target/
+Cargo.lock.bak
+*.rs.bk
+
+# Backtraces / debug
+*.pdb
+
+# Local config & runtime data (SysTUI writes here)
+/.systui/
+*.local.toml
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# Logs & temp
+*.log
+/tmp/

@@ -5,5 +5,9 @@
 //! The full system/process/service collectors arrive in v0.1+ (phase 1).
 
 pub mod host;
+pub mod system;
 
 pub use host::{HostInfo, HostInfoCollector};
+pub use system::{
+    CpuUsage, Disk, LoadAverage, LoggedUser, Memory, Swap, SystemCollector, SystemSnapshot,
+};

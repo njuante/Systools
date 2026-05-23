@@ -1,0 +1,13 @@
+[package]
+name = "systui-transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SysTUI transport layer: local, SSH and mock command/file execution"
+
+[lints]
+workspace = true
+
+[dependencies]

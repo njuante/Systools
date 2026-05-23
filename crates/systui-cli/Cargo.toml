@@ -1,0 +1,17 @@
+[package]
+name = "systui-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SysTUI command-line entry point and binary"
+
+[[bin]]
+name = "systui"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]

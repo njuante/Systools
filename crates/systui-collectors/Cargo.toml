@@ -1,0 +1,13 @@
+[package]
+name = "systui-collectors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SysTUI collectors: system, process, service, log and network readers"
+
+[lints]
+workspace = true
+
+[dependencies]

@@ -53,7 +53,8 @@ a simple addition instead of an architecture rewrite.
 - **Security model from day 0.** Execution modes and the read-only flag are modeled in
   core now, even though enforcement lands in Phase 2.
 - **Error handling:** `thiserror` for library crates, `anyhow` at the CLI boundary.
-- **MSRV / edition:** Rust 2021 edition (revisit for 2024 before v1.0).
+- **MSRV / edition:** Rust **2024 edition**, MSRV `1.85` (toolchain in use is 1.95;
+  edition 2024 is stable, so we adopt it now to avoid a later migration).
 
 ## Sessions
 

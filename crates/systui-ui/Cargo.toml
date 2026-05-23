@@ -1,0 +1,13 @@
+[package]
+name = "systui-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SysTUI terminal UI: ratatui components, navigation and app state"
+
+[lints]
+workspace = true
+
+[dependencies]

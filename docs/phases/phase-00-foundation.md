@@ -61,9 +61,13 @@ a simple addition instead of an architecture rewrite.
 - **S0.1 — Context** *(this file)*.
 - **S0.2 — Workspace scaffold**: workspace `Cargo.toml`, all crates, shared deps,
   `rustfmt.toml`, clippy lints, CI skeleton.
-- **S0.3 — Core contracts**: errors, `CommandSpec`/`CommandOutput`, domain models,
-  config schema, `Collector`/`Action` traits, exec modes.
-- **S0.4 — Transport layer**: `Transport` trait, `LocalTransport`, `MockTransport`.
+- **S0.3 — Core contracts** *(done)*: errors, `CommandSpec`/`CommandOutput`, domain
+  models, config schema, exec modes, and the `Transport`/`Collector`/`Action` traits.
+  The `Transport` trait lives in `systui-core` as a contract (not in
+  `systui-transport`) because `Collector`/`Action` reference it; this avoids a
+  dependency cycle.
+- **S0.4 — Transport implementations**: `LocalTransport` and `MockTransport` in
+  `systui-transport` (the trait already lives in core).
 - **S0.5 — CLI & config**: `clap` subcommand skeleton, config load/merge, `tracing`.
 - **S0.6 — TUI shell**: event loop, app state, navigation, theme, empty dashboard,
   UI states.

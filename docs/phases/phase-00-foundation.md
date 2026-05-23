@@ -66,8 +66,8 @@ a simple addition instead of an architecture rewrite.
   The `Transport` trait lives in `systui-core` as a contract (not in
   `systui-transport`) because `Collector`/`Action` reference it; this avoids a
   dependency cycle.
-- **S0.4 — Transport implementations**: `LocalTransport` and `MockTransport` in
-  `systui-transport` (the trait already lives in core).
+- **S0.4 — Transport implementations** *(done)*: `LocalTransport` and
+  `MockTransport` in `systui-transport` (the trait already lives in core).
 - **S0.5 — CLI & config**: `clap` subcommand skeleton, config load/merge, `tracing`.
 - **S0.6 — TUI shell**: event loop, app state, navigation, theme, empty dashboard,
   UI states.

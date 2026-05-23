@@ -11,3 +11,6 @@ description = "SysTUI transport layer: local, SSH and mock command/file executio
 workspace = true
 
 [dependencies]
+systui-core.workspace = true
+async-trait.workspace = true
+tokio.workspace = true

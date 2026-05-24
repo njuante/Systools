@@ -355,9 +355,6 @@ fn render_content(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
-    render_log_filter_bar(frame, app, rows[0]);
-
     // Case-insensitive regex search; invalid patterns fall back to substring.
     let regex = if app.log_search.is_empty() {
         None
@@ -373,66 +370,222 @@ fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
         .filter(|e| log_matches(e, &app.log_search, regex.as_ref()))
         .collect();
 
+    let cols =
+        Layout::horizontal([Constraint::Percentage(68), Constraint::Percentage(32)]).split(area);
+    render_log_tail(frame, app, &filtered, cols[0]);
+    let right =
+        Layout::vertical([Constraint::Percentage(58), Constraint::Percentage(42)]).split(cols[1]);
+    render_log_fingerprints(frame, app, &filtered, right[0]);
+    render_log_sources(frame, app, &filtered, right[1]);
+}
+
+fn render_log_tail(frame: &mut Frame, app: &App, filtered: &[&LogEntry], area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "journalctl · live");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
+    render_log_filter_bar(frame, app, rows[0]);
+
     if filtered.is_empty() {
         let msg = if app.logs.is_empty() {
-            "No logs for this filter."
+            "no logs for this filter"
         } else {
-            "No matches."
+            "no matches"
         };
         frame.render_widget(
-            Paragraph::new(Span::styled(msg, Style::new().fg(app.theme.dim)))
+            Paragraph::new(Span::styled(msg, Style::new().fg(t.fg_dim)))
                 .alignment(Alignment::Center),
             rows[1],
         );
         return;
     }
 
-    let header = Row::new(["TIME", "PRIO", "SOURCE", "MESSAGE"])
-        .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
+    let header = Row::new(["TIME", "LVL", "SOURCE", "MESSAGE"])
+        .style(Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD));
     let body = filtered.iter().map(|e| {
+        let color = log_priority_color(app, e);
         Row::new([
-            Cell::from(e.time.clone()),
+            Cell::from(Span::styled(e.time.clone(), Style::new().fg(t.fg_dim))),
             Cell::from(Span::styled(
                 e.priority_label().to_owned(),
-                Style::new().fg(log_priority_color(app, e)),
+                Style::new().fg(color).add_modifier(Modifier::BOLD),
             )),
-            Cell::from(e.identifier.clone()),
-            Cell::from(e.message.clone()),
+            Cell::from(Span::styled(
+                e.identifier.clone(),
+                Style::new().fg(t.fg_muted),
+            )),
+            Cell::from(Span::styled(e.message.clone(), Style::new().fg(t.fg))),
         ])
     });
     let widths = [
-        Constraint::Length(9),
+        Constraint::Length(8),
         Constraint::Length(6),
-        Constraint::Length(18),
+        Constraint::Length(16),
         Constraint::Min(10),
     ];
-    let table = Table::new(body, widths)
-        .header(header)
-        .style(Style::new().fg(app.theme.text));
-    frame.render_widget(table, rows[1]);
+    frame.render_widget(
+        Table::new(body, widths)
+            .header(header)
+            .style(Style::new().fg(t.fg)),
+        rows[1],
+    );
 }
 
 fn render_log_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let dim = Style::new().fg(app.theme.dim);
-    let accent = Style::new().fg(app.theme.accent);
+    let t = app.theme;
+    let dim = Style::new().fg(t.fg_dim);
+    let accent = Style::new().fg(t.accent);
     let mut spans = vec![
+        Span::styled("level ", Style::new().fg(t.fg_muted)),
         Span::styled(
-            format!("level {} ", app.log_level_label()),
-            Style::new().fg(app.theme.text),
+            format!(" {} ", app.log_level_label()),
+            Style::new()
+                .fg(t.bg)
+                .bg(t.accent)
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("· window {} ", app.log_window_label()), dim),
+        Span::styled(
+            format!("  window {}  ", app.log_window_label()),
+            Style::new().fg(t.fg_muted),
+        ),
     ];
     if app.input_mode == InputMode::Search {
-        spans.push(Span::styled(
-            format!("· search: {}_", app.log_search),
-            accent,
-        ));
+        spans.push(Span::styled(format!("search: {}_", app.log_search), accent));
     } else if !app.log_search.is_empty() {
-        spans.push(Span::styled(format!("· /{}", app.log_search), accent));
+        spans.push(Span::styled(format!("/{}", app.log_search), accent));
     } else {
-        spans.push(Span::styled("· l level · t window · / search", dim));
+        spans.push(Span::styled("l level · t window · / search", dim));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// One grouped error/warning pattern aggregated from the visible log buffer.
+struct LogFingerprint {
+    sample: String,
+    count: usize,
+    first: String,
+    last: String,
+    worst: u8,
+}
+
+/// Collapse a message into a fingerprint key: digit runs become `#`, lowercased,
+/// whitespace normalised — so lines differing only in numbers group together.
+fn normalize_log(msg: &str) -> String {
+    let mut out = String::with_capacity(msg.len());
+    let mut prev_digit = false;
+    for ch in msg.chars() {
+        if ch.is_ascii_digit() {
+            if !prev_digit {
+                out.push('#');
+            }
+            prev_digit = true;
+        } else {
+            prev_digit = false;
+            out.push(ch.to_ascii_lowercase());
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Group error/warning lines from the buffer into fingerprints, worst-count first.
+fn log_fingerprints(entries: &[&LogEntry]) -> Vec<LogFingerprint> {
+    use std::collections::HashMap;
+    let mut map: HashMap<String, LogFingerprint> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for e in entries.iter().filter(|e| e.priority <= 4) {
+        let key = format!("{}|{}", e.identifier, normalize_log(&e.message));
+        let fp = map.entry(key.clone()).or_insert_with(|| {
+            order.push(key.clone());
+            LogFingerprint {
+                sample: format!("{}: {}", e.identifier, e.message),
+                count: 0,
+                first: e.time.clone(),
+                last: e.time.clone(),
+                worst: e.priority,
+            }
+        });
+        fp.count += 1;
+        fp.last = e.time.clone();
+        fp.worst = fp.worst.min(e.priority);
+    }
+    let mut v: Vec<LogFingerprint> = order.into_iter().filter_map(|k| map.remove(&k)).collect();
+    v.sort_by_key(|fp| std::cmp::Reverse(fp.count));
+    v
+}
+
+fn render_log_fingerprints(frame: &mut Frame, app: &App, filtered: &[&LogEntry], area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Error fingerprints");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let fps = log_fingerprints(filtered);
+    if fps.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no errors", Style::new().fg(t.accent))),
+            inner,
+        );
+        return;
+    }
+
+    let max = (inner.height as usize / 2).max(1);
+    let mut lines: Vec<Line> = Vec::new();
+    for fp in fps.iter().take(max) {
+        let color = if fp.worst <= 3 { t.critical } else { t.high };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{}x ", fp.count),
+                Style::new().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(fp.sample.clone(), Style::new().fg(t.fg_strong)),
+        ]));
+        lines.push(Line::from(Span::styled(
+            format!("   first {} · last {}", fp.first, fp.last),
+            Style::new().fg(t.fg_dim),
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_log_sources(frame: &mut Frame, app: &App, filtered: &[&LogEntry], area: Rect) {
+    use std::collections::HashMap;
+    let t = app.theme;
+    let block = panel_block(&t, "Sources");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    let mut order: Vec<&str> = Vec::new();
+    for e in filtered {
+        let key = e.identifier.as_str();
+        if !counts.contains_key(key) {
+            order.push(key);
+        }
+        *counts.entry(key).or_insert(0) += 1;
+    }
+    if order.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no sources", Style::new().fg(t.fg_dim))),
+            inner,
+        );
+        return;
+    }
+    order.sort_by_key(|s| std::cmp::Reverse(counts[*s]));
+
+    let max = (inner.height as usize).max(1);
+    let lines: Vec<Line> = order
+        .iter()
+        .take(max)
+        .map(|src| {
+            Line::from(vec![
+                Span::styled(format!("{:>4} ", counts[src]), Style::new().fg(t.fg_muted)),
+                Span::styled((*src).to_owned(), Style::new().fg(t.fg)),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn selected_style(app: &App) -> Style {
@@ -2495,7 +2648,7 @@ mod tests {
         app.select_tab(4); // Logs
 
         let out = render_to_string(&app, 100, 24);
-        assert!(out.contains("PRIO"));
+        assert!(out.contains("LVL"));
         assert!(out.contains("ERR"));
         assert!(out.contains("nginx"));
         assert!(out.contains("upstream timed out"));
@@ -2742,7 +2895,38 @@ mod tests {
         app.push_search_char('n');
 
         let out = render_to_string(&app, 100, 24);
-        assert!(out.contains("level err+"));
+        assert!(out.contains("level"));
+        assert!(out.contains("err+"));
         assert!(out.contains("search: n"));
+    }
+
+    #[test]
+    fn log_fingerprints_group_lines_differing_only_in_numbers() {
+        let entries = [
+            LogEntry {
+                time: "09:00:01".to_owned(),
+                priority: 3,
+                identifier: "sshd".to_owned(),
+                message: "Failed password from 1.2.3.4 port 51220".to_owned(),
+            },
+            LogEntry {
+                time: "09:00:09".to_owned(),
+                priority: 3,
+                identifier: "sshd".to_owned(),
+                message: "Failed password from 1.2.3.4 port 51224".to_owned(),
+            },
+            LogEntry {
+                time: "09:00:10".to_owned(),
+                priority: 6, // info — excluded from fingerprints
+                identifier: "systemd".to_owned(),
+                message: "Started something".to_owned(),
+            },
+        ];
+        let refs: Vec<&LogEntry> = entries.iter().collect();
+        let fps = log_fingerprints(&refs);
+        assert_eq!(fps.len(), 1);
+        assert_eq!(fps[0].count, 2);
+        assert_eq!(fps[0].first, "09:00:01");
+        assert_eq!(fps[0].last, "09:00:09");
     }
 }

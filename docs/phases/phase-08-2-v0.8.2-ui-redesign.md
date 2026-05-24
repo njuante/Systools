@@ -107,6 +107,17 @@ The design intent is captured by the prototype:
   **omitted** (not collected — no mocked data). Render tests updated.
 - **S8c.3 — Logs**: live-tail widget with level badges, the error-fingerprint side
   panel and the follow/pause indicator.
+  **Done.** Logs is now a two-column screen: a panelled live tail
+  (`journalctl · live`) with a level chip + window + search filter row and a
+  level-badge column (EMERG…DEBUG, colored by priority), beside a right rail of
+  two panels. **Error fingerprints** groups error/warning lines from the visible
+  buffer by a normalised key (digit runs → `#`, lowercased) and shows each pattern
+  with its count and first/last time, worst-count first; **Sources** lists
+  per-identifier line counts. Both are **client-side aggregations of the real
+  buffer** — no fingerprint/rate data is collected, so nothing is fabricated; the
+  prototype's "saved searches" and per-source byte-rates are omitted. The "live"
+  marker reuses the existing refresh model (no new follow/pause state). The
+  fingerprint grouping is unit-tested.
 - **S8c.4 — Network & Crons**: exposure table (address colour-coding), interfaces /
   firewall / connectivity panels; cron table with severity left-bar + schedule
   preview + backup callout.

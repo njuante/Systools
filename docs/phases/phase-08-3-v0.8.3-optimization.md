@@ -278,3 +278,39 @@ The warm `host_report` and `network` chains shrink by the round-trips removed. T
 remaining `refresh_total` floor over SSH is the `security_scan` chain (~320–340ms,
 unchanged) running concurrently with `host_report` → that chain's many small commands
 are the S8d.5 (batching) target.
+
+### S8d.5 — Command batching + cancellation/timeouts ✅
+
+**Command batching.** The system collector read four live `/proc` files
+(`/proc/uptime`, `/proc/loadavg`, `/proc/meminfo`, `/proc/stat`) as four separate
+round-trips. They are now read in a single `tail -n +1 -v <files>` command and split
+back apart on the `==> path <==` headers `tail -v` emits. If the batch command is
+unavailable or unparseable the collector falls back to per-file reads, so existing
+fixtures and odd hosts still work. The post-delay second `/proc/stat` sample stays a
+separate read (it must follow the CPU-sampling delay).
+
+**Cancellation & timeouts.** Every collector group now runs under a
+`COLLECTOR_TIMEOUT` (12s) via `within_timeout`. A slow or hung host degrades that group
+to partial data (empty, like a missing tool) instead of stalling; the required host
+report maps a timeout to `CoreError::Timeout`, so the refresh fails cleanly and — via
+S8d.2's apply path — keeps the previous good data on screen and surfaces the error.
+Because every group is time-bounded, an in-flight background gather always completes
+within bounded time and resets `App.refreshing`; it can never wedge the loop. This
+brings the single-host refresh to the same discipline the fleet already had per host.
+
+#### Before/after (release, via `systui report`, same hosts)
+
+| host_report (SSH chain) | S8d.4 | S8d.5 batched | change |
+|-------------------------|------:|--------------:|-------:|
+| SSH `vpn`               | ~345ms |      272.9ms | −21%   |
+
+| `gather_total` | S8d.1 | S8d.3 | S8d.5 | total change |
+|----------------|------:|------:|------:|-------------:|
+| local          | 390.6ms | 213.7ms | 211.2ms | −46%       |
+| SSH `vpn`      | 902.5ms | 444.6ms | 408.8ms | −55%       |
+
+Locally the floor is the system collector's unavoidable ~200ms CPU sample. Over SSH the
+batch removed ~3 round-trips from the system chain (345→273ms), so `host_report` is no
+longer the gate; the remaining floor is the `security_scan` chain (~344ms) running
+concurrently. Further cuts there would mean batching the security module's many probes
+— deferred (out of scope for v0.8.3, which froze the security behaviour).

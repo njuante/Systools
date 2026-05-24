@@ -12,12 +12,12 @@ use chrono::{Local, NaiveDateTime};
 use systui_collectors::{
     Container, ContainerStats, CronEntry, DatabaseSnapshot, ExposureEntry, HealthReport,
     HostStatics, InspectSummary, LogEntry, LogQuery, LogsCollector, NetStatics, NetworkSnapshot,
-    Process, ServiceUnit, SystemSnapshot, SystemdTimer, collect_host_report, collect_timers,
-    timing,
+    Process, ServiceUnit, SystemSnapshot, SystemdTimer, timing,
 };
 use systui_core::{Collector, CoreError, Finding, Thresholds, Transport};
 use systui_report::collect::{
-    gather_crons, gather_databases, gather_docker, gather_network, merge_findings,
+    gather_crons, gather_databases, gather_docker, gather_network, gather_timers,
+    host_report_within_timeout, merge_findings,
 };
 use tokio::runtime::Runtime;
 
@@ -74,15 +74,12 @@ pub async fn gather(
     // tiers (`host_statics`/`net_statics`) are reused when present so the tick
     // skips re-reading them.
     let (report, net, dbs, docker, crons_group, timers) = tokio::join!(
-        timing::timed(
-            "host_report",
-            collect_host_report(transport, thresholds, log_query, host_statics)
-        ),
+        host_report_within_timeout(transport, thresholds, log_query, host_statics),
         gather_network(transport, cert_warning_days, net_statics),
         gather_databases(transport),
         gather_docker(transport),
         gather_crons(transport),
-        timing::timed("timers", collect_timers(transport)),
+        gather_timers(transport),
     );
 
     let report = report?;

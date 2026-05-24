@@ -4,13 +4,12 @@
 
 use std::time::Instant;
 
-use systui_collectors::{
-    LogQuery, collect_host_report, collect_timers, probe_capabilities, timing,
-};
+use systui_collectors::{LogQuery, probe_capabilities, timing};
 use systui_core::{Config, ExecutionMode, Result, Transport};
 
 use crate::collect::{
-    gather_crons, gather_databases, gather_docker, gather_network, merge_findings,
+    gather_crons, gather_databases, gather_docker, gather_network, gather_timers,
+    host_report_within_timeout, merge_findings,
 };
 use crate::model::{Report, ReportMeta};
 
@@ -33,21 +32,18 @@ pub async fn gather_report(
 
     let gather_start = Instant::now();
 
-    // Independent collector groups run concurrently; real dependencies are kept
-    // inside each group. Identical scheduling to the dashboard refresh.
-    let log_query = LogQuery::default();
+    // Independent collector groups run concurrently, each bounded by the
+    // per-collector timeout. Identical scheduling to the dashboard refresh.
     // One-shot gather: no session cache, so the slow-changing tiers are always
     // read fresh (`None`).
+    let log_query = LogQuery::default();
     let (host, net, dbs, docker, crons_group, timers) = tokio::join!(
-        timing::timed(
-            "host_report",
-            collect_host_report(transport, &config.thresholds, &log_query, None)
-        ),
+        host_report_within_timeout(transport, &config.thresholds, &log_query, None),
         gather_network(transport, config.security.cert_expiry_warning_days, None),
         gather_databases(transport),
         gather_docker(transport),
         gather_crons(transport),
-        timing::timed("timers", collect_timers(transport)),
+        gather_timers(transport),
     );
 
     let host = host?;

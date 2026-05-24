@@ -9,6 +9,7 @@
 //! later phase; for now every finding is reported as `Open`.
 
 pub mod certs;
+pub mod cron;
 pub mod docker;
 pub mod ports;
 pub mod ssh;
@@ -19,6 +20,7 @@ pub use certs::{
     CertInfo, certificate_findings, check_certificate, days_until_expiry, parse_x509,
     read_local_cert, read_remote_cert,
 };
+pub use cron::{check_crons, cron_findings, script_path};
 pub use docker::{check_container, docker_findings};
 pub use ports::check_exposed_ports;
 pub use ssh::{check_failed_logins, check_sshd_config, count_failed_logins};

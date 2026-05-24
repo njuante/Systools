@@ -133,6 +133,19 @@ checks produce shared `Finding`s. Crons are **read-only/detection** this phase.
   { unit, activates, next }`. Fixture-/unit-tested.
 - **S4.7 — Cron checks** (missing script, no exec perms, no logging, duplicate,
   risky root) + Docker/Crons tabs polish → **tag v0.4**.
+  **Done.** `systui-security::cron::{check_crons, cron_findings}` over `CronEntry`s
+  plus a single `stat` of the referenced scripts: missing script / not executable
+  (Medium), root cron running a world-writable or `/tmp`-located script (High),
+  no output logging (Info), invalid schedule + high frequency ≥12×/h (Low) and
+  duplicate jobs (Low). Pure + fixture-tested; folded into the shared findings.
+  UI: new **Crons tab** (`Tab::Crons`) listing jobs with natural-language schedule
+  + next run (own evaluator, `now` injected for testability), systemd timers and a
+  cron-warnings panel; **Docker tab** now renders a container list + a detail panel
+  (inspect summary, stats, per-container risks via `check_container`). Docker and
+  cron findings are merged into `App::findings` and surfaced on the Security panel
+  and new **dashboard Docker/Crons hooks**. `a` on the Docker tab plans a
+  state-aware lifecycle action (running→Restart, stopped→Start) through the
+  existing engine. Gates green.
 
 ## Definition of Done
 

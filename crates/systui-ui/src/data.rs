@@ -5,9 +5,13 @@
 //! foundation's single-collector wiring; phase 1 generalises it into a proper
 //! controller with background refresh.
 
-use systui_collectors::{LogsCollector, NetworkCollector, collect_host_report, exposure_map};
+use chrono::Local;
+use systui_collectors::{
+    DockerCollector, InspectSummary, LogsCollector, NetworkCollector, collect_cron_entries,
+    collect_host_report, collect_timers, container_stats, exposure_map, inspect_container,
+};
 use systui_core::{Collector, CoreError, Transport};
-use systui_security::security_scan;
+use systui_security::{cron_findings, docker_findings, security_scan};
 use tokio::runtime::Runtime;
 
 use crate::app::{App, ViewState};
@@ -31,6 +35,7 @@ pub fn refresh_blocking(runtime: &Runtime, transport: &dyn Transport, app: &mut 
             app.health = Some(report.health);
             app.view_state = ViewState::Ready;
             refresh_network_security(runtime, transport, app);
+            refresh_docker_crons(runtime, transport, app);
         }
         Err(err) => apply_error(app, err),
     }
@@ -56,6 +61,51 @@ fn refresh_network_security(runtime: &Runtime, transport: &dyn Transport, app: &
     app.network = network;
     app.exposures = exposures;
     app.findings = findings;
+}
+
+/// Collect Docker containers and cron jobs, fold their risk findings into the
+/// shared findings list and store the data for the Docker/Crons tabs. All
+/// read-only and best-effort: a missing `docker` or unreadable crontab degrades
+/// to empty rather than failing the refresh. Must run after
+/// [`refresh_network_security`], whose findings it appends to.
+fn refresh_docker_crons(runtime: &Runtime, transport: &dyn Transport, app: &mut App) {
+    match runtime.block_on(DockerCollector::new().collect(transport)) {
+        Ok(containers) => {
+            let inspects: Vec<InspectSummary> = containers
+                .iter()
+                .filter_map(|c| {
+                    runtime
+                        .block_on(inspect_container(transport, &c.id))
+                        .ok()
+                        .flatten()
+                })
+                .collect();
+            app.findings.extend(docker_findings(&inspects));
+            app.container_stats = runtime
+                .block_on(container_stats(transport))
+                .unwrap_or_default();
+            app.container_inspects = inspects;
+            app.containers = containers;
+            app.docker_available = true;
+        }
+        Err(_) => {
+            app.docker_available = false;
+            app.containers.clear();
+            app.container_inspects.clear();
+            app.container_stats.clear();
+        }
+    }
+
+    let crons = runtime.block_on(collect_cron_entries(transport));
+    app.findings
+        .extend(runtime.block_on(cron_findings(transport, &crons)));
+    app.crons = crons;
+    app.timers = runtime.block_on(collect_timers(transport));
+    app.now = Local::now().naive_local();
+
+    // Merged findings (security + docker + cron) re-sorted worst-first.
+    app.findings
+        .sort_by(|a, b| b.severity.cmp(&a.severity).then_with(|| a.id.cmp(&b.id)));
 }
 
 /// Re-collect only the logs, using the current log query (best-effort).

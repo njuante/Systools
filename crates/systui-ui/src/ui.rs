@@ -786,6 +786,24 @@ fn severity_badge(severity: Severity) -> String {
     format!("[{}]", severity.to_string().to_uppercase())
 }
 
+/// A finding's severity badge + title on one line (used by the Databases tab).
+fn finding_header(app: &App, finding: &Finding) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("  {:<10}", severity_badge(finding.severity)),
+            Style::new()
+                .fg(severity_color(app, finding.severity))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            finding.title.clone(),
+            Style::new()
+                .fg(app.theme.fg_strong)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
 fn render_network(frame: &mut Frame, app: &App, area: Rect) {
     let Some(net) = &app.network else {
         frame.render_widget(
@@ -1737,71 +1755,86 @@ fn render_security(frame: &mut Frame, app: &App, area: Rect) {
     if app.findings.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                "No findings — nothing flagged.",
-                Style::new().fg(app.theme.ok),
+                "✓ no findings — nothing flagged",
+                Style::new().fg(app.theme.accent),
             ))
             .alignment(Alignment::Center),
             area,
         );
         return;
     }
-    frame.render_widget(
-        Paragraph::new(security_text(app)).wrap(Wrap { trim: false }),
-        area,
-    );
+    let rows = Layout::vertical([Constraint::Length(4), Constraint::Min(0)]).split(area);
+    render_security_header(frame, app, rows[0]);
+    render_security_findings(frame, app, rows[1]);
 }
 
-/// The prioritized, evidence-based findings list (worst first).
-fn security_text(app: &App) -> Text<'static> {
-    let dim = Style::new().fg(app.theme.dim);
-    let text_s = Style::new().fg(app.theme.text);
+/// Severity-counter header band: one tile per severity with a big count.
+fn render_security_header(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Security findings");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    let [crit, high, med, low, info] = app.finding_counts();
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled("critical ", dim),
-            Span::styled(crit.to_string(), Style::new().fg(app.theme.danger)),
-            Span::styled("  high ", dim),
-            Span::styled(high.to_string(), Style::new().fg(app.theme.danger)),
-            Span::styled("  medium ", dim),
-            Span::styled(med.to_string(), Style::new().fg(app.theme.warn)),
-            Span::styled("  low ", dim),
-            Span::styled(low.to_string(), Style::new().fg(app.theme.accent)),
-            Span::styled("  info ", dim),
-            Span::styled(info.to_string(), text_s),
-        ]),
-        Line::from(""),
-    ];
+    let counts = app.finding_counts();
+    let labels = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
+    let colors = [t.critical, t.high, t.medium, t.low, t.fg_muted];
+    let cells = Layout::horizontal([Constraint::Ratio(1, 5); 5]).split(inner);
+    for (i, label) in labels.iter().enumerate() {
+        let n = counts[i];
+        let count_color = if n > 0 { colors[i] } else { t.fg_dim };
+        let lines = vec![
+            Line::from(Span::styled(
+                format!("{n}"),
+                Style::new().fg(count_color).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(*label, Style::new().fg(t.fg_dim))),
+        ];
+        frame.render_widget(Paragraph::new(lines), cells[i]);
+    }
+}
 
-    for finding in app.findings.iter().take(14) {
-        lines.push(finding_header(app, finding));
-        if let Some(evidence) = finding.evidence.first() {
-            lines.push(Line::from(Span::styled(format!("      {evidence}"), dim)));
-        }
-        if !finding.recommendation.is_empty() {
+/// Evidence-based findings list: severity edge bar, title + id/module, an inset
+/// evidence line and the recommendation (spec §14).
+fn render_security_findings(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Findings · evidence-based");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let per_finding = 3;
+    let max = (inner.height as usize / per_finding).max(1);
+    let mut lines: Vec<Line> = Vec::new();
+    for f in app.findings.iter().take(max) {
+        let color = t.severity(f.severity);
+        lines.push(Line::from(vec![
+            Span::styled("▌ ", Style::new().fg(color)),
+            Span::styled(
+                format!("{:<5} ", f.severity.to_string().to_uppercase()),
+                Style::new().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                f.title.clone(),
+                Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("   {} · {}", f.id, f.module),
+                Style::new().fg(t.fg_dim),
+            ),
+        ]));
+        if let Some(evidence) = f.evidence.first() {
             lines.push(Line::from(Span::styled(
-                format!("      → {}", finding.recommendation),
-                Style::new().fg(app.theme.ok),
+                format!("    {evidence}"),
+                Style::new().fg(t.fg_muted).bg(t.bg_elev),
+            )));
+        }
+        if !f.recommendation.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("    → {}", f.recommendation),
+                Style::new().fg(t.accent),
             )));
         }
     }
-
-    Text::from(lines)
-}
-
-fn finding_header(app: &App, finding: &Finding) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(
-            format!("  {:<10}", severity_badge(finding.severity)),
-            Style::new()
-                .fg(severity_color(app, finding.severity))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            finding.title.clone(),
-            Style::new().fg(app.theme.text).add_modifier(Modifier::BOLD),
-        ),
-    ])
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 fn render_message(frame: &mut Frame, app: &App, tab: Tab, area: Rect) {
@@ -2805,7 +2838,7 @@ mod tests {
         app.view_state = ViewState::Ready;
         app.select_tab(9);
         let out = render_to_string(&app, 100, 24);
-        assert!(out.contains("No findings"));
+        assert!(out.contains("no findings"));
     }
 
     #[test]

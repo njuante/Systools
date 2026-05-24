@@ -136,6 +136,17 @@ The design intent is captured by the prototype:
   tests updated.
 - **S8c.5 — Security & Hosts**: security score header + evidence-block findings; the
   Hosts/fleet card grid with health bars and tag chips.
+  **Done.** Security is now a panelled screen: a **severity-counter header** (one
+  tile per CRITICAL/HIGH/MEDIUM/LOW/INFO with the real counts) over a
+  **Findings · evidence-based** list where each finding has a severity edge bar,
+  title + `id · module`, an inset evidence line and the recommendation. No single
+  "security score" or "apply fix" buttons are shown — those are not data/behaviour
+  we have, so nothing is fabricated. The **Hosts/fleet** overview (`fleet.rs`,
+  reached via `systui fleet`) is rebuilt from a worst-first table into a **3-column
+  card grid**: each card shows a health-colored status dot, the host id, a favorite
+  star, the health score, tag chips and crit/high/med counts; unreachable hosts
+  render with a dim dot, an "unreachable" tag and the error. The fleet also gains
+  the rounded top-bar chrome and a key-hint status bar consistent with the main UI.
 - **S8c.6 — Polish & close**: spacing/alignment pass, help overlay, render-test
   refresh; final gates; merge `--no-ff` into `main` + tag `v0.8.2`.
 

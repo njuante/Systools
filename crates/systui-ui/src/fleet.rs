@@ -11,11 +11,11 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, Ke
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::{DefaultTerminal, Frame};
 use systui_core::Result;
 use systui_core::config::{Config, Host};
-use systui_report::{FleetOutcome, FleetOverview, findings_summary};
+use systui_report::{FleetOutcome, FleetOverview};
 
 use crate::Theme;
 use crate::form::{Field, Form, render_form};
@@ -404,117 +404,229 @@ fn render(frame: &mut Frame, view: &FleetView, theme: &Theme) {
 /// Render the fleet overview frame (base layer). A pure function of the overview
 /// and the selected index, so it is testable headlessly with `TestBackend`.
 pub fn render_fleet(frame: &mut Frame, overview: &FleetOverview, theme: &Theme, selected: usize) {
+    frame.render_widget(
+        Block::default().style(Style::new().bg(theme.bg).fg(theme.fg)),
+        frame.area(),
+    );
+
     let rows = Layout::vertical([
-        Constraint::Length(1), // title
-        Constraint::Min(0),    // hosts table
+        Constraint::Length(3), // top bar
+        Constraint::Min(0),    // host card grid
         Constraint::Length(1), // footer
     ])
     .split(frame.area());
 
     render_title(frame, overview, theme, rows[0]);
-    render_table(frame, overview, theme, selected, rows[1]);
+    render_cards(frame, overview, theme, selected, rows[1]);
 
-    let footer = Paragraph::new(Line::from(Span::styled(
-        " \u{2191}/\u{2193} select \u{00b7} Enter open \u{00b7} a add \u{00b7} e edit \u{00b7} d delete \u{00b7} r refresh \u{00b7} q quit ",
-        Style::new().fg(theme.dim),
-    )));
-    frame.render_widget(footer, rows[2]);
+    let hints: [(&str, &str); 7] = [
+        ("↑/↓", "select"),
+        ("Enter", "open"),
+        ("a", "add"),
+        ("e", "edit"),
+        ("d", "delete"),
+        ("r", "refresh"),
+        ("q", "quit"),
+    ];
+    let mut spans = vec![Span::raw(" ")];
+    for (i, (key, label)) in hints.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  ·  ", Style::new().fg(theme.fg_dim)));
+        }
+        spans.push(Span::styled(
+            *key,
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            format!(" {label}"),
+            Style::new().fg(theme.fg_muted),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), rows[2]);
 }
 
 fn render_title(frame: &mut Frame, overview: &FleetOverview, theme: &Theme, area: Rect) {
-    let title = Line::from(vec![
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.border));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let left = Line::from(vec![
         Span::styled(
             "SysTUI",
-            Style::new().fg(theme.title).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" \u{2014} fleet"),
+        Span::styled("  fleet", Style::new().fg(theme.fg_muted)),
+        Span::styled(
+            format!("  ·  {} hosts", overview.hosts.len()),
+            Style::new().fg(theme.fg_dim),
+        ),
     ]);
-    frame.render_widget(Paragraph::new(title), area);
-
-    let status = Line::from(format!(
-        "{} reviewed \u{00b7} {} unreachable \u{00b7} {} ",
-        overview.reviewed_count(),
-        overview.failed_count(),
-        overview.generated_at,
-    ))
+    let status = Line::from(vec![
+        Span::styled(
+            format!("{} reviewed", overview.reviewed_count()),
+            Style::new().fg(theme.accent),
+        ),
+        Span::styled("  ·  ", Style::new().fg(theme.fg_dim)),
+        Span::styled(
+            format!("{} unreachable", overview.failed_count()),
+            Style::new().fg(if overview.failed_count() > 0 {
+                theme.critical
+            } else {
+                theme.fg_muted
+            }),
+        ),
+        Span::styled(
+            format!("  ·  {} ", overview.generated_at),
+            Style::new().fg(theme.fg_dim),
+        ),
+    ])
     .alignment(Alignment::Right);
-    frame.render_widget(
-        Paragraph::new(status).style(Style::new().fg(theme.dim)),
-        area,
-    );
+    let cols = Layout::horizontal([Constraint::Min(10), Constraint::Length(48)]).split(inner);
+    frame.render_widget(Paragraph::new(left), cols[0]);
+    frame.render_widget(Paragraph::new(status), cols[1]);
 }
 
-fn render_table(
+/// The host inventory as a 3-column card grid (spec §14 Hosts).
+fn render_cards(
     frame: &mut Frame,
     overview: &FleetOverview,
     theme: &Theme,
     selected: usize,
     area: Rect,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::new().fg(theme.border))
-        .title(" Hosts ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
     if overview.hosts.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 "No hosts in the inventory. Press `a` to add one.",
-                Style::new().fg(theme.dim),
-            )),
-            inner,
+                Style::new().fg(theme.fg_dim),
+            ))
+            .alignment(Alignment::Center),
+            area,
         );
         return;
     }
 
-    let header = Row::new(["", "HOST", "TAGS", "HEALTH", "FINDINGS / STATUS"])
-        .style(Style::new().fg(theme.dim).add_modifier(Modifier::BOLD));
-    let body = overview.hosts.iter().enumerate().map(|(i, host)| {
-        let marker = if host.favorite { "*" } else { "" };
-        let tags = if host.tags.is_empty() {
-            "-".to_owned()
-        } else {
-            host.tags.join(",")
-        };
-        let (health, status, color) = match &host.outcome {
-            FleetOutcome::Reviewed {
-                health,
-                finding_counts,
-                ..
-            } => (
-                format!("{health}/100"),
-                findings_summary(finding_counts),
-                health_color(theme, *health),
-            ),
-            FleetOutcome::Failed { error } => {
-                ("\u{2014}".to_owned(), truncate(error, 48), theme.danger)
+    const COLS: usize = 3;
+    const CARD_H: u16 = 6;
+    let total_rows = overview.hosts.len().div_ceil(COLS);
+    let max_rows = (area.height / CARD_H).max(1) as usize;
+    let shown_rows = total_rows.min(max_rows);
+
+    let row_rects = Layout::vertical(vec![Constraint::Length(CARD_H); shown_rows]).split(area);
+    for (r, row_rect) in row_rects.iter().enumerate() {
+        let col_rects = Layout::horizontal([Constraint::Ratio(1, 3); 3]).split(*row_rect);
+        for (c, col_rect) in col_rects.iter().enumerate() {
+            let idx = r * COLS + c;
+            if idx >= overview.hosts.len() {
+                break;
             }
-        };
-        let row = Row::new([marker.to_owned(), host.id.clone(), tags, health, status]);
-        if i == selected {
-            row.style(
-                Style::new()
-                    .fg(theme.selected_fg)
-                    .bg(theme.selected_bg)
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else {
-            row.style(Style::new().fg(color))
+            render_host_card(
+                frame,
+                &overview.hosts[idx],
+                theme,
+                idx == selected,
+                *col_rect,
+            );
         }
-    });
-    let widths = [
-        Constraint::Length(2),
-        Constraint::Length(18),
-        Constraint::Length(20),
-        Constraint::Length(9),
-        Constraint::Min(20),
-    ];
-    let table = Table::new(body, widths)
-        .header(header)
-        .style(Style::new().fg(theme.text));
-    frame.render_widget(table, inner);
+    }
+}
+
+fn render_host_card(
+    frame: &mut Frame,
+    host: &systui_report::FleetHostSummary,
+    theme: &Theme,
+    selected: bool,
+    area: Rect,
+) {
+    let border = if selected { theme.accent } else { theme.border };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(border));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let star = if host.favorite { " ★" } else { "" };
+    let mut lines: Vec<Line> = Vec::new();
+
+    match &host.outcome {
+        FleetOutcome::Reviewed {
+            health,
+            finding_counts,
+            ..
+        } => {
+            let hc = health_color(theme, *health);
+            lines.push(Line::from(vec![
+                Span::styled("● ", Style::new().fg(hc)),
+                Span::styled(
+                    host.id.clone(),
+                    Style::new()
+                        .fg(theme.fg_strong)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(star, Style::new().fg(theme.high)),
+                Span::styled(
+                    format!("   {health}/100"),
+                    Style::new().fg(hc).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::from(Span::styled(
+                tags_label(&host.tags),
+                Style::new().fg(theme.fg_muted),
+            )));
+            let [crit, high, med, ..] = finding_counts;
+            lines.push(Line::from(vec![
+                count_span(theme, *crit, "crit", theme.critical),
+                Span::raw("  "),
+                count_span(theme, *high, "high", theme.high),
+                Span::raw("  "),
+                count_span(theme, *med, "med", theme.medium),
+            ]));
+        }
+        FleetOutcome::Failed { error } => {
+            lines.push(Line::from(vec![
+                Span::styled("○ ", Style::new().fg(theme.fg_dim)),
+                Span::styled(
+                    host.id.clone(),
+                    Style::new().fg(theme.fg_muted).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(star, Style::new().fg(theme.high)),
+                Span::styled(
+                    "   unreachable",
+                    Style::new().fg(theme.critical).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::from(Span::styled(
+                tags_label(&host.tags),
+                Style::new().fg(theme.fg_muted),
+            )));
+            lines.push(Line::from(Span::styled(
+                truncate(error, inner.width.saturating_sub(2) as usize),
+                Style::new().fg(theme.fg_dim),
+            )));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// A `N label` span, dim when zero.
+fn count_span(theme: &Theme, n: usize, label: &str, color: Color) -> Span<'static> {
+    let c = if n > 0 { color } else { theme.fg_dim };
+    Span::styled(
+        format!("{n} {label}"),
+        Style::new().fg(c).add_modifier(Modifier::BOLD),
+    )
+}
+
+fn tags_label(tags: &[String]) -> String {
+    if tags.is_empty() {
+        "no tags".to_owned()
+    } else {
+        tags.join(" · ")
+    }
 }
 
 /// A small centered message box (used for delete-confirm and notices).

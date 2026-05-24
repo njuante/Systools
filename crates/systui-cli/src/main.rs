@@ -68,9 +68,8 @@ fn dispatch(command: Command, mode: ExecutionMode, config: &Config) -> anyhow::R
         Command::Ssh { target } => {
             run_ssh(&target, mode, config)?;
         }
-        Command::Fleet { tag } => {
-            let scope = tag.as_deref().unwrap_or("all hosts");
-            println!("systui: fleet mode [{scope}] ({mode}) — implemented in phase 8");
+        Command::Fleet { tag, favorites } => {
+            run_fleet(tag, favorites, config);
         }
         Command::Report {
             host,
@@ -120,6 +119,46 @@ fn run_ssh(target: &str, mode: ExecutionMode, config: &Config) -> anyhow::Result
 
     systui_ui::run(Box::new(transport), label, effective_mode, config)?;
     Ok(())
+}
+
+/// List the inventory hosts a fleet run would target, applying the tag and
+/// favorites filters. v0.8 fleet mode is inspection-only; the concurrent health
+/// overview lands in a later session, so for now this surfaces the selection so
+/// the operator can confirm *which* hosts the fleet covers.
+fn run_fleet(tags: Vec<String>, favorites: bool, config: &Config) {
+    let filter = systui_core::FleetFilter {
+        tags,
+        favorites_only: favorites,
+    };
+    let selected = config.select_fleet(&filter);
+
+    if config.hosts.is_empty() {
+        eprintln!("No hosts in the inventory. Add `[hosts.<id>]` entries to your config.");
+        return;
+    }
+    if selected.is_empty() {
+        eprintln!("No inventory hosts match the given filters.");
+        return;
+    }
+
+    println!("Fleet ({} host(s)):", selected.len());
+    for host in &selected {
+        let marker = if host.favorite { "*" } else { " " };
+        let dest = match &host.user {
+            Some(user) => format!("{user}@{}:{}", host.host, host.port),
+            None => format!("{}:{}", host.host, host.port),
+        };
+        let mut labels = host.tags.clone();
+        if host.read_only {
+            labels.push("read-only".to_owned());
+        }
+        let suffix = if labels.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", labels.join(", "))
+        };
+        println!("{marker} {:<16} {dest}{suffix}", host.id);
+    }
 }
 
 /// Generate a report of a host's state, locally or over SSH (`--host`), in

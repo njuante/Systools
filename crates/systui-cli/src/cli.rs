@@ -32,11 +32,14 @@ pub enum Command {
         target: String,
     },
 
-    /// Operate on a fleet of hosts (implemented in phase 8).
+    /// Operate on a fleet of hosts from the inventory (inspection only).
     Fleet {
-        /// Restrict to hosts carrying this tag.
+        /// Restrict to hosts carrying this tag. Repeat for "any of" (OR).
         #[arg(long)]
-        tag: Option<String>,
+        tag: Vec<String>,
+        /// Restrict to hosts flagged as favorites.
+        #[arg(long)]
+        favorites: bool,
     },
 
     /// Generate a report of a host's state (local, or remote with `--host`).

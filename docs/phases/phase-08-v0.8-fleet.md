@@ -105,6 +105,13 @@ collectors.
 - **S8.1 — Context** *(this file)*.
 - **S8.2 — Host inventory & selection**: surface the inventory as a fleet —
   tags/groups, favorites, `--tag` filtering; the fleet selection model + tests.
+  **Done.** `systui-core::fleet` adds `FleetHost` and `FleetFilter` plus
+  `Config::select_fleet`: a pure, I/O-free selection over the `[hosts.<id>]`
+  inventory with **OR** tag semantics (repeatable `--tag`), a `favorites_only`
+  filter (new `favorite` host field), and a deterministic order (favorites first,
+  then id). The `fleet` CLI now lists the resolved selection (`--tag`, repeatable;
+  `--favorites`), with empty-inventory and no-match messages. The concurrent health
+  gather and overview build on this selection in S8.3.
 - **S8.3 — Concurrent health checks + global overview**: bounded concurrent
   `gather_report` across the selection with per-host timeout/error isolation; the
   sortable overview model; `systui fleet` CLI table + TUI fleet view; drill-in to a

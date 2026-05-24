@@ -92,9 +92,9 @@ offline once dependencies are cached.
 Source of truth is `git log` and the active phase context file — check them, this
 snapshot may lag.
 
-- **Phase 3 / v0.3 complete; `v0.3` tagged on `main`.** Each version is built on
+- **`v0.4` complete and tagged on `main`.** Each version is built on
   `release/vX.Y` from `main`, then merged `--no-ff` + tagged at the end of its phase.
-  `v0.1`, `v0.2` and `v0.3` are tagged on `main`. Phase 4 starts a new `release/v0.4`.
+  `v0.1`, `v0.2`, `v0.3` and `v0.4` are tagged on `main`.
 - **Phase 0 (Foundation) complete**: workspace, contracts, Local/Mock transports,
   CLI + config + tracing, TUI shell, async/sync bridge.
 - **Phase 1 / v0.1 complete**: dashboard with health score + findings,
@@ -111,8 +111,22 @@ snapshot may lag.
   docker socket, SUID, exposed ports) via `security_scan`, certificate checks (local +
   remote `host:443` over `openssl`), and the **Network/Security TUI tabs** + dashboard
   security summary. Core enabler added: `CommandSpec::stdin` (pipe without a shell).
-- **Next: Phase 4 / v0.4.** Create `release/v0.4` from `main` and write its phase
-  context file before any code. See `docs/ROADMAP.md` for the phase-4 theme.
+- **Phase 4 / v0.4 (Docker & crons) complete** (S4.1–S4.7): Docker collectors
+  (`DockerCollector`, `container_stats`, `inspect_container` → `InspectSummary`),
+  Docker ops (`DockerAction` start/stop/restart/remove + `container_logs`), Docker
+  risk checks (`docker_findings`: privileged, docker.sock/dangerous mounts, sensitive
+  published ports via reused `exposure_map`, unhealthy, restart loops, `latest`, no
+  mem limit), cron sources (`cron.rs`: `parse_crontab` + `collect_cron_entries`),
+  timers & a self-built cron evaluator (`parse_schedule`/`CronSchedule` with
+  `describe`/`next_after`/`upcoming`, `collect_timers`/`SystemdTimer`), **cron risk
+  checks** (`systui-security::cron`: missing/non-exec script, world-writable or
+  `/tmp` root script, no logging, invalid schedule, high frequency, duplicates), and
+  the **Docker + Crons TUI tabs** (container list + detail/risks; cron jobs with NL
+  schedule/next-run + timers + warnings) with **dashboard Docker/Crons hooks**.
+  Docker + cron findings are merged into the shared findings list; `a` on the Docker
+  tab plans a state-aware lifecycle action through the engine.
+- **Next: Phase 5 / v0.5 — start with the phase context file** (`docs/phases/`)
+  before any code, per the methodology. Read `docs/ROADMAP.md` for the v0.5 scope.
 
 ## Starting a session
 

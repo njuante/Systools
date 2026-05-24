@@ -5,6 +5,8 @@
 //! Process, service, log and network collectors arrive in later v0.1 sessions.
 
 pub mod connectivity;
+pub mod cron;
+pub mod docker;
 pub mod exposure;
 pub mod health;
 pub mod host_report;
@@ -15,6 +17,14 @@ pub mod service;
 pub mod system;
 
 pub use connectivity::{DnsLookup, PingResult, TcpProbe, dns_lookup, ping, tcp_connect};
+pub use cron::{
+    CronEntry, CronSchedule, CronSource, SystemdTimer, collect_cron_entries, collect_timers,
+    parse_crontab, parse_schedule,
+};
+pub use docker::{
+    Container, ContainerHealth, ContainerStats, DockerCollector, InspectSummary, Mount,
+    PublishedPort, container_logs, container_stats, inspect_container,
+};
 pub use exposure::{BindScope, ExposureEntry, exposure_map};
 pub use health::{Check, HealthReport, evaluate_health};
 pub use host_report::{HostReport, collect_host_report};

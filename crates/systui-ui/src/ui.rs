@@ -7,8 +7,11 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Tabs, Wrap};
 use regex::RegexBuilder;
-use systui_collectors::{Disk, ExposureEntry, LogEntry, NetworkSnapshot, SystemSnapshot};
-use systui_core::{Finding, Severity};
+use systui_collectors::{
+    Container, CronEntry, Disk, ExposureEntry, LogEntry, NetworkSnapshot, SystemSnapshot,
+    parse_schedule,
+};
+use systui_core::{Finding, ModuleId, Severity};
 
 use crate::app::{ActionStage, App, InputMode, Tab, ViewState};
 
@@ -158,6 +161,8 @@ fn render_content(frame: &mut Frame, app: &App, area: Rect) {
         (ViewState::Ready, _, Tab::Services) => render_services(frame, app, inner),
         (ViewState::Ready, _, Tab::Logs) => render_logs(frame, app, inner),
         (ViewState::Ready, _, Tab::Network) => render_network(frame, app, inner),
+        (ViewState::Ready, _, Tab::Docker) => render_docker(frame, app, inner),
+        (ViewState::Ready, _, Tab::Crons) => render_crons(frame, app, inner),
         (ViewState::Ready, _, Tab::Security) => render_security(frame, app, inner),
         _ => render_message(frame, app, tab, inner),
     }
@@ -510,6 +515,310 @@ fn exposure_line(app: &App, entry: &ExposureEntry) -> Line<'static> {
     ])
 }
 
+fn render_docker(frame: &mut Frame, app: &App, area: Rect) {
+    if !app.docker_available {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "Docker unavailable — `docker` is not installed or the socket is not accessible.",
+                Style::new().fg(app.theme.dim),
+            ))
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
+            area,
+        );
+        return;
+    }
+    if app.containers.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No containers.",
+                Style::new().fg(app.theme.dim),
+            ))
+            .alignment(Alignment::Center),
+            area,
+        );
+        return;
+    }
+
+    let rows =
+        Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
+    render_container_table(frame, app, rows[0]);
+    render_container_detail(frame, app, rows[1]);
+}
+
+fn render_container_table(frame: &mut Frame, app: &App, area: Rect) {
+    let header = Row::new(["NAME", "IMAGE", "STATE", "HEALTH", "PORTS"])
+        .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
+    let body = app.containers.iter().enumerate().map(|(i, c)| {
+        let state_color = if c.is_running() {
+            app.theme.ok
+        } else if c.state == "restarting" {
+            app.theme.warn
+        } else {
+            app.theme.dim
+        };
+        let (health, health_color) = container_health(app, c);
+        let row = Row::new([
+            Cell::from(c.name.clone()),
+            Cell::from(c.image.clone()),
+            Cell::from(Span::styled(c.state.clone(), Style::new().fg(state_color))),
+            Cell::from(Span::styled(health, Style::new().fg(health_color))),
+            Cell::from(c.ports.clone()),
+        ]);
+        if i == app.containers_selected {
+            row.style(selected_style(app))
+        } else {
+            row
+        }
+    });
+    let widths = [
+        Constraint::Length(18),
+        Constraint::Length(22),
+        Constraint::Length(11),
+        Constraint::Length(9),
+        Constraint::Min(10),
+    ];
+    let table = Table::new(body, widths)
+        .header(header)
+        .style(Style::new().fg(app.theme.text));
+    frame.render_widget(table, area);
+}
+
+fn container_health(app: &App, c: &Container) -> (String, ratatui::style::Color) {
+    use systui_collectors::ContainerHealth;
+    match c.health {
+        Some(ContainerHealth::Healthy) => ("healthy".to_owned(), app.theme.ok),
+        Some(ContainerHealth::Unhealthy) => ("unhealthy".to_owned(), app.theme.danger),
+        Some(ContainerHealth::Starting) => ("starting".to_owned(), app.theme.warn),
+        None => ("-".to_owned(), app.theme.dim),
+    }
+}
+
+fn render_container_detail(frame: &mut Frame, app: &App, area: Rect) {
+    let dim = Style::new().fg(app.theme.dim);
+    let accent = Style::new()
+        .fg(app.theme.accent)
+        .add_modifier(Modifier::BOLD);
+    let text_s = Style::new().fg(app.theme.text);
+
+    let Some(inspect) = app.selected_inspect() else {
+        let name = app
+            .selected_container()
+            .map(|c| c.name.as_str())
+            .unwrap_or("container");
+        frame.render_widget(
+            Paragraph::new(Span::styled(format!("No inspect data for {name}."), dim)),
+            area,
+        );
+        return;
+    };
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled(format!("{} ", inspect.name), accent),
+        Span::styled(inspect.image.clone(), dim),
+    ])];
+
+    let mem = if inspect.memory_limit_bytes == 0 {
+        "unlimited".to_owned()
+    } else {
+        human_kb(inspect.memory_limit_bytes / 1024)
+    };
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  privileged {} · restart {} ({}) · mem {} · net {}",
+            inspect.privileged,
+            inspect.restart_policy,
+            inspect.restart_count,
+            mem,
+            inspect.networks.join(",")
+        ),
+        text_s,
+    )));
+
+    if let Some(stats) = app
+        .container_stats
+        .iter()
+        .find(|s| s.id == inspect.id || s.name == inspect.name)
+    {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  cpu {:.1}% · mem {:.1}% ({})",
+                stats.cpu_percent, stats.mem_percent, stats.mem_usage
+            ),
+            text_s,
+        )));
+    }
+
+    if !inspect.mounts.is_empty() {
+        lines.push(Line::from(Span::styled("  mounts", dim)));
+        for m in &inspect.mounts {
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "    {} -> {} ({})",
+                    m.source,
+                    m.destination,
+                    if m.rw { "rw" } else { "ro" }
+                ),
+                dim,
+            )));
+        }
+    }
+
+    let risks = systui_security::check_container(inspect);
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("Risks ({})", risks.len()),
+        accent,
+    )));
+    if risks.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  none",
+            Style::new().fg(app.theme.ok),
+        )));
+    }
+    for finding in risks.iter().take(6) {
+        lines.push(finding_header(app, finding));
+    }
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn render_crons(frame: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::vertical([
+        Constraint::Percentage(45),
+        Constraint::Percentage(30),
+        Constraint::Percentage(25),
+    ])
+    .split(area);
+    render_cron_jobs(frame, app, rows[0]);
+    render_cron_timers(frame, app, rows[1]);
+    render_cron_warnings(frame, app, rows[2]);
+}
+
+fn render_cron_jobs(frame: &mut Frame, app: &App, area: Rect) {
+    if app.crons.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No cron jobs found.",
+                Style::new().fg(app.theme.dim),
+            )),
+            area,
+        );
+        return;
+    }
+    let header = Row::new(["SCHEDULE", "NEXT RUN", "USER", "COMMAND"])
+        .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
+    let body = app.crons.iter().enumerate().map(|(i, e)| {
+        let (schedule, next) = cron_schedule_cells(app, e);
+        let row = Row::new([
+            Cell::from(schedule),
+            Cell::from(next),
+            Cell::from(e.user.clone().unwrap_or_else(|| "—".to_owned())),
+            Cell::from(e.command.clone()),
+        ]);
+        if i == app.crons_selected {
+            row.style(selected_style(app))
+        } else {
+            row
+        }
+    });
+    let widths = [
+        Constraint::Length(20),
+        Constraint::Length(17),
+        Constraint::Length(10),
+        Constraint::Min(10),
+    ];
+    let table = Table::new(body, widths)
+        .header(header)
+        .style(Style::new().fg(app.theme.text));
+    frame.render_widget(table, area);
+}
+
+/// The natural-language schedule and next-run cells for a cron entry. An invalid
+/// expression renders as `invalid` with no next run.
+fn cron_schedule_cells(app: &App, entry: &CronEntry) -> (String, String) {
+    match parse_schedule(&entry.schedule) {
+        Ok(schedule) => {
+            let next = schedule
+                .next_after(app.now)
+                .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_else(|| "—".to_owned());
+            (schedule.describe(), next)
+        }
+        Err(_) => ("invalid".to_owned(), "—".to_owned()),
+    }
+}
+
+fn render_cron_timers(frame: &mut Frame, app: &App, area: Rect) {
+    let accent = Style::new()
+        .fg(app.theme.accent)
+        .add_modifier(Modifier::BOLD);
+    if app.timers.is_empty() {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled("Systemd timers", accent)),
+                Line::from(Span::styled("  none", Style::new().fg(app.theme.dim))),
+            ]),
+            area,
+        );
+        return;
+    }
+    let header = Row::new(["TIMER", "NEXT", "ACTIVATES"])
+        .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
+    let body = app.timers.iter().map(|t| {
+        Row::new([
+            Cell::from(t.unit.clone()),
+            Cell::from(t.next.clone()),
+            Cell::from(t.activates.clone()),
+        ])
+    });
+    let widths = [
+        Constraint::Length(26),
+        Constraint::Length(26),
+        Constraint::Min(10),
+    ];
+    let table = Table::new(body, widths)
+        .header(header)
+        .style(Style::new().fg(app.theme.text));
+    frame.render_widget(table, area);
+}
+
+fn render_cron_warnings(frame: &mut Frame, app: &App, area: Rect) {
+    let accent = Style::new()
+        .fg(app.theme.accent)
+        .add_modifier(Modifier::BOLD);
+    let dim = Style::new().fg(app.theme.dim);
+    let warnings: Vec<&Finding> = app
+        .findings
+        .iter()
+        .filter(|f| f.module == ModuleId::Crons)
+        .collect();
+
+    let mut lines = vec![Line::from(Span::styled(
+        format!("Warnings ({})", warnings.len()),
+        accent,
+    ))];
+    if warnings.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  none",
+            Style::new().fg(app.theme.ok),
+        )));
+    }
+    for finding in warnings.iter().take(6) {
+        lines.push(finding_header(app, finding));
+        if let Some(evidence) = finding.evidence.first() {
+            lines.push(Line::from(Span::styled(format!("      {evidence}"), dim)));
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
 fn render_security(frame: &mut Frame, app: &App, area: Rect) {
     if app.findings.is_empty() {
         frame.render_widget(
@@ -760,6 +1069,38 @@ fn dashboard_text(app: &App, snap: &SystemSnapshot) -> Text<'static> {
         count_span(med, app.theme.warn),
     ]));
 
+    // Docker & crons: running/total containers and job/timer counts, each with
+    // the number of risk findings their module produced.
+    let module_findings = |module| app.findings.iter().filter(|f| f.module == module).count();
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Docker", accent)));
+    if app.docker_available {
+        let running = app.containers.iter().filter(|c| c.is_running()).count();
+        lines.push(Line::from(vec![
+            Span::styled("  running: ", dim),
+            Span::styled(
+                format!("{running}/{}", app.containers.len()),
+                Style::new().fg(app.theme.text),
+            ),
+            Span::styled("   issues: ", dim),
+            count_span(module_findings(ModuleId::Docker), app.theme.warn),
+        ]));
+    } else {
+        lines.push(Line::from(Span::styled("  unavailable", dim)));
+    }
+    lines.push(Line::from(Span::styled("Crons", accent)));
+    lines.push(Line::from(vec![
+        Span::styled("  jobs: ", dim),
+        Span::styled(app.crons.len().to_string(), Style::new().fg(app.theme.text)),
+        Span::styled("   timers: ", dim),
+        Span::styled(
+            app.timers.len().to_string(),
+            Style::new().fg(app.theme.text),
+        ),
+        Span::styled("   warnings: ", dim),
+        count_span(module_findings(ModuleId::Crons), app.theme.warn),
+    ]));
+
     Text::from(lines)
 }
 
@@ -978,9 +1319,9 @@ fn render_help(frame: &mut Frame, app: &App) {
     let keys = [
         ("Tab / →", "next tab"),
         ("Shift+Tab / ←", "previous tab"),
-        ("1–8", "jump to tab"),
-        ("↑ / ↓", "move selection (services/processes)"),
-        ("a", "act on selection (restart / signal)"),
+        ("1–9", "jump to tab"),
+        ("↑ / ↓", "move selection (services/processes/docker/crons)"),
+        ("a", "act on selection (restart / signal / container)"),
         ("r", "refresh"),
         ("s", "sort processes by CPU/memory"),
         ("/", "search logs (Esc to clear)"),
@@ -1354,7 +1695,7 @@ mod tests {
             ),
         ];
         app.view_state = ViewState::Ready;
-        app.select_tab(7); // Security
+        app.select_tab(8); // Security
 
         let out = render_to_string(&app, 100, 30);
         assert!(out.contains("SSH permits direct root login"));
@@ -1371,7 +1712,7 @@ mod tests {
         let mut app = App::new("local", ExecutionMode::ReadOnly);
         app.snapshot = Some(sample_snapshot());
         app.view_state = ViewState::Ready;
-        app.select_tab(7);
+        app.select_tab(8);
         let out = render_to_string(&app, 100, 24);
         assert!(out.contains("No findings"));
     }
@@ -1466,6 +1807,117 @@ mod tests {
         // sanity: the modal type is what we expect
         let modal: &ActionModal = app.action.as_ref().unwrap();
         assert_eq!(modal.stage, ActionStage::Confirm);
+    }
+
+    fn sample_container() -> systui_collectors::Container {
+        systui_collectors::Container {
+            id: "abc123".to_owned(),
+            name: "redis".to_owned(),
+            image: "redis:latest".to_owned(),
+            state: "running".to_owned(),
+            status: "Up 2 days (unhealthy)".to_owned(),
+            health: Some(systui_collectors::ContainerHealth::Unhealthy),
+            ports: "0.0.0.0:6379->6379/tcp".to_owned(),
+            created: "2026-05-22".to_owned(),
+        }
+    }
+
+    fn sample_inspect() -> systui_collectors::InspectSummary {
+        use systui_collectors::{ContainerHealth, Mount, PublishedPort};
+        systui_collectors::InspectSummary {
+            id: "abc123".to_owned(),
+            name: "redis".to_owned(),
+            image: "redis:latest".to_owned(),
+            privileged: true,
+            restart_policy: "always".to_owned(),
+            max_retry_count: 0,
+            restart_count: 7,
+            memory_limit_bytes: 0,
+            networks: vec!["bridge".to_owned()],
+            mounts: vec![Mount {
+                source: "/var/run/docker.sock".to_owned(),
+                destination: "/var/run/docker.sock".to_owned(),
+                rw: true,
+            }],
+            published_ports: vec![PublishedPort {
+                host_ip: "0.0.0.0".to_owned(),
+                host_port: 6379,
+                container_port: 6379,
+                protocol: "tcp".to_owned(),
+            }],
+            health: Some(ContainerHealth::Unhealthy),
+        }
+    }
+
+    #[test]
+    fn docker_tab_lists_containers_and_shows_risks() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.docker_available = true;
+        app.containers = vec![sample_container()];
+        app.container_inspects = vec![sample_inspect()];
+        app.view_state = ViewState::Ready;
+        app.select_tab(6); // Docker
+
+        let out = render_to_string(&app, 110, 30);
+        assert!(out.contains("redis"));
+        assert!(out.contains("redis:latest"));
+        assert!(out.contains("unhealthy"));
+        assert!(out.contains("Risks"));
+        // The privileged + docker.sock risks surface in the detail panel.
+        assert!(out.contains("privileged") || out.contains("Docker socket"));
+    }
+
+    #[test]
+    fn docker_tab_reports_unavailable() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.docker_available = false;
+        app.view_state = ViewState::Ready;
+        app.select_tab(6);
+
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("Docker unavailable"));
+    }
+
+    #[test]
+    fn crons_tab_lists_jobs_timers_and_warnings() {
+        use systui_collectors::{CronEntry, CronSource, SystemdTimer};
+        use systui_core::{Finding, ModuleId, Severity};
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.now = chrono::NaiveDate::from_ymd_opt(2026, 5, 24)
+            .unwrap()
+            .and_hms_opt(10, 0, 0)
+            .unwrap();
+        app.crons = vec![CronEntry {
+            schedule: "0 2 * * *".to_owned(),
+            user: Some("root".to_owned()),
+            command: "/opt/backup.sh".to_owned(),
+            source: CronSource::System,
+            origin: "/etc/crontab".to_owned(),
+        }];
+        app.timers = vec![SystemdTimer {
+            unit: "logrotate.timer".to_owned(),
+            activates: "logrotate.service".to_owned(),
+            next: "Wed 2026-05-27 00:00:00 UTC".to_owned(),
+        }];
+        app.findings = vec![Finding::new(
+            "cron.no-logging./opt/backup.sh",
+            Severity::Info,
+            ModuleId::Crons,
+            "Cron job output is not captured",
+        )];
+        app.view_state = ViewState::Ready;
+        app.select_tab(7); // Crons
+
+        let out = render_to_string(&app, 110, 36);
+        assert!(out.contains("Every day at 02:00"));
+        assert!(out.contains("2026-05-25 02:00")); // next run
+        assert!(out.contains("/opt/backup.sh"));
+        assert!(out.contains("logrotate.timer"));
+        assert!(out.contains("Warnings"));
+        assert!(out.contains("not captured"));
     }
 
     #[test]

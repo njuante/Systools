@@ -1,0 +1,4 @@
+{"ID":"abc123","Names":"redis","Image":"redis:latest","State":"running","Status":"Up 3 hours","Ports":"0.0.0.0:6379->6379/tcp, :::6379->6379/tcp","CreatedAt":"2026-05-20 10:00:00 +0000 UTC"}
+{"ID":"def456","Names":"web","Image":"nginx:1.25","State":"running","Status":"Up 2 days (healthy)","Ports":"0.0.0.0:80->80/tcp","CreatedAt":"2026-05-18 09:00:00 +0000 UTC"}
+{"ID":"ghi789","Names":"worker","Image":"app:1.0","State":"exited","Status":"Exited (1) 5 minutes ago","Ports":"","CreatedAt":"2026-05-24 08:00:00 +0000 UTC"}
+{"ID":"jkl012","Names":"db","Image":"postgres:16","State":"running","Status":"Up 1 hour (unhealthy)","Ports":"127.0.0.1:5432->5432/tcp","CreatedAt":"2026-05-24 07:00:00 +0000 UTC"}

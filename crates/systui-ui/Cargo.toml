@@ -19,6 +19,7 @@ systui-storage.workspace = true
 ratatui.workspace = true
 tokio.workspace = true
 regex.workspace = true
+chrono.workspace = true
 
 [dev-dependencies]
 systui-transport.workspace = true

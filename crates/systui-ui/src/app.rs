@@ -1,9 +1,12 @@
 //! Global application state for the TUI.
 
-use systui_actions::{ActionDecision, ServiceAction, ServiceOp, Signal, SignalAction};
+use chrono::{Local, NaiveDateTime};
+use systui_actions::{
+    ActionDecision, DockerAction, DockerOp, ServiceAction, ServiceOp, Signal, SignalAction,
+};
 use systui_collectors::{
-    ExposureEntry, HealthReport, LogEntry, LogQuery, NetworkSnapshot, Process, ServiceUnit,
-    SystemSnapshot,
+    Container, ContainerStats, CronEntry, ExposureEntry, HealthReport, InspectSummary, LogEntry,
+    LogQuery, NetworkSnapshot, Process, ServiceUnit, SystemSnapshot, SystemdTimer,
 };
 use systui_core::{Action, ExecutionMode, Finding, ModuleId, Severity, Thresholds};
 
@@ -15,6 +18,7 @@ use crate::theme::Theme;
 pub enum PendingAction {
     Service(ServiceAction),
     Signal(SignalAction),
+    Docker(DockerAction),
 }
 
 impl PendingAction {
@@ -22,6 +26,7 @@ impl PendingAction {
         match self {
             PendingAction::Service(a) => a,
             PendingAction::Signal(a) => a,
+            PendingAction::Docker(a) => a,
         }
     }
 }
@@ -94,12 +99,13 @@ pub enum Tab {
     Logs,
     Network,
     Docker,
+    Crons,
     Security,
 }
 
 impl Tab {
     /// All tabs, in display order.
-    pub const ALL: [Tab; 8] = [
+    pub const ALL: [Tab; 9] = [
         Tab::Dashboard,
         Tab::System,
         Tab::Processes,
@@ -107,6 +113,7 @@ impl Tab {
         Tab::Logs,
         Tab::Network,
         Tab::Docker,
+        Tab::Crons,
         Tab::Security,
     ];
 
@@ -120,6 +127,7 @@ impl Tab {
             Tab::Logs => "Logs",
             Tab::Network => "Network",
             Tab::Docker => "Docker",
+            Tab::Crons => "Crons",
             Tab::Security => "Security",
         }
     }
@@ -134,6 +142,7 @@ impl Tab {
             Tab::Logs => ModuleId::Logs,
             Tab::Network => ModuleId::Network,
             Tab::Docker => ModuleId::Docker,
+            Tab::Crons => ModuleId::Crons,
             Tab::Security => ModuleId::Security,
         }
     }
@@ -208,6 +217,16 @@ pub struct App {
     pub exposures: Vec<ExposureEntry>,
     pub findings: Vec<Finding>,
     pub cert_warning_days: u32,
+    pub containers: Vec<Container>,
+    pub container_inspects: Vec<InspectSummary>,
+    pub container_stats: Vec<ContainerStats>,
+    pub docker_available: bool,
+    pub containers_selected: usize,
+    pub crons: Vec<CronEntry>,
+    pub timers: Vec<SystemdTimer>,
+    pub crons_selected: usize,
+    /// Reference time for cron next-run previews, refreshed each collection.
+    pub now: NaiveDateTime,
     pub logs: Vec<LogEntry>,
     pub log_query: LogQuery,
     pub log_search: String,
@@ -243,6 +262,15 @@ impl App {
             exposures: Vec::new(),
             findings: Vec::new(),
             cert_warning_days: 30,
+            containers: Vec::new(),
+            container_inspects: Vec::new(),
+            container_stats: Vec::new(),
+            docker_available: false,
+            containers_selected: 0,
+            crons: Vec::new(),
+            timers: Vec::new(),
+            crons_selected: 0,
+            now: Local::now().naive_local(),
             logs: Vec::new(),
             log_query: LogQuery::default(),
             log_search: String::new(),
@@ -401,6 +429,8 @@ impl App {
         match self.current_tab() {
             Tab::Services => self.failed_units.len(),
             Tab::Processes => self.processes.len(),
+            Tab::Docker => self.containers.len(),
+            Tab::Crons => self.crons.len(),
             _ => 0,
         }
     }
@@ -409,8 +439,23 @@ impl App {
         match self.current_tab() {
             Tab::Services => Some(&mut self.services_selected),
             Tab::Processes => Some(&mut self.processes_selected),
+            Tab::Docker => Some(&mut self.containers_selected),
+            Tab::Crons => Some(&mut self.crons_selected),
             _ => None,
         }
+    }
+
+    /// The container currently selected on the Docker tab, if any.
+    pub fn selected_container(&self) -> Option<&Container> {
+        self.containers.get(self.containers_selected)
+    }
+
+    /// The inspect summary for the selected container, matched by id.
+    pub fn selected_inspect(&self) -> Option<&InspectSummary> {
+        let container = self.selected_container()?;
+        self.container_inspects
+            .iter()
+            .find(|i| i.id == container.id)
     }
 
     /// Move the selection down within the active list.
@@ -438,6 +483,10 @@ impl App {
         self.processes_selected = self
             .processes_selected
             .min(self.processes.len().saturating_sub(1));
+        self.containers_selected = self
+            .containers_selected
+            .min(self.containers.len().saturating_sub(1));
+        self.crons_selected = self.crons_selected.min(self.crons.len().saturating_sub(1));
     }
 
     /// Build the default action for the selected item and request planning.
@@ -453,6 +502,16 @@ impl App {
                     PendingAction::Signal(SignalAction::new(Signal::Term, p.pid, &p.command))
                 })
             }
+            // Default container op is state-aware: restart a running container,
+            // start a stopped one. Stop/remove remain available via the engine.
+            Tab::Docker => self.selected_container().map(|c| {
+                let op = if c.is_running() {
+                    DockerOp::Restart
+                } else {
+                    DockerOp::Start
+                };
+                PendingAction::Docker(DockerAction::new(op, &c.name))
+            }),
             _ => None,
         };
         if let Some(pending) = pending {
@@ -568,6 +627,43 @@ mod tests {
                 assert_eq!(a.op, ServiceOp::Restart);
             }
             other => panic!("expected a service action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_action_on_docker_is_state_aware() {
+        use systui_collectors::Container;
+        let container = |name: &str, state: &str| Container {
+            id: name.to_owned(),
+            name: name.to_owned(),
+            image: "img".to_owned(),
+            state: state.to_owned(),
+            status: String::new(),
+            health: None,
+            ports: String::new(),
+            created: String::new(),
+        };
+        let mut app = App::new("local", ExecutionMode::Privileged);
+        app.select_tab(6); // Docker
+        app.containers = vec![container("web", "running"), container("db", "exited")];
+
+        app.request_action();
+        match app.pending {
+            Some(PendingAction::Docker(ref a)) => {
+                assert_eq!(a.container, "web");
+                assert_eq!(a.op, DockerOp::Restart); // running → restart
+            }
+            other => panic!("expected a docker action, got {other:?}"),
+        }
+
+        app.containers_selected = 1;
+        app.request_action();
+        match app.pending {
+            Some(PendingAction::Docker(ref a)) => {
+                assert_eq!(a.container, "db");
+                assert_eq!(a.op, DockerOp::Start); // stopped → start
+            }
+            other => panic!("expected a docker action, got {other:?}"),
         }
     }
 

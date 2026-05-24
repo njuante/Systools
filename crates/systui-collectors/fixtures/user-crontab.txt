@@ -1,0 +1,5 @@
+# edit this file with crontab -e
+PATH=/usr/bin:/bin
+0 2 * * * /opt/backup.sh >> /var/log/backup.log 2>&1
+*/5 * * * * /usr/local/bin/healthcheck.sh
+@daily /opt/cleanup.sh

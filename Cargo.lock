@@ -919,6 +919,12 @@ dependencies = [
 [[package]]
 name = "systui-actions"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "systui-core",
+ "systui-transport",
+ "tokio",
+]
 
 [[package]]
 name = "systui-cli"

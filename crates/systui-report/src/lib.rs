@@ -89,7 +89,7 @@ pub fn to_markdown(report: &HostReport, generated_at: &str) -> String {
         let _ = writeln!(out, "None.");
     } else {
         for unit in &report.failed_units {
-            let _ = writeln!(out, "- `{}` — {}", unit.unit, unit.description);
+            let _ = writeln!(out, "- `{}` — {}", unit.name, unit.description);
         }
     }
     let _ = writeln!(out);
@@ -178,7 +178,7 @@ fn human_kb(kb: u64) -> String {
 mod tests {
     use super::*;
     use systui_collectors::{
-        Check, CpuUsage, Disk, FailedUnit, HealthReport, LoadAverage, Memory, Process, Swap,
+        Check, CpuUsage, Disk, HealthReport, LoadAverage, Memory, Process, ServiceUnit, Swap,
         SystemSnapshot,
     };
     use systui_core::Severity;
@@ -232,8 +232,8 @@ mod tests {
                 mem_percent: 3.1,
                 command: "nginx".to_owned(),
             }],
-            failed_units: vec![FailedUnit {
-                unit: "docker.service".to_owned(),
+            failed_units: vec![ServiceUnit {
+                name: "docker.service".to_owned(),
                 load: "loaded".to_owned(),
                 active: "failed".to_owned(),
                 sub: "failed".to_owned(),

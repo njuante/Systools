@@ -11,3 +11,9 @@ description = "SysTUI action engine: previews, confirmations, backups and safe e
 workspace = true
 
 [dependencies]
+systui-core.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+systui-transport.workspace = true
+tokio.workspace = true

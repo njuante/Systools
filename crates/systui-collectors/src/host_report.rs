@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use systui_core::{Collector, Result, Thresholds, Transport};
 
 use crate::{
-    FailedUnit, FailedUnitsCollector, HealthReport, LogEntry, LogsCollector, Process,
-    ProcessCollector, SystemCollector, SystemSnapshot, evaluate_health,
+    FailedUnitsCollector, HealthReport, LogEntry, LogsCollector, Process, ProcessCollector,
+    ServiceUnit, SystemCollector, SystemSnapshot, evaluate_health,
 };
 
 /// A complete collected view of a host at one point in time.
@@ -15,7 +15,7 @@ pub struct HostReport {
     pub snapshot: SystemSnapshot,
     pub health: HealthReport,
     pub processes: Vec<Process>,
-    pub failed_units: Vec<FailedUnit>,
+    pub failed_units: Vec<ServiceUnit>,
     pub logs: Vec<LogEntry>,
 }
 

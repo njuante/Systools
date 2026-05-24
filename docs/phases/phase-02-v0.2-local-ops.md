@@ -70,8 +70,11 @@ Everything still goes through the `Transport`/`CommandSpec` contracts; the UI on
 ## Sessions
 
 - **S2.1 — Context** *(this file)*.
-- **S2.2 — systemd module**: collectors for unit list/detail + the service actions
-  (start/stop/restart/reload/enable/disable/mask/unmask), with fixture tests.
+- **S2.2 — systemd module** *(done)*: `ServiceCollector` (full list), `unit_detail`
+  (`systemctl show`) and a unified `ServiceUnit`; service actions
+  (`ServiceAction`/`ServiceOp`, all eight ops) in `systui-actions` implementing the
+  `Action` contract with preview + execute + verify. Fixture/Mock tests. (UI list +
+  action invocation are wired once the engine lands in S2.5.)
 - **S2.3 — Processes module**: full list, tree, detail and signal actions with
   guardrails.
 - **S2.4 — Log filters**: level/unit/time/regex filters + incremental search in the

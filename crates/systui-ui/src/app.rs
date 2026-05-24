@@ -1,6 +1,6 @@
 //! Global application state for the TUI.
 
-use systui_collectors::{FailedUnit, HealthReport, LogEntry, Process, SystemSnapshot};
+use systui_collectors::{HealthReport, LogEntry, Process, ServiceUnit, SystemSnapshot};
 use systui_core::{ExecutionMode, ModuleId, Thresholds};
 
 use crate::theme::Theme;
@@ -107,7 +107,7 @@ pub struct App {
     pub snapshot: Option<SystemSnapshot>,
     pub processes: Vec<Process>,
     pub process_sort: ProcessSort,
-    pub failed_units: Vec<FailedUnit>,
+    pub failed_units: Vec<ServiceUnit>,
     pub logs: Vec<LogEntry>,
     pub health: Option<HealthReport>,
     pub thresholds: Thresholds,

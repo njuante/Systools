@@ -154,7 +154,7 @@ fn render_services(frame: &mut Frame, app: &App, area: Rect) {
     let body = app.failed_units.iter().map(|u| {
         Row::new([
             Cell::from(Span::styled(
-                u.unit.clone(),
+                u.name.clone(),
                 Style::new().fg(app.theme.danger),
             )),
             Cell::from(u.active.clone()),
@@ -816,11 +816,11 @@ mod tests {
 
     #[test]
     fn dashboard_shows_failed_unit_count() {
-        use systui_collectors::FailedUnit;
+        use systui_collectors::ServiceUnit;
         let mut app = App::new("local", ExecutionMode::ReadOnly);
         app.snapshot = Some(sample_snapshot());
-        app.failed_units = vec![FailedUnit {
-            unit: "nginx.service".to_owned(),
+        app.failed_units = vec![ServiceUnit {
+            name: "nginx.service".to_owned(),
             load: "loaded".to_owned(),
             active: "failed".to_owned(),
             sub: "failed".to_owned(),
@@ -834,11 +834,11 @@ mod tests {
 
     #[test]
     fn services_tab_lists_failed_units() {
-        use systui_collectors::FailedUnit;
+        use systui_collectors::ServiceUnit;
         let mut app = App::new("local", ExecutionMode::ReadOnly);
         app.snapshot = Some(sample_snapshot());
-        app.failed_units = vec![FailedUnit {
-            unit: "docker.service".to_owned(),
+        app.failed_units = vec![ServiceUnit {
+            name: "docker.service".to_owned(),
             load: "loaded".to_owned(),
             active: "failed".to_owned(),
             sub: "failed".to_owned(),

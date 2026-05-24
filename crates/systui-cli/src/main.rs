@@ -27,12 +27,22 @@ fn main() -> anyhow::Result<()> {
     let mode = resolve_mode(&args);
     tracing::info!(%mode, "starting systui");
 
-    dispatch(
-        args.command.unwrap_or(Command::Local),
-        mode,
-        &config,
-        &config_path,
-    )
+    match args.command {
+        // No subcommand opens the Hosts grid (the local machine plus the
+        // inventory), from which the operator drills into a host.
+        None => run_fleet(
+            Vec::new(),
+            false,
+            None,
+            Vec::new(),
+            None,
+            None,
+            mode,
+            &config,
+            &config_path,
+        ),
+        Some(command) => dispatch(command, mode, &config, &config_path),
+    }
 }
 
 /// The config file path to persist edits to: `--config` if given, else the default
@@ -192,10 +202,6 @@ fn run_fleet(
     config: &Config,
     config_path: &Path,
 ) -> anyhow::Result<()> {
-    if config.hosts.is_empty() && compare.len() != 2 {
-        eprintln!("No hosts in the inventory. Add `[hosts.<id>]` entries to your config.");
-        return Ok(());
-    }
     let runtime = tokio::runtime::Runtime::new().context("failed to start async runtime")?;
 
     // Comparison mode: gather exactly the two requested hosts and diff them.
@@ -212,7 +218,7 @@ fn run_fleet(
     // the current selection.
     let interactive = search.is_none() && format.is_none() && std::io::stdout().is_terminal();
     if !interactive {
-        let selected = config.select_fleet(&filter);
+        let selected = selected_with_local(config, &filter);
         if selected.is_empty() {
             eprintln!("No inventory hosts match the given filters.");
             return Ok(());
@@ -237,7 +243,7 @@ fn run_fleet(
     let read_only = mode == ExecutionMode::ReadOnly;
     loop {
         let gather_overview = |cfg: &Config| {
-            let selected = cfg.select_fleet(&filter);
+            let selected = selected_with_local(cfg, &filter);
             let generated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
             runtime
                 .block_on(gather_fleet(selected, mode, cfg, generated_at))
@@ -246,7 +252,7 @@ fn run_fleet(
         match systui_ui::run_fleet(&mut config, config_path, read_only, gather_overview)? {
             systui_ui::FleetExit::Quit => break,
             systui_ui::FleetExit::Enter(id) => {
-                let selected = config.select_fleet(&filter);
+                let selected = selected_with_local(&config, &filter);
                 if let Some(host) = selected.iter().find(|h| h.id == id) {
                     drill_in_host(host, mode, &config)?;
                 }
@@ -306,24 +312,68 @@ fn run_fleet_compare(
     Ok(())
 }
 
-/// Drill from the fleet overview into a single host: launch the per-host TUI over
-/// SSH, honouring the host's `read_only` profile. Returns when the operator exits
-/// that host, so the caller can re-show the fleet overview.
+/// A synthetic inventory entry for the local machine, so the Hosts grid always
+/// offers the local host alongside the SSH inventory.
+fn local_fleet_host() -> systui_core::FleetHost {
+    systui_core::FleetHost {
+        id: systui_core::HostId::LOCAL.to_owned(),
+        host: "localhost".to_owned(),
+        user: None,
+        port: 22,
+        tags: vec!["local".to_owned()],
+        read_only: false,
+        favorite: false,
+        policy: None,
+    }
+}
+
+/// The inventory hosts selected by `filter`, with the local machine prepended
+/// when no filter is active and the inventory does not already define a `local`
+/// host. This makes the Hosts grid a complete picture of what the operator can
+/// reach: the local box plus their saved SSH connections.
+fn selected_with_local(
+    config: &Config,
+    filter: &systui_core::FleetFilter,
+) -> Vec<systui_core::FleetHost> {
+    let mut hosts = Vec::new();
+    let unfiltered = filter.tags.is_empty() && !filter.favorites_only;
+    if unfiltered && !config.hosts.contains_key(systui_core::HostId::LOCAL) {
+        hosts.push(local_fleet_host());
+    }
+    hosts.extend(config.select_fleet(filter));
+    hosts
+}
+
+/// Whether a fleet host is the local machine (reached via [`LocalTransport`]
+/// rather than SSH).
+fn is_local_host(host: &systui_core::FleetHost) -> bool {
+    host.id == systui_core::HostId::LOCAL
+}
+
+/// Drill from the fleet overview into a single host: launch the per-host TUI
+/// (locally or over SSH), honouring the host's `read_only` profile. Returns when
+/// the operator exits that host, so the caller can re-show the fleet overview.
 fn drill_in_host(
     host: &systui_core::FleetHost,
     mode: ExecutionMode,
     config: &Config,
 ) -> anyhow::Result<()> {
-    let mut transport = systui_transport::SshTransport::new(host.host.clone()).port(host.port);
-    if let Some(user) = &host.user {
-        transport = transport.user(user.clone());
-    }
     let effective_mode = if host.read_only {
         ExecutionMode::ReadOnly
     } else {
         mode
     };
-    systui_ui::run(Box::new(transport), host.id.clone(), effective_mode, config)?;
+    let transport: Box<dyn Transport> = if is_local_host(host) {
+        Box::new(systui_transport::LocalTransport::new())
+    } else {
+        let mut t = systui_transport::SshTransport::new(host.host.clone()).port(host.port);
+        if let Some(user) = &host.user {
+            t = t.user(user.clone());
+        }
+        eprintln!("Connecting to {} …", host.id);
+        Box::new(t)
+    };
+    systui_ui::run(transport, host.id.clone(), effective_mode, config)?;
     Ok(())
 }
 
@@ -377,18 +427,23 @@ async fn review_one_host(
     config: &Config,
     generated_at: String,
 ) -> systui_report::FleetHostReport {
-    let mut transport = systui_transport::SshTransport::new(host.host.clone()).port(host.port);
-    if let Some(user) = &host.user {
-        transport = transport.user(user.clone());
-    }
     let effective_mode = if host.read_only {
         ExecutionMode::ReadOnly
     } else {
         mode
     };
+    let transport: Box<dyn Transport> = if is_local_host(&host) {
+        Box::new(systui_transport::LocalTransport::new())
+    } else {
+        let mut t = systui_transport::SshTransport::new(host.host.clone()).port(host.port);
+        if let Some(user) = &host.user {
+            t = t.user(user.clone());
+        }
+        Box::new(t)
+    };
 
     let gather = systui_report::gather_report(
-        &transport,
+        transport.as_ref(),
         config,
         host.id.clone(),
         effective_mode,

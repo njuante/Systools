@@ -29,6 +29,10 @@ pub fn refresh_blocking(runtime: &Runtime, transport: &dyn Transport, app: &mut 
         &app.log_query,
     )) {
         Ok(report) => {
+            app.push_history(
+                report.snapshot.cpu.busy_percent,
+                report.snapshot.memory.used_percent(),
+            );
             app.snapshot = Some(report.snapshot);
             app.processes = report.processes;
             app.failed_units = report.failed_units;

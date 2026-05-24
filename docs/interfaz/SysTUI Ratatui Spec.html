@@ -1,0 +1,1096 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>SysTUI · Ratatui design spec</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" />
+<style>
+  :root{
+    --bg-deep:#07090c;
+    --bg:#0b0e13;
+    --bg-elev:#10141c;
+    --bg-elev-2:#161b25;
+    --bg-hover:#1a2030;
+    --bg-sel:#1f2a3e;
+    --border:#1c2230;
+    --border-soft:#161b24;
+    --border-strong:#2a3242;
+    --fg:#cdd4df;
+    --fg-strong:#eef1f6;
+    --fg-muted:#7a8494;
+    --fg-dim:#4a5360;
+    --accent:oklch(0.80 0.17 145);
+    --accent-dim:oklch(0.45 0.12 145);
+    --accent-ghost:oklch(0.30 0.08 145 / 0.25);
+    --critical:oklch(0.72 0.19 25);
+    --high:oklch(0.80 0.16 50);
+    --med:oklch(0.86 0.14 95);
+    --low:oklch(0.78 0.11 240);
+    --syn-kw:oklch(0.78 0.16 320);
+    --syn-fn:oklch(0.80 0.15 200);
+    --syn-str:oklch(0.80 0.17 145);
+    --syn-num:oklch(0.85 0.14 80);
+    --syn-cmt:#4d5666;
+    --syn-ty:oklch(0.82 0.13 80);
+    --syn-life:oklch(0.74 0.14 30);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:#04060a;color:var(--fg)}
+  body{
+    font:14.5px/1.7 "Inter", system-ui, sans-serif;
+    -webkit-font-smoothing:antialiased;
+    background:
+      radial-gradient(1200px 600px at 80% -10%, oklch(0.30 0.05 145 / 0.10), transparent 60%),
+      radial-gradient(1000px 600px at -10% 90%, oklch(0.30 0.08 270 / 0.08), transparent 55%),
+      #04060a;
+  }
+  code, pre, .mono{font-family:"JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace; font-variant-ligatures:none;}
+  ::selection{background:var(--accent-ghost);color:var(--fg-strong)}
+
+  .shell{display:grid;grid-template-columns:280px minmax(0,1fr);max-width:1440px;margin:0 auto;min-height:100vh;gap:0}
+  /* TOC */
+  aside.toc{
+    position:sticky;top:0;align-self:start;height:100vh;
+    border-right:1px solid var(--border);padding:38px 0 30px;
+    background:linear-gradient(180deg,#0a0d12,#08090d);
+    overflow:auto;
+  }
+  aside.toc .brand{
+    display:flex;align-items:center;gap:10px;padding:0 28px 22px;
+    border-bottom:1px solid var(--border);margin-bottom:14px;
+    font:600 15px/1 "Inter";color:var(--fg-strong);letter-spacing:.01em;
+  }
+  aside.toc .brand .mk{
+    width:18px;height:18px;background:linear-gradient(135deg,var(--accent),var(--accent) 50%,transparent 50%);
+    border:1px solid var(--accent-dim);border-radius:3px;
+  }
+  aside.toc .brand small{display:block;color:var(--fg-dim);font-weight:400;font-size:11px;margin-top:2px;letter-spacing:.04em;text-transform:uppercase}
+  aside.toc nav{display:flex;flex-direction:column;padding:0 16px}
+  aside.toc a{
+    color:var(--fg-muted);text-decoration:none;
+    padding:6px 12px;border-radius:4px;font-size:13px;
+    display:flex;align-items:center;gap:10px;
+  }
+  aside.toc a:hover{color:var(--fg);background:var(--bg-hover)}
+  aside.toc a .n{font-family:"JetBrains Mono";font-size:11px;color:var(--fg-dim);min-width:22px}
+  aside.toc .sec{
+    color:var(--fg-dim);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
+    padding:14px 12px 6px;font-weight:600;
+  }
+
+  /* Main */
+  main{padding:60px 56px 80px;max-width:920px}
+  h1{font:700 36px/1.15 "Inter";color:var(--fg-strong);margin:0 0 6px;letter-spacing:-.01em}
+  h1 .stack{font:500 13px/1.6 "JetBrains Mono";color:var(--fg-muted);display:block;margin-top:14px;letter-spacing:.02em}
+  h1 .stack b{color:var(--accent);font-weight:600}
+  h2{font:600 22px/1.3 "Inter";color:var(--fg-strong);margin:54px 0 14px;padding-bottom:10px;border-bottom:1px solid var(--border);display:flex;align-items:baseline;gap:14px}
+  h2 .n{font:500 12px/1 "JetBrains Mono";color:var(--accent);letter-spacing:.05em}
+  h3{font:600 16px/1.4 "Inter";color:var(--fg-strong);margin:28px 0 8px}
+  h4{font:600 13.5px/1.4 "JetBrains Mono";color:var(--fg-strong);margin:18px 0 6px;letter-spacing:.01em}
+  p{margin:0 0 12px;color:var(--fg)}
+  p.lead{font-size:16px;color:var(--fg);line-height:1.7;margin-bottom:18px}
+  ul,ol{margin:6px 0 14px;padding-left:20px}
+  li{margin:4px 0;color:var(--fg)}
+  li code, p code, h3 code, td code, li b code{background:var(--bg-elev);border:1px solid var(--border);padding:.5px 6px;border-radius:3px;font-size:12.5px;color:var(--fg-strong)}
+  strong{color:var(--fg-strong);font-weight:600}
+  hr{border:0;border-top:1px solid var(--border);margin:30px 0}
+
+  /* hero */
+  .hero{
+    display:flex;align-items:center;gap:18px;
+    padding:18px 22px;background:var(--bg-elev);border:1px solid var(--border);border-radius:8px;margin:18px 0 32px;
+  }
+  .hero .pill{background:var(--bg-elev-2);border:1px solid var(--border-strong);padding:4px 10px;border-radius:4px;color:var(--fg-muted);font-size:12px;font-family:"JetBrains Mono"}
+  .hero .pill b{color:var(--accent);font-weight:600}
+  .hero .pill.warn b{color:var(--high)}
+
+  /* code blocks */
+  pre{
+    background:var(--bg-deep);
+    border:1px solid var(--border);
+    border-radius:6px;
+    padding:14px 18px;
+    overflow:auto;
+    font:13px/1.65 "JetBrains Mono", monospace;
+    color:var(--fg);
+    margin:8px 0 18px;
+    position:relative;
+    tab-size:2;
+  }
+  pre.lang::before{
+    content:attr(data-lang);
+    position:absolute;top:8px;right:14px;
+    font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--fg-dim);
+  }
+  pre.ascii{color:var(--fg-muted);font-size:12.5px;line-height:1.5}
+  pre.ascii .a{color:var(--accent)}
+  pre.ascii .h{color:var(--fg-strong)}
+  pre.ascii .m{color:var(--high)}
+  pre.ascii .c{color:var(--critical)}
+  pre.ascii .d{color:var(--fg-dim)}
+
+  /* syntax */
+  .kw  {color:var(--syn-kw)}
+  .ty  {color:var(--syn-ty)}
+  .fn  {color:var(--syn-fn)}
+  .str {color:var(--syn-str)}
+  .num {color:var(--syn-num)}
+  .cmt {color:var(--syn-cmt);font-style:italic}
+  .life{color:var(--syn-life)}
+  .macro{color:var(--syn-fn)}
+  .punct{color:var(--fg-muted)}
+
+  /* tables */
+  table{width:100%;border-collapse:collapse;margin:10px 0 22px;font-size:13px}
+  th,td{padding:8px 12px;border-bottom:1px solid var(--border-soft);vertical-align:top;text-align:left}
+  th{font:600 10.5px/1.4 "Inter";color:var(--fg-dim);letter-spacing:.06em;text-transform:uppercase;background:var(--bg-elev);border-bottom:1px solid var(--border)}
+  td code{font-size:12px}
+  td.k{color:var(--fg-strong);font-family:"JetBrains Mono";font-size:12.5px;white-space:nowrap}
+
+  /* callout */
+  .note{
+    background:oklch(0.20 0.05 145 / 0.16);
+    border-left:3px solid var(--accent-dim);
+    padding:12px 16px;border-radius:0 5px 5px 0;
+    margin:14px 0 22px;font-size:13.5px;color:var(--fg);
+  }
+  .note b{color:var(--accent)}
+  .warn{
+    background:oklch(0.20 0.08 50 / 0.16);
+    border-left:3px solid oklch(0.55 0.13 50 / 0.7);
+    padding:12px 16px;border-radius:0 5px 5px 0;
+    margin:14px 0 22px;font-size:13.5px;color:var(--fg);
+  }
+  .warn b{color:var(--high)}
+
+  /* deck of cards for milestones */
+  .deck{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin:10px 0 18px}
+  .card{
+    background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;
+    padding:14px 16px;
+  }
+  .card .ix{font:600 11px/1 "JetBrains Mono";color:var(--accent);letter-spacing:.05em}
+  .card .t{color:var(--fg-strong);font-weight:600;margin-top:6px;margin-bottom:6px}
+  .card .d{color:var(--fg-muted);font-size:12.5px;line-height:1.55}
+
+  kbd{
+    display:inline-block;background:var(--bg-elev-2);border:1px solid var(--border-strong);
+    border-radius:3px;padding:1px 6px;font:11px/1 "JetBrains Mono";color:var(--fg-muted);
+    box-shadow:0 1px 0 var(--border);
+  }
+
+  .endplate{
+    margin-top:60px;padding:18px 22px;
+    background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;
+    font-size:12.5px;color:var(--fg-muted);
+    display:flex;align-items:center;gap:14px;
+  }
+  .endplate b{color:var(--fg-strong)}
+  .endplate .dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 6px var(--accent)}
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+<aside class="toc">
+  <div class="brand">
+    <span class="mk"></span>
+    <div>SysTUI<small>ratatui · rust · spec</small></div>
+  </div>
+  <nav>
+    <div class="sec">Overview</div>
+    <a href="#goals"><span class="n">01</span>Goals &amp; non-goals</a>
+    <a href="#stack"><span class="n">02</span>Tech stack</a>
+    <a href="#arch"><span class="n">03</span>Architecture</a>
+    <a href="#layout"><span class="n">04</span>Crate layout</a>
+
+    <div class="sec">Core model</div>
+    <a href="#elm"><span class="n">05</span>Elm-style state</a>
+    <a href="#types"><span class="n">06</span>Domain types</a>
+    <a href="#event"><span class="n">07</span>Event loop</a>
+
+    <div class="sec">Subsystems</div>
+    <a href="#ssh"><span class="n">08</span>SSH session pool</a>
+    <a href="#probes"><span class="n">09</span>Probes &amp; cache</a>
+    <a href="#checks"><span class="n">10</span>Check engine</a>
+    <a href="#logs"><span class="n">11</span>Log streaming</a>
+    <a href="#actions"><span class="n">12</span>Actions &amp; audit</a>
+
+    <div class="sec">UI</div>
+    <a href="#render"><span class="n">13</span>Render strategy</a>
+    <a href="#screens"><span class="n">14</span>Per-screen breakdown</a>
+    <a href="#palette"><span class="n">15</span>Command palette</a>
+    <a href="#input"><span class="n">16</span>Keymaps</a>
+
+    <div class="sec">Ops</div>
+    <a href="#config"><span class="n">17</span>Config files</a>
+    <a href="#perf"><span class="n">18</span>Perf budget</a>
+    <a href="#milestones"><span class="n">19</span>Build order</a>
+    <a href="#risks"><span class="n">20</span>Risks &amp; open Qs</a>
+  </nav>
+</aside>
+
+<main>
+
+<h1>SysTUI on Ratatui
+  <span class="stack">design spec  ·  v0.1  ·  <b>ratatui 0.29</b>  ·  <b>tokio 1.40</b>  ·  <b>russh 0.45</b>  ·  rust edition 2024</span>
+</h1>
+
+<p class="lead">
+This document maps the visual prototype to a concrete Rust + Ratatui implementation: how state is modelled, how SSH and probes are isolated from the render loop, how the check engine generates the health score, and how each screen renders.
+</p>
+
+<div class="hero">
+  <span class="pill"><b>10</b> screens</span>
+  <span class="pill"><b>~15K</b> SLOC est.</span>
+  <span class="pill"><b>1</b> render thread</span>
+  <span class="pill"><b>N</b> async tasks</span>
+  <span class="pill warn"><b>~120 hrs</b> to MVP</span>
+</div>
+
+<!-- ── 01 ───────────────────────────────────────────────── -->
+<h2 id="goals"><span class="n">01</span> Goals &amp; non-goals</h2>
+
+<h3>In scope (MVP)</h3>
+<ul>
+  <li><b>Inventory of SSH hosts</b> with tags, health, fast jump (1 round-trip to render dashboard).</li>
+  <li><b>Read-only inspection</b> of system: services, processes, sockets, disks, logs, crons, containers.</li>
+  <li><b>Curated actions</b> behind confirmation, audit log, automatic backup of edited files.</li>
+  <li><b>Health score</b> from a deterministic, explainable check engine — no LLM, no remote telemetry.</li>
+  <li><b>Local-only operation</b>: <code>~/.config/systui/</code> for state, <code>~/.local/share/systui/</code> for audit and backups.</li>
+</ul>
+
+<h3>Out of scope (defer or never)</h3>
+<ul>
+  <li>Editing arbitrary remote files in-place (use <code>$EDITOR</code> on the host via SSH instead).</li>
+  <li>Multi-tenant / RBAC. One user, one machine. SSH does the auth.</li>
+  <li>Time-series storage beyond the in-memory ring buffer (delegate to Prometheus/Grafana).</li>
+  <li>Pushing changes back to config management (Ansible/Salt). Out.</li>
+</ul>
+
+<!-- ── 02 ───────────────────────────────────────────────── -->
+<h2 id="stack"><span class="n">02</span> Tech stack</h2>
+
+<table>
+  <tr><th>Concern</th><th>Crate</th><th>Why</th></tr>
+  <tr><td class="k">tui</td><td><code>ratatui</code> 0.29</td><td>Active fork, good widget catalogue, async-friendly via channels.</td></tr>
+  <tr><td class="k">terminal backend</td><td><code>crossterm</code> 0.28</td><td>Cross-platform, mouse + bracketed paste support.</td></tr>
+  <tr><td class="k">runtime</td><td><code>tokio</code> 1.40 (full)</td><td>One runtime for SSH I/O, ticks, log streams.</td></tr>
+  <tr><td class="k">ssh</td><td><code>russh</code> + <code>russh-keys</code></td><td>Pure-Rust SSH, multiplex channels over a single connection. Fallback: <code>openssh</code> crate (shells out to <code>ssh</code> binary, simpler ProxyJump/agent).</td></tr>
+  <tr><td class="k">config</td><td><code>serde</code> + <code>toml</code></td><td>Hosts file, keymaps, tweaks state.</td></tr>
+  <tr><td class="k">parsing</td><td><code>serde_json</code></td><td>Most commands accept <code>--json</code> (ss, docker, journalctl, systemctl). Avoid hand-rolling parsers.</td></tr>
+  <tr><td class="k">regex</td><td><code>regex</code></td><td>Log filters, error fingerprinting.</td></tr>
+  <tr><td class="k">cron parsing</td><td><code>cron</code> or <code>croner</code></td><td>Compute "next 3 runs" from schedule.</td></tr>
+  <tr><td class="k">tracing</td><td><code>tracing</code> + <code>tracing-appender</code></td><td>Diagnostic logs to <code>~/.local/share/systui/systui.log</code>, never to the TUI.</td></tr>
+  <tr><td class="k">input widgets</td><td><code>tui-input</code></td><td>Text fields for palette, search, confirm.</td></tr>
+  <tr><td class="k">errors</td><td><code>color-eyre</code></td><td>Pretty panics, but a panic hook restores the terminal first.</td></tr>
+</table>
+
+<div class="note"><b>russh vs openssh:</b> start with the <code>openssh</code> crate. It uses the system <code>ssh</code> binary, so SSH agent, <code>~/.ssh/config</code>, ProxyJump, U2F keys and host-key prompts all just work. Migrate to <code>russh</code> only if you need channel-level features or a static binary.</div>
+
+<!-- ── 03 ───────────────────────────────────────────────── -->
+<h2 id="arch"><span class="n">03</span> Architecture</h2>
+
+<p>Single render thread, many async workers. Components communicate over typed channels. The render loop is purely a function of <code>Model</code> and never blocks on I/O.</p>
+
+<pre class="ascii">                  ┌──────────────────────────────────────────────────────────┐
+                  │                       <span class="h">Main thread</span>                          │
+   <span class="d">crossterm</span>          │                                                          │
+   <span class="d">keys/resize</span> ───── │  <span class="a">input loop</span>     ──┐                                       │
+                  │                    ▼                                     │
+                  │              <span class="a">┌──────────┐</span>     <span class="a">Msg</span>      <span class="a">┌────────────┐</span>      │
+                  │              │  update  │ ──────────▶ │  <span class="h">render</span>    │      │
+                  │              │ (pure fn)│             │ <span class="d">ratatui</span>    │ ──┐  │
+                  │              <span class="a">└────┬─────┘</span>             <span class="a">└────────────┘</span>   │  │
+                  │                   │ Cmd                                  │  │
+                  │                   ▼                                      │  │
+                  │            <span class="a">┌──────────────┐</span>                            │  │
+                  │            │  dispatcher  │                            │  │
+                  │            <span class="a">└──┬───────┬───┘</span>                            │  │
+                  │               │       │                                │  │
+                  └───────────────┼───────┼────────────────────────────────┘  │
+                                  │       │                                   │
+                                  ▼       ▼                                   ▼
+                          <span class="h">┌─────────┐</span>  <span class="h">┌─────────┐</span>                       <span class="d">terminal</span>
+   <span class="d">SSH muxed</span>  ◀────── │ ssh pool │  │ log tail│ ───── <span class="d">mpsc&lt;LogEvent&gt;</span>
+   <span class="d">channels</span>          <span class="h">└─────────┘</span>  <span class="h">└─────────┘</span>
+                                  │
+                                  ▼
+                          <span class="h">┌──────────┐</span>
+                          │  checks  │ ────── <span class="d">mpsc&lt;Finding&gt;</span>
+                          <span class="h">└──────────┘</span></pre>
+
+<p>Three message types flow:</p>
+<ul>
+  <li><code>Msg</code> — user input or async result; consumed by <code>update</code>.</li>
+  <li><code>Cmd</code> — side-effect request emitted by <code>update</code> (e.g. "fetch services on host X"); consumed by the dispatcher.</li>
+  <li><code>Event</code> — raw input from crossterm or tick from a 250ms interval.</li>
+</ul>
+
+<!-- ── 04 ───────────────────────────────────────────────── -->
+<h2 id="layout"><span class="n">04</span> Crate layout</h2>
+
+<pre class="ascii">systui/
+├── Cargo.toml
+├── README.md
+└── src/
+    ├── main.rs                 <span class="d">— bootstrap: terminal, runtime, panic hook</span>
+    ├── app.rs                  <span class="d">— App struct, run loop, dispatcher</span>
+    │
+    ├── model/
+    │   ├── mod.rs              <span class="d">— Model, Tab, Screen</span>
+    │   ├── host.rs             <span class="d">— Host, HostId, HostStatus</span>
+    │   ├── finding.rs          <span class="d">— Finding, Severity, Module</span>
+    │   ├── service.rs          <span class="d">— Unit, ActiveState, SubState</span>
+    │   ├── process.rs          <span class="d">— Process, Tree</span>
+    │   ├── socket.rs           <span class="d">— Listener, Risk</span>
+    │   ├── cron.rs             <span class="d">— CronEntry, Schedule, Timer</span>
+    │   ├── docker.rs           <span class="d">— Container, Image, Compose</span>
+    │   └── log.rs              <span class="d">— LogLine, LogStream, Fingerprint</span>
+    │
+    ├── msg.rs                  <span class="d">— Msg enum (all transitions)</span>
+    ├── cmd.rs                  <span class="d">— Cmd enum (side effects)</span>
+    ├── update.rs               <span class="d">— pure update fn(Model, Msg) -&gt; (Model, Vec&lt;Cmd&gt;)</span>
+    │
+    ├── ssh/
+    │   ├── mod.rs              <span class="d">— pool, session, dial, exec</span>
+    │   ├── pool.rs             <span class="d">— HashMap&lt;HostId, Session&gt; with eviction</span>
+    │   └── exec.rs             <span class="d">— typed exec: run::&lt;T: FromStdout&gt;()</span>
+    │
+    ├── probes/
+    │   ├── mod.rs              <span class="d">— Probe trait, ProbeId, Cache</span>
+    │   ├── systemctl.rs
+    │   ├── procfs.rs           <span class="d">— /proc, /sys reads via cat</span>
+    │   ├── sockets.rs          <span class="d">— ss -tlnpJ</span>
+    │   ├── docker.rs           <span class="d">— docker ps --format json</span>
+    │   ├── cron.rs             <span class="d">— /etc/cron* + crontab -l</span>
+    │   └── disk.rs             <span class="d">— df -PT, lsblk -J</span>
+    │
+    ├── checks/
+    │   ├── mod.rs              <span class="d">— Check trait, registry, runner</span>
+    │   ├── disk_pressure.rs
+    │   ├── ssh_hardening.rs
+    │   ├── exposed_ports.rs
+    │   ├── tls_expiry.rs
+    │   ├── docker_priv.rs
+    │   └── cron_health.rs
+    │
+    ├── logs/
+    │   ├── mod.rs              <span class="d">— streaming, fingerprinting</span>
+    │   ├── stream.rs           <span class="d">— journalctl -f piped via SSH</span>
+    │   └── fingerprint.rs      <span class="d">— normalize + group similar lines</span>
+    │
+    ├── actions/
+    │   ├── mod.rs              <span class="d">— Action enum, risk, confirmation phrase</span>
+    │   ├── audit.rs            <span class="d">— append-only audit log</span>
+    │   └── backup.rs           <span class="d">— file backup before edit</span>
+    │
+    ├── ui/
+    │   ├── mod.rs              <span class="d">— view(frame, model)</span>
+    │   ├── theme.rs            <span class="d">— Style + Color constants</span>
+    │   ├── chrome.rs           <span class="d">— top bar, tabs, status bar</span>
+    │   ├── overlay/
+    │   │   ├── palette.rs
+    │   │   ├── confirm.rs
+    │   │   └── help.rs
+    │   └── screens/
+    │       ├── hosts.rs
+    │       ├── dashboard.rs
+    │       ├── services.rs
+    │       ├── processes.rs
+    │       ├── logs.rs
+    │       ├── network.rs
+    │       ├── crons.rs
+    │       ├── docker.rs
+    │       └── security.rs
+    │
+    ├── config.rs               <span class="d">— hosts.toml, keymap.toml</span>
+    └── util/
+        ├── spark.rs            <span class="d">— ring buffer + render as block chars</span>
+        ├── humanize.rs         <span class="d">— "47d 13h", "84%"</span>
+        └── cron_human.rs       <span class="d">— "Every day at 02:00"</span></pre>
+
+<!-- ── 05 ───────────────────────────────────────────────── -->
+<h2 id="elm"><span class="n">05</span> Elm-style state</h2>
+
+<p>One <code>Model</code>, one <code>update</code>, one <code>view</code>. The update function is pure: it can never call <code>tokio::spawn</code>, never hit the network, never touch the terminal. Side effects are expressed as <code>Cmd</code> values returned alongside the new model.</p>
+
+<pre class="lang" data-lang="rust"><span class="cmt">// src/update.rs</span>
+<span class="kw">pub fn</span> <span class="fn">update</span>(<span class="kw">mut</span> m: <span class="ty">Model</span>, msg: <span class="ty">Msg</span>) -&gt; (<span class="ty">Model</span>, <span class="ty">Vec</span>&lt;<span class="ty">Cmd</span>&gt;) {
+    <span class="kw">use</span> <span class="ty">Msg</span>::*;
+    <span class="kw">match</span> msg {
+        Tick =&gt; {
+            m.now = <span class="ty">Instant</span>::<span class="fn">now</span>();
+            <span class="kw">let mut</span> cmds = <span class="kw">vec</span>![];
+            <span class="kw">if let</span> <span class="ty">Some</span>(h) = m.attached_host() {
+                <span class="kw">if</span> m.probes.<span class="fn">is_stale</span>(h, <span class="ty">Probe</span>::Metrics) {
+                    cmds.<span class="fn">push</span>(<span class="ty">Cmd</span>::<span class="fn">Probe</span>(h, <span class="ty">Probe</span>::Metrics));
+                }
+            }
+            (m, cmds)
+        }
+
+        Key(k) =&gt; <span class="fn">handle_key</span>(m, k),
+
+        OpenHost(id) =&gt; {
+            m.attached = <span class="ty">Some</span>(id);
+            m.tab = <span class="ty">Tab</span>::Dashboard;
+            (m, <span class="kw">vec</span>![
+                <span class="ty">Cmd</span>::<span class="fn">Dial</span>(id),
+                <span class="ty">Cmd</span>::<span class="fn">Probe</span>(id, <span class="ty">Probe</span>::Identity),
+                <span class="ty">Cmd</span>::<span class="fn">Probe</span>(id, <span class="ty">Probe</span>::Metrics),
+                <span class="ty">Cmd</span>::<span class="fn">RunChecks</span>(id),
+            ])
+        }
+
+        ProbeResult(id, <span class="ty">Probe</span>::Services, <span class="ty">Ok</span>(units)) =&gt; {
+            m.hosts.<span class="fn">get_mut</span>(&amp;id).<span class="fn">map</span>(|h| h.services = units);
+            (m, <span class="kw">vec</span>![])
+        }
+
+        Action(req) <span class="kw">if</span> m.<span class="fn">is_read_only</span>(req.host) =&gt; {
+            m.toasts.<span class="fn">push</span>(<span class="ty">Toast</span>::<span class="fn">blocked</span>(<span class="str">"host is read-only"</span>));
+            (m, <span class="kw">vec</span>![])
+        }
+        Action(req) =&gt; {
+            m.pending_action = <span class="ty">Some</span>(req);
+            (m, <span class="kw">vec</span>![])
+        }
+        ActionConfirm =&gt; {
+            <span class="kw">let</span> req = m.pending_action.<span class="fn">take</span>().<span class="fn">unwrap</span>();
+            (m, <span class="kw">vec</span>![<span class="ty">Cmd</span>::<span class="fn">ExecAction</span>(req)])
+        }
+
+        <span class="cmt">// …</span>
+    }
+}</pre>
+
+<p>The runtime turns each <code>Cmd</code> into a <code>tokio::spawn</code>; the spawned task ultimately sends a <code>Msg</code> back through the channel. This is the only way to mutate state.</p>
+
+<pre class="lang" data-lang="rust"><span class="cmt">// src/cmd.rs</span>
+<span class="kw">pub enum</span> <span class="ty">Cmd</span> {
+    Dial(<span class="ty">HostId</span>),
+    Probe(<span class="ty">HostId</span>, <span class="ty">Probe</span>),
+    RunChecks(<span class="ty">HostId</span>),
+    StartLogTail(<span class="ty">HostId</span>, <span class="ty">LogSource</span>),
+    StopLogTail(<span class="ty">TailId</span>),
+    ExecAction(<span class="ty">ActionReq</span>),
+    WriteBackup(<span class="ty">HostId</span>, <span class="ty">PathBuf</span>, <span class="ty">Vec</span>&lt;<span class="ty">u8</span>&gt;),
+    AppendAudit(<span class="ty">AuditEntry</span>),
+    Quit,
+}</pre>
+
+<!-- ── 06 ───────────────────────────────────────────────── -->
+<h2 id="types"><span class="n">06</span> Domain types</h2>
+
+<p>Compact, no-magic-strings versions of what the prototype shows on screen.</p>
+
+<pre class="lang" data-lang="rust"><span class="cmt">// src/model/mod.rs</span>
+<span class="kw">pub struct</span> <span class="ty">Model</span> {
+    <span class="kw">pub</span> tab: <span class="ty">Tab</span>,
+    <span class="kw">pub</span> attached: <span class="ty">Option</span>&lt;<span class="ty">HostId</span>&gt;,
+
+    <span class="kw">pub</span> hosts: <span class="ty">BTreeMap</span>&lt;<span class="ty">HostId</span>, <span class="ty">Host</span>&gt;,
+    <span class="kw">pub</span> probes: <span class="ty">ProbeCache</span>,
+    <span class="kw">pub</span> findings: <span class="ty">BTreeMap</span>&lt;<span class="ty">HostId</span>, <span class="ty">Vec</span>&lt;<span class="ty">Finding</span>&gt;&gt;,
+
+    <span class="kw">pub</span> palette: <span class="ty">Option</span>&lt;<span class="ty">PaletteState</span>&gt;,
+    <span class="kw">pub</span> pending_action: <span class="ty">Option</span>&lt;<span class="ty">ActionReq</span>&gt;,
+    <span class="kw">pub</span> toasts: <span class="ty">VecDeque</span>&lt;<span class="ty">Toast</span>&gt;,
+
+    <span class="kw">pub</span> log_buffers: <span class="ty">HashMap</span>&lt;<span class="ty">TailId</span>, <span class="ty">LogBuffer</span>&gt;,
+    <span class="kw">pub</span> ui: <span class="ty">UiState</span>,                <span class="cmt">// table selection, scroll, etc.</span>
+
+    <span class="kw">pub</span> now: <span class="ty">Instant</span>,
+    <span class="kw">pub</span> theme: <span class="ty">Theme</span>,
+    <span class="kw">pub</span> read_only_override: <span class="ty">bool</span>,
+}
+
+<span class="macro">#[derive(Debug, Clone, Copy, PartialEq, Eq)]</span>
+<span class="kw">pub enum</span> <span class="ty">Tab</span> {
+    Hosts, Dashboard, System, Services, Processes,
+    Logs, Network, Docker, Crons, Security,
+}
+
+<span class="macro">#[derive(Debug, Clone, Hash, Eq, PartialEq)]</span>
+<span class="kw">pub struct</span> <span class="ty">HostId</span>(<span class="kw">pub</span> <span class="ty">String</span>);   <span class="cmt">// "prod-01"</span>
+
+<span class="kw">pub struct</span> <span class="ty">Host</span> {
+    <span class="kw">pub</span> id: <span class="ty">HostId</span>,
+    <span class="kw">pub</span> addr: <span class="ty">String</span>,
+    <span class="kw">pub</span> user: <span class="ty">String</span>,
+    <span class="kw">pub</span> tags: <span class="ty">Vec</span>&lt;<span class="ty">String</span>&gt;,
+    <span class="kw">pub</span> readonly: <span class="ty">bool</span>,
+    <span class="kw">pub</span> status: <span class="ty">HostStatus</span>,
+    <span class="kw">pub</span> last_seen: <span class="ty">Option</span>&lt;<span class="ty">Instant</span>&gt;,
+    <span class="kw">pub</span> identity: <span class="ty">Option</span>&lt;<span class="ty">SystemIdentity</span>&gt;,
+    <span class="kw">pub</span> metrics: <span class="ty">Option</span>&lt;<span class="ty">MetricsSnapshot</span>&gt;,
+    <span class="kw">pub</span> services: <span class="ty">Vec</span>&lt;<span class="ty">Unit</span>&gt;,
+    <span class="kw">pub</span> sockets: <span class="ty">Vec</span>&lt;<span class="ty">Listener</span>&gt;,
+    <span class="kw">pub</span> crons: <span class="ty">Vec</span>&lt;<span class="ty">CronEntry</span>&gt;,
+    <span class="kw">pub</span> containers: <span class="ty">Vec</span>&lt;<span class="ty">Container</span>&gt;,
+}
+
+<span class="kw">pub struct</span> <span class="ty">Finding</span> {
+    <span class="kw">pub</span> id: <span class="ty">FindingId</span>,        <span class="cmt">// "F-001"</span>
+    <span class="kw">pub</span> severity: <span class="ty">Severity</span>,
+    <span class="kw">pub</span> module: <span class="ty">Module</span>,
+    <span class="kw">pub</span> title: <span class="ty">String</span>,
+    <span class="kw">pub</span> evidence: <span class="ty">Evidence</span>,    <span class="cmt">// path + line, or command output</span>
+    <span class="kw">pub</span> score_delta: <span class="ty">i32</span>,
+    <span class="kw">pub</span> remediation: <span class="ty">Option</span>&lt;<span class="ty">Remediation</span>&gt;,
+    <span class="kw">pub</span> detected_at: <span class="ty">Instant</span>,
+    <span class="kw">pub</span> dismissed: <span class="ty">bool</span>,
+}
+
+<span class="macro">#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]</span>
+<span class="kw">pub enum</span> <span class="ty">Severity</span> { Critical, High, Medium, Low, Info }</pre>
+
+<!-- ── 07 ───────────────────────────────────────────────── -->
+<h2 id="event"><span class="n">07</span> Event loop</h2>
+
+<p>One loop. Three sources: crossterm events, the message channel, and a 250ms tick. The render call is non-blocking and happens at most once per loop iteration.</p>
+
+<pre class="lang" data-lang="rust"><span class="cmt">// src/app.rs</span>
+<span class="kw">pub async fn</span> <span class="fn">run</span>(<span class="kw">mut</span> term: <span class="ty">Terminal</span>&lt;<span class="ty">CrosstermBackend</span>&lt;<span class="ty">Stdout</span>&gt;&gt;) -&gt; <span class="ty">Result</span>&lt;()&gt; {
+    <span class="kw">let</span> (msg_tx, <span class="kw">mut</span> msg_rx) = <span class="fn">mpsc::channel</span>::&lt;<span class="ty">Msg</span>&gt;(<span class="num">512</span>);
+    <span class="kw">let</span> dispatcher = <span class="ty">Dispatcher</span>::<span class="fn">spawn</span>(msg_tx.<span class="fn">clone</span>()).<span class="kw">await</span>?;
+    <span class="kw">let mut</span> model = <span class="ty">Model</span>::<span class="fn">bootstrap</span>().<span class="kw">await</span>?;
+
+    <span class="kw">let mut</span> events = <span class="fn">crossterm_event_stream</span>();
+    <span class="kw">let mut</span> tick = <span class="fn">tokio::time::interval</span>(<span class="ty">Duration</span>::<span class="fn">from_millis</span>(<span class="num">250</span>));
+
+    <span class="kw">loop</span> {
+        term.<span class="fn">draw</span>(|f| <span class="fn">ui::view</span>(f, &amp;model))?;
+
+        <span class="kw">let</span> msg = <span class="macro">tokio::select!</span> {
+            ev = events.<span class="fn">next</span>() =&gt; <span class="kw">match</span> ev {
+                <span class="ty">Some</span>(<span class="ty">Ok</span>(e)) =&gt; <span class="ty">Msg</span>::<span class="fn">from_event</span>(e),
+                _ =&gt; <span class="kw">continue</span>,
+            },
+            m = msg_rx.<span class="fn">recv</span>() =&gt; <span class="kw">match</span> m {
+                <span class="ty">Some</span>(m) =&gt; m,
+                <span class="ty">None</span> =&gt; <span class="kw">break</span>,
+            },
+            _ = tick.<span class="fn">tick</span>() =&gt; <span class="ty">Msg</span>::Tick,
+        };
+
+        <span class="kw">if</span> <span class="fn">matches!</span>(msg, <span class="ty">Msg</span>::Quit) { <span class="kw">break</span>; }
+        <span class="kw">let</span> (next, cmds) = <span class="fn">update::update</span>(model, msg);
+        model = next;
+        <span class="kw">for</span> c <span class="kw">in</span> cmds { dispatcher.<span class="fn">submit</span>(c).<span class="kw">await</span>; }
+    }
+    <span class="ty">Ok</span>(())
+}</pre>
+
+<!-- ── 08 ───────────────────────────────────────────────── -->
+<h2 id="ssh"><span class="n">08</span> SSH session pool</h2>
+
+<p>One <code>Session</code> per host, kept alive. Each session multiplexes channels: short exec channels for probes, long-running channels for log tails. The pool caps connections and evicts idle sessions.</p>
+
+<pre class="lang" data-lang="rust"><span class="cmt">// src/ssh/pool.rs</span>
+<span class="kw">pub struct</span> <span class="ty">Pool</span> {
+    sessions: <span class="ty">Mutex</span>&lt;<span class="ty">HashMap</span>&lt;<span class="ty">HostId</span>, <span class="ty">Arc</span>&lt;<span class="ty">Session</span>&gt;&gt;&gt;,
+    cap: <span class="ty">usize</span>,
+}
+
+<span class="kw">impl</span> <span class="ty">Pool</span> {
+    <span class="kw">pub async fn</span> <span class="fn">get_or_dial</span>(&amp;<span class="kw">self</span>, h: &amp;<span class="ty">Host</span>) -&gt; <span class="ty">Result</span>&lt;<span class="ty">Arc</span>&lt;<span class="ty">Session</span>&gt;&gt; {
+        <span class="kw">if let</span> <span class="ty">Some</span>(s) = <span class="kw">self</span>.sessions.<span class="fn">lock</span>().<span class="fn">await</span>.<span class="fn">get</span>(&amp;h.id) {
+            <span class="kw">return</span> <span class="ty">Ok</span>(s.<span class="fn">clone</span>());
+        }
+        <span class="kw">let</span> s = <span class="ty">Session</span>::<span class="fn">dial</span>(h).<span class="kw">await</span>?;
+        <span class="kw">let</span> arc = <span class="ty">Arc</span>::<span class="fn">new</span>(s);
+        <span class="kw">self</span>.sessions.<span class="fn">lock</span>().<span class="kw">await</span>.<span class="fn">insert</span>(h.id.<span class="fn">clone</span>(), arc.<span class="fn">clone</span>());
+        <span class="ty">Ok</span>(arc)
+    }
+}
+
+<span class="cmt">// src/ssh/exec.rs — typed exec</span>
+<span class="kw">pub trait</span> <span class="ty">FromStdout</span>: <span class="ty">Sized</span> {
+    <span class="kw">fn</span> <span class="fn">parse</span>(out: &amp;<span class="kw">str</span>) -&gt; <span class="ty">Result</span>&lt;<span class="ty">Self</span>&gt;;
+}
+
+<span class="kw">impl</span> <span class="ty">Session</span> {
+    <span class="kw">pub async fn</span> <span class="fn">run</span>&lt;<span class="ty">T</span>: <span class="ty">FromStdout</span>&gt;(&amp;<span class="kw">self</span>, cmd: &amp;<span class="kw">str</span>) -&gt; <span class="ty">Result</span>&lt;<span class="ty">T</span>&gt; {
+        <span class="kw">let mut</span> ch = <span class="kw">self</span>.<span class="fn">channel_open_session</span>().<span class="kw">await</span>?;
+        ch.<span class="fn">exec</span>(<span class="kw">true</span>, cmd).<span class="kw">await</span>?;
+        <span class="kw">let</span> out = ch.<span class="fn">collect_stdout</span>(<span class="ty">DEFAULT_TIMEOUT</span>).<span class="kw">await</span>?;
+        <span class="ty">T</span>::<span class="fn">parse</span>(&amp;out)
+    }
+}
+
+<span class="cmt">// Example: parsing `ss -tlnpJ`</span>
+<span class="kw">impl</span> <span class="ty">FromStdout</span> <span class="kw">for</span> <span class="ty">Vec</span>&lt;<span class="ty">Listener</span>&gt; {
+    <span class="kw">fn</span> <span class="fn">parse</span>(out: &amp;<span class="kw">str</span>) -&gt; <span class="ty">Result</span>&lt;<span class="ty">Self</span>&gt; {
+        <span class="kw">let</span> v: <span class="ty">SsJsonRoot</span> = <span class="fn">serde_json::from_str</span>(out)?;
+        <span class="ty">Ok</span>(v.<span class="fn">into_listeners</span>())
+    }
+}</pre>
+
+<div class="warn"><b>Pitfall.</b> Don't open a new SSH connection per probe. Cold connect to a remote host is 200–800ms. With 10 probes that's 2–8 seconds before anything renders. Always reuse the session.</div>
+
+<!-- ── 09 ───────────────────────────────────────────────── -->
+<h2 id="probes"><span class="n">09</span> Probes &amp; cache</h2>
+
+<p>A <b>probe</b> is a (host, fact-kind) pair. Each kind has a TTL; <code>ProbeCache</code> blocks duplicate in-flight requests. The dispatcher fans out probes in parallel — services, sockets, disks, processes can all run concurrently on the same SSH session.</p>
+
+<table>
+  <tr><th>Probe</th><th>Command</th><th>Parser</th><th>TTL</th></tr>
+  <tr><td>Identity</td><td><code>uname -srm; cat /etc/os-release; hostnamectl</code></td><td>regex blocks</td><td>1h</td></tr>
+  <tr><td>Metrics</td><td><code>cat /proc/loadavg /proc/meminfo /proc/uptime; nproc</code></td><td>line-key map</td><td>3s</td></tr>
+  <tr><td>Services</td><td><code>systemctl list-units --type=service --all -o json</code></td><td>serde_json</td><td>10s</td></tr>
+  <tr><td>UnitDetail</td><td><code>systemctl show &lt;unit&gt; --property=...</code></td><td>KEY=VAL</td><td>5s</td></tr>
+  <tr><td>Sockets</td><td><code>ss -tulnpJ</code></td><td>serde_json</td><td>10s</td></tr>
+  <tr><td>Disks</td><td><code>df -PT --output=...; lsblk -J</code></td><td>columns + json</td><td>30s</td></tr>
+  <tr><td>Processes</td><td><code>ps -eo pid,user,pcpu,pmem,etime,stat,args</code></td><td>columns</td><td>2s</td></tr>
+  <tr><td>Crons</td><td><code>cat /etc/cron.d/*; for u in $(cut -d: -f1 /etc/passwd); do crontab -u "$u" -l 2&gt;/dev/null; done</code></td><td>regex</td><td>60s</td></tr>
+  <tr><td>Timers</td><td><code>systemctl list-timers --all -o json</code></td><td>serde_json</td><td>10s</td></tr>
+  <tr><td>Docker</td><td><code>docker ps -a --format '{{json .}}'; docker inspect &lt;id&gt;</code></td><td>jsonl + json</td><td>5s</td></tr>
+  <tr><td>TLS</td><td><code>openssl x509 -enddate -noout -in &lt;path&gt;</code> for each cert</td><td>strptime</td><td>1h</td></tr>
+</table>
+
+<pre class="lang" data-lang="rust"><span class="cmt">// src/probes/mod.rs</span>
+<span class="kw">pub struct</span> <span class="ty">ProbeCache</span> {
+    entries: <span class="ty">HashMap</span>&lt;(<span class="ty">HostId</span>, <span class="ty">Probe</span>), <span class="ty">Entry</span>&gt;,
+}
+<span class="kw">struct</span> <span class="ty">Entry</span> {
+    fetched: <span class="ty">Instant</span>,
+    inflight: <span class="ty">bool</span>,
+}
+<span class="kw">impl</span> <span class="ty">ProbeCache</span> {
+    <span class="kw">pub fn</span> <span class="fn">should_fetch</span>(&amp;<span class="kw">self</span>, h: &amp;<span class="ty">HostId</span>, p: <span class="ty">Probe</span>, now: <span class="ty">Instant</span>) -&gt; <span class="ty">bool</span> {
+        <span class="kw">match</span> <span class="kw">self</span>.entries.<span class="fn">get</span>(&amp;(h.<span class="fn">clone</span>(), p)) {
+            <span class="ty">None</span> =&gt; <span class="kw">true</span>,
+            <span class="ty">Some</span>(e) =&gt; !e.inflight &amp;&amp; now.<span class="fn">duration_since</span>(e.fetched) &gt; p.<span class="fn">ttl</span>(),
+        }
+    }
+}</pre>
+
+<!-- ── 10 ───────────────────────────────────────────────── -->
+<h2 id="checks"><span class="n">10</span> Check engine</h2>
+
+<p>Each check is independent, deterministic, takes a snapshot of host state, returns zero or more <code>Finding</code>s. The health score is just <code>100 + sum(finding.score_delta)</code>, floored at 0. <i>Everything</i> the user sees on the Security and Dashboard tabs is generated here, including the "explain" breakdown.</p>
+
+<pre class="lang" data-lang="rust"><span class="cmt">// src/checks/mod.rs</span>
+<span class="kw">pub trait</span> <span class="ty">Check</span>: <span class="ty">Send</span> + <span class="ty">Sync</span> {
+    <span class="kw">fn</span> <span class="fn">id</span>(&amp;<span class="kw">self</span>) -&gt; &amp;<span class="kw">static str</span>;
+    <span class="kw">fn</span> <span class="fn">module</span>(&amp;<span class="kw">self</span>) -&gt; <span class="ty">Module</span>;
+    <span class="kw">fn</span> <span class="fn">requires</span>(&amp;<span class="kw">self</span>) -&gt; &amp;[<span class="ty">Probe</span>];
+    <span class="kw">fn</span> <span class="fn">evaluate</span>(&amp;<span class="kw">self</span>, h: &amp;<span class="ty">Host</span>) -&gt; <span class="ty">Vec</span>&lt;<span class="ty">Finding</span>&gt;;
+}
+
+<span class="cmt">// src/checks/disk_pressure.rs</span>
+<span class="kw">pub struct</span> <span class="ty">DiskPressure</span>;
+
+<span class="kw">impl</span> <span class="ty">Check</span> <span class="kw">for</span> <span class="ty">DiskPressure</span> {
+    <span class="kw">fn</span> <span class="fn">id</span>(&amp;<span class="kw">self</span>) -&gt; &amp;<span class="kw">static str</span> { <span class="str">"disk.pressure"</span> }
+    <span class="kw">fn</span> <span class="fn">module</span>(&amp;<span class="kw">self</span>) -&gt; <span class="ty">Module</span> { <span class="ty">Module</span>::Disk }
+    <span class="kw">fn</span> <span class="fn">requires</span>(&amp;<span class="kw">self</span>) -&gt; &amp;[<span class="ty">Probe</span>] { &amp;[<span class="ty">Probe</span>::Disks] }
+
+    <span class="kw">fn</span> <span class="fn">evaluate</span>(&amp;<span class="kw">self</span>, h: &amp;<span class="ty">Host</span>) -&gt; <span class="ty">Vec</span>&lt;<span class="ty">Finding</span>&gt; {
+        <span class="kw">let</span> <span class="ty">Some</span>(snap) = &amp;h.metrics <span class="kw">else</span> { <span class="kw">return</span> <span class="kw">vec</span>![] };
+        snap.disks.<span class="fn">iter</span>().<span class="fn">filter_map</span>(|d| <span class="kw">match</span> d.used_pct {
+            p <span class="kw">if</span> p &gt;= <span class="num">90</span>  =&gt; <span class="ty">Some</span>(<span class="fn">finding</span>(<span class="ty">Severity</span>::Critical, -<span class="num">15</span>, d)),
+            p <span class="kw">if</span> p &gt;= <span class="num">80</span>  =&gt; <span class="ty">Some</span>(<span class="fn">finding</span>(<span class="ty">Severity</span>::High,     -<span class="num">10</span>, d)),
+            p <span class="kw">if</span> p &gt;= <span class="num">70</span>  =&gt; <span class="ty">Some</span>(<span class="fn">finding</span>(<span class="ty">Severity</span>::Medium,   -<span class="num">3</span>,  d)),
+            _              =&gt; <span class="ty">None</span>,
+        }).<span class="fn">collect</span>()
+    }
+}</pre>
+
+<p>Registration is explicit; adding a check is one line:</p>
+
+<pre class="lang" data-lang="rust"><span class="kw">pub fn</span> <span class="fn">registry</span>() -&gt; <span class="ty">Vec</span>&lt;<span class="ty">Box</span>&lt;<span class="kw">dyn</span> <span class="ty">Check</span>&gt;&gt; {
+    <span class="kw">vec</span>![
+        <span class="ty">Box</span>::<span class="fn">new</span>(<span class="ty">DiskPressure</span>),
+        <span class="ty">Box</span>::<span class="fn">new</span>(<span class="ty">SshHardening</span>),
+        <span class="ty">Box</span>::<span class="fn">new</span>(<span class="ty">ExposedPorts</span>),
+        <span class="ty">Box</span>::<span class="fn">new</span>(<span class="ty">TlsExpiry</span>),
+        <span class="ty">Box</span>::<span class="fn">new</span>(<span class="ty">DockerPrivileged</span>),
+        <span class="ty">Box</span>::<span class="fn">new</span>(<span class="ty">CronHealth</span>),
+        <span class="ty">Box</span>::<span class="fn">new</span>(<span class="ty">FailedUnits</span>),
+        <span class="ty">Box</span>::<span class="fn">new</span>(<span class="ty">ZombieProcesses</span>),
+        <span class="ty">Box</span>::<span class="fn">new</span>(<span class="ty">PendingSecurityUpdates</span>),
+    ]
+}</pre>
+
+<!-- ── 11 ───────────────────────────────────────────────── -->
+<h2 id="logs"><span class="n">11</span> Log streaming</h2>
+
+<p>Tailing logs through SSH is the most expensive thing in the app. Strategy: <b>one tail task per source</b>, decoupled from the render loop, with a bounded ring buffer.</p>
+
+<pre class="lang" data-lang="rust"><span class="cmt">// src/logs/stream.rs</span>
+<span class="kw">pub fn</span> <span class="fn">spawn_tail</span>(
+    sess: <span class="ty">Arc</span>&lt;<span class="ty">Session</span>&gt;,
+    src: <span class="ty">LogSource</span>,
+    out: <span class="ty">mpsc::Sender</span>&lt;<span class="ty">Msg</span>&gt;,
+) -&gt; <span class="ty">TailHandle</span> {
+    <span class="kw">let</span> tail_id = <span class="ty">TailId</span>::<span class="fn">new</span>();
+    <span class="kw">let</span> (abort_tx, <span class="kw">mut</span> abort_rx) = <span class="fn">oneshot::channel</span>();
+    <span class="fn">tokio::spawn</span>(<span class="kw">async move</span> {
+        <span class="kw">let mut</span> ch = sess.<span class="fn">exec_stream</span>(&amp;src.<span class="fn">cmd</span>()).<span class="kw">await</span>?;
+        <span class="kw">let mut</span> buf = <span class="ty">BytesMut</span>::<span class="fn">with_capacity</span>(<span class="num">64</span> * <span class="num">1024</span>);
+
+        <span class="kw">loop</span> {
+            <span class="macro">tokio::select!</span> {
+                _ = &amp;<span class="kw">mut</span> abort_rx =&gt; <span class="kw">break</span>,
+                <span class="kw">read</span> = ch.<span class="fn">read_buf</span>(&amp;<span class="kw">mut</span> buf) =&gt; {
+                    <span class="kw">if</span> <span class="kw">read</span>? == <span class="num">0</span> { <span class="kw">break</span>; }
+                    <span class="kw">while let</span> <span class="ty">Some</span>(line) = <span class="fn">extract_line</span>(&amp;<span class="kw">mut</span> buf) {
+                        <span class="kw">let</span> parsed = <span class="ty">LogLine</span>::<span class="fn">parse</span>(line, src);
+                        out.<span class="fn">send</span>(<span class="ty">Msg</span>::<span class="fn">LogAppend</span>(tail_id, parsed)).<span class="kw">await</span>.<span class="fn">ok</span>();
+                    }
+                }
+            }
+        }
+        out.<span class="fn">send</span>(<span class="ty">Msg</span>::<span class="fn">LogTailEnded</span>(tail_id)).<span class="kw">await</span>.<span class="fn">ok</span>();
+        <span class="ty">Ok</span>::&lt;_, <span class="ty">eyre::Error</span>&gt;(())
+    });
+    <span class="ty">TailHandle</span> { id: tail_id, abort: abort_tx }
+}</pre>
+
+<p>The receiving end uses a fixed-size ring buffer per tail so memory stays bounded even when the user pauses follow. Fingerprints are recomputed on a debounced timer, never per line.</p>
+
+<pre class="lang" data-lang="rust"><span class="cmt">// src/model/log.rs</span>
+<span class="kw">pub struct</span> <span class="ty">LogBuffer</span> {
+    ring: <span class="ty">VecDeque</span>&lt;<span class="ty">LogLine</span>&gt;,    <span class="cmt">// capacity ~10k</span>
+    fingerprints: <span class="ty">Vec</span>&lt;<span class="ty">Fingerprint</span>&gt;,
+    fp_dirty_since: <span class="ty">Option</span>&lt;<span class="ty">Instant</span>&gt;,
+    follow: <span class="ty">bool</span>,
+    filter: <span class="ty">Option</span>&lt;<span class="ty">Regex</span>&gt;,
+}</pre>
+
+<!-- ── 12 ───────────────────────────────────────────────── -->
+<h2 id="actions"><span class="n">12</span> Actions &amp; audit</h2>
+
+<p>Every state-changing operation is an <code>Action</code>. The model gates them in a single place: if the host is read-only or the action's risk demands a confirmation phrase, the dispatcher cannot receive an <code>ExecAction</code> command at all.</p>
+
+<pre class="lang" data-lang="rust"><span class="cmt">// src/actions/mod.rs</span>
+<span class="kw">pub struct</span> <span class="ty">ActionReq</span> {
+    <span class="kw">pub</span> host: <span class="ty">HostId</span>,
+    <span class="kw">pub</span> kind: <span class="ty">ActionKind</span>,
+    <span class="kw">pub</span> requires_phrase: <span class="ty">Option</span>&lt;<span class="ty">String</span>&gt;,
+}
+
+<span class="kw">pub enum</span> <span class="ty">ActionKind</span> {
+    UnitRestart(<span class="ty">String</span>),
+    UnitReload(<span class="ty">String</span>),
+    UnitStop(<span class="ty">String</span>),
+    UnitDisable(<span class="ty">String</span>),
+    ProcessSignal { pid: <span class="ty">u32</span>, signal: <span class="ty">Signal</span> },
+    CronEdit { file: <span class="ty">PathBuf</span>, new_body: <span class="ty">Vec</span>&lt;<span class="ty">u8</span>&gt; },
+    SecurityFix { finding: <span class="ty">FindingId</span> },
+}
+
+<span class="kw">impl</span> <span class="ty">ActionKind</span> {
+    <span class="kw">pub fn</span> <span class="fn">risk</span>(&amp;<span class="kw">self</span>) -&gt; <span class="ty">Risk</span> {
+        <span class="kw">use</span> <span class="ty">ActionKind</span>::*;
+        <span class="kw">match self</span> {
+            <span class="fn">UnitReload</span>(_)                =&gt; <span class="ty">Risk</span>::Low,
+            <span class="fn">UnitRestart</span>(_) | <span class="fn">CronEdit</span>{..}  =&gt; <span class="ty">Risk</span>::Medium,
+            <span class="fn">UnitStop</span>(_) | <span class="fn">UnitDisable</span>(_) =&gt; <span class="ty">Risk</span>::High,
+            <span class="fn">ProcessSignal</span>{ signal, .. } <span class="kw">if</span> *signal == <span class="ty">Signal</span>::KILL =&gt; <span class="ty">Risk</span>::High,
+            <span class="fn">ProcessSignal</span>{..}             =&gt; <span class="ty">Risk</span>::Medium,
+            <span class="fn">SecurityFix</span>{..}                =&gt; <span class="ty">Risk</span>::High,
+        }
+    }
+}
+
+<span class="cmt">// src/actions/audit.rs — append-only, fsync each entry</span>
+<span class="kw">pub struct</span> <span class="ty">AuditEntry</span> {
+    <span class="kw">pub</span> ts: <span class="ty">DateTime</span>&lt;<span class="ty">Utc</span>&gt;,
+    <span class="kw">pub</span> actor: <span class="ty">String</span>,           <span class="cmt">// $USER@$HOSTNAME</span>
+    <span class="kw">pub</span> host: <span class="ty">HostId</span>,
+    <span class="kw">pub</span> kind: <span class="ty">ActionKind</span>,
+    <span class="kw">pub</span> outcome: <span class="ty">Outcome</span>,        <span class="cmt">// Ok | Failed(stderr) | Blocked(reason)</span>
+    <span class="kw">pub</span> latency_ms: <span class="ty">u32</span>,
+}</pre>
+
+<div class="note"><b>Backup before edit.</b> Any action that mutates a file (cron edit, sshd_config patch) writes the original to <code>~/.local/share/systui/backups/&lt;host&gt;/&lt;path&gt;-&lt;ts&gt;.bak</code> first. The audit entry includes the backup path.</div>
+
+<!-- ── 13 ───────────────────────────────────────────────── -->
+<h2 id="render"><span class="n">13</span> Render strategy</h2>
+
+<p>Ratatui re-renders the full frame every loop. That's fine — at 60Hz a 200×52 frame is ~1.5ms in pure stack-allocated buffers. <b>Don't fight it</b>; never cache widgets, never partial-render. Memoize only expensive computations (fingerprinting, syntax-highlighting), never UI primitives.</p>
+
+<pre class="lang" data-lang="rust"><span class="cmt">// src/ui/mod.rs</span>
+<span class="kw">pub fn</span> <span class="fn">view</span>(f: &amp;<span class="kw">mut</span> <span class="ty">Frame</span>, m: &amp;<span class="ty">Model</span>) {
+    <span class="kw">let</span> [top, tabs, body, status] = <span class="ty">Layout</span>::<span class="fn">vertical</span>([
+        <span class="ty">Constraint</span>::<span class="fn">Length</span>(<span class="num">3</span>),
+        <span class="ty">Constraint</span>::<span class="fn">Length</span>(<span class="num">1</span>),
+        <span class="ty">Constraint</span>::Min(<span class="num">0</span>),
+        <span class="ty">Constraint</span>::<span class="fn">Length</span>(<span class="num">1</span>),
+    ]).<span class="fn">areas</span>(f.<span class="fn">area</span>());
+
+    <span class="fn">chrome::top_bar</span>(f, top, m);
+    <span class="fn">chrome::tabs</span>(f, tabs, m);
+    <span class="kw">match</span> m.tab {
+        <span class="ty">Tab</span>::Hosts     =&gt; <span class="fn">screens::hosts::render</span>(f, body, m),
+        <span class="ty">Tab</span>::Dashboard =&gt; <span class="fn">screens::dashboard::render</span>(f, body, m),
+        <span class="ty">Tab</span>::Services  =&gt; <span class="fn">screens::services::render</span>(f, body, m),
+        <span class="cmt">// …</span>
+    }
+    <span class="fn">chrome::status_bar</span>(f, status, m);
+
+    <span class="cmt">// Overlays render last, drawn on top of body.</span>
+    <span class="kw">if let</span> <span class="ty">Some</span>(p) = &amp;m.palette        { <span class="fn">overlay::palette::render</span>(f, p, m); }
+    <span class="kw">if let</span> <span class="ty">Some</span>(a) = &amp;m.pending_action { <span class="fn">overlay::confirm::render</span>(f, a, m); }
+    <span class="fn">overlay::toasts::render</span>(f, &amp;m.toasts);
+}</pre>
+
+<h3>Theme tokens</h3>
+<p>Single source of truth in <code>ui/theme.rs</code>. Every <code>Style</code> comes from here — there are no inline <code>Color::Rgb(...)</code> calls anywhere else. Maps 1:1 to the CSS custom properties of the prototype.</p>
+
+<pre class="lang" data-lang="rust"><span class="kw">pub struct</span> <span class="ty">Theme</span> {
+    <span class="kw">pub</span> bg: <span class="ty">Color</span>,
+    <span class="kw">pub</span> fg: <span class="ty">Color</span>,
+    <span class="kw">pub</span> fg_strong: <span class="ty">Color</span>,
+    <span class="kw">pub</span> fg_muted: <span class="ty">Color</span>,
+    <span class="kw">pub</span> fg_dim: <span class="ty">Color</span>,
+    <span class="kw">pub</span> accent: <span class="ty">Color</span>,
+    <span class="kw">pub</span> critical: <span class="ty">Color</span>,
+    <span class="kw">pub</span> high: <span class="ty">Color</span>,
+    <span class="kw">pub</span> medium: <span class="ty">Color</span>,
+    <span class="kw">pub</span> low: <span class="ty">Color</span>,
+}
+
+<span class="kw">impl</span> <span class="ty">Theme</span> {
+    <span class="kw">pub const fn</span> <span class="fn">dark_green</span>() -&gt; <span class="ty">Self</span> {
+        <span class="ty">Self</span> {
+            bg:        <span class="ty">Color</span>::<span class="fn">Rgb</span>(<span class="num">0x0b</span>, <span class="num">0x0e</span>, <span class="num">0x13</span>),
+            fg:        <span class="ty">Color</span>::<span class="fn">Rgb</span>(<span class="num">0xcd</span>, <span class="num">0xd4</span>, <span class="num">0xdf</span>),
+            fg_strong: <span class="ty">Color</span>::<span class="fn">Rgb</span>(<span class="num">0xee</span>, <span class="num">0xf1</span>, <span class="num">0xf6</span>),
+            fg_muted:  <span class="ty">Color</span>::<span class="fn">Rgb</span>(<span class="num">0x7a</span>, <span class="num">0x84</span>, <span class="num">0x94</span>),
+            fg_dim:    <span class="ty">Color</span>::<span class="fn">Rgb</span>(<span class="num">0x4a</span>, <span class="num">0x53</span>, <span class="num">0x60</span>),
+            accent:    <span class="ty">Color</span>::<span class="fn">Rgb</span>(<span class="num">0x6d</span>, <span class="num">0xd3</span>, <span class="num">0x93</span>),
+            critical:  <span class="ty">Color</span>::<span class="fn">Rgb</span>(<span class="num">0xe5</span>, <span class="num">0x74</span>, <span class="num">0x73</span>),
+            high:      <span class="ty">Color</span>::<span class="fn">Rgb</span>(<span class="num">0xe8</span>, <span class="num">0xb5</span>, <span class="num">0x51</span>),
+            medium:    <span class="ty">Color</span>::<span class="fn">Rgb</span>(<span class="num">0xf0</span>, <span class="num">0xd9</span>, <span class="num">0x7d</span>),
+            low:       <span class="ty">Color</span>::<span class="fn">Rgb</span>(<span class="num">0x7a</span>, <span class="num">0xa9</span>, <span class="num">0xff</span>),
+        }
+    }
+}</pre>
+
+<!-- ── 14 ───────────────────────────────────────────────── -->
+<h2 id="screens"><span class="n">14</span> Per-screen breakdown</h2>
+
+<p>Each screen module exposes the same shape: <code>render(frame, area, model)</code> + <code>handle_key(model, KeyEvent) -&gt; Option&lt;Msg&gt;</code>. Below: the widget recipe for each.</p>
+
+<h3>Hosts</h3>
+<table>
+  <tr><th>Element</th><th>Widget</th></tr>
+  <tr><td>Tag chip row</td><td><code>Tabs</code> with custom highlight, or a row of <code>Paragraph</code>s in a horizontal layout</td></tr>
+  <tr><td>Search field</td><td><code>tui-input</code> styled as a single-line block</td></tr>
+  <tr><td>Grid view</td><td>Manual layout: split <code>area</code> into 3 columns × N rows; render each card as a bordered <code>Block</code> with stacked <code>Paragraph</code>s</td></tr>
+  <tr><td>Rows view</td><td><code>Table</code> with <code>highlight_style</code> for selection</td></tr>
+  <tr><td>Health bar</td><td><code>LineGauge</code> with width 8 cells, colored by threshold</td></tr>
+</table>
+
+<h3>Dashboard</h3>
+<table>
+  <tr><th>Element</th><th>Widget</th></tr>
+  <tr><td>4 metric tiles</td><td>Horizontal split of area; each tile is a <code>Block</code> + <code>Paragraph</code> (label/value) + <code>Sparkline</code> + <code>Paragraph</code> (sub)</td></tr>
+  <tr><td>Findings list</td><td>Custom <code>StatefulWidget</code> rendering each row as a bordered group with severity-colored left edge (single column of <code>█</code> chars in critical color)</td></tr>
+  <tr><td>Health score breakdown</td><td><code>Paragraph</code> with <code>Line</code>s and styled <code>Span</code>s; gradient bar drawn by hand as <code>█</code> with per-cell color</td></tr>
+  <tr><td>At-a-glance grid</td><td>2×4 grid of <code>Paragraph</code>s; clickable via mouse hit-testing on each cell</td></tr>
+</table>
+
+<h3>Services</h3>
+<table>
+  <tr><th>Element</th><th>Widget</th></tr>
+  <tr><td>Filters</td><td>Row of <code>Span</code>s — active one underlined</td></tr>
+  <tr><td>Unit list</td><td><code>Table</code> with <code>TableState</code>, selectable; <code>SubState</code> + severity dot rendered as styled <code>Cell</code></td></tr>
+  <tr><td>Detail pane</td><td><code>Block</code> with title; inner is a <code>Paragraph</code> for <code>systemctl status</code> output, plus a sub-block for "last failure"</td></tr>
+  <tr><td>Actions</td><td>Row of styled <code>Span</code>s with hotkey prefix; on key press dispatches an <code>Msg::Action(...)</code></td></tr>
+</table>
+
+<h3>Logs</h3>
+<table>
+  <tr><th>Element</th><th>Widget</th></tr>
+  <tr><td>Live tail</td><td>Custom widget: render last N visible lines from <code>LogBuffer.ring</code>, scroll offset in <code>UiState.logs_offset</code></td></tr>
+  <tr><td>Level badge</td><td>3-cell colored <code>Span</code> per line (<code>ERR</code>/<code>WRN</code>/<code>INF</code>)</td></tr>
+  <tr><td>Fingerprint panel</td><td><code>List</code> with each fingerprint as a multi-line <code>ListItem</code></td></tr>
+  <tr><td>Follow indicator</td><td>Bottom-right pulse dot in status bar — green when following, dim when paused</td></tr>
+</table>
+
+<h3>Network</h3>
+<table>
+  <tr><th>Element</th><th>Widget</th></tr>
+  <tr><td>Exposure table</td><td><code>Table</code>; address column color-codes <code>0.0.0.0</code> orange, <code>127.0.0.1</code> dim</td></tr>
+  <tr><td>Connectivity tests</td><td><code>Paragraph</code> with one styled line per target</td></tr>
+  <tr><td>Interfaces</td><td><code>List</code>; each row is two stacked lines via <code>ListItem</code> with multiple <code>Line</code>s</td></tr>
+  <tr><td>Firewall summary</td><td><code>Paragraph</code></td></tr>
+</table>
+
+<h3>Crons</h3>
+<table>
+  <tr><th>Element</th><th>Widget</th></tr>
+  <tr><td>Cron table</td><td>Custom <code>StatefulWidget</code> with severity left-bar + 4 columns: command, schedule/human, user/next, warnings</td></tr>
+  <tr><td>Schedule preview</td><td><code>Paragraph</code> built from <code>cron::Schedule::upcoming(local)</code> taking 3</td></tr>
+  <tr><td>Backup callout</td><td><code>Block</code> with green border + path text</td></tr>
+</table>
+
+<h3>Security</h3>
+<table>
+  <tr><th>Element</th><th>Widget</th></tr>
+  <tr><td>Score header</td><td>3-column row: big number (manual digit rendering via <code>Paragraph</code> centered), severity counters, filter chips</td></tr>
+  <tr><td>Findings</td><td>Re-uses the Dashboard finding row widget</td></tr>
+  <tr><td>Evidence block</td><td>Each finding has an inset <code>Block</code> with code-style background (different bg color)</td></tr>
+</table>
+
+<h3>Docker</h3>
+<p>Same primitives as Services — table + risk-check side panel. Compose projects and image hygiene are <code>Paragraph</code>s.</p>
+
+<!-- ── 15 ───────────────────────────────────────────────── -->
+<h2 id="palette"><span class="n">15</span> Command palette</h2>
+
+<p>Implemented as an overlay state on the <code>Model</code>, not a separate widget tree. <code>handle_key</code> short-circuits to the palette while it's <code>Some</code>.</p>
+
+<pre class="lang" data-lang="rust"><span class="kw">pub struct</span> <span class="ty">PaletteState</span> {
+    <span class="kw">pub</span> input: <span class="ty">tui_input::Input</span>,
+    <span class="kw">pub</span> selected: <span class="ty">usize</span>,
+    <span class="kw">pub</span> results: <span class="ty">Vec</span>&lt;<span class="ty">PaletteItem</span>&gt;,
+}
+
+<span class="kw">pub enum</span> <span class="ty">PaletteItem</span> {
+    JumpTo(<span class="ty">Tab</span>),
+    OpenHost(<span class="ty">HostId</span>),
+    RunAction(<span class="ty">ActionKind</span>),
+    Search { kind: <span class="ty">SearchKind</span>, query: <span class="ty">String</span> },
+}
+
+<span class="cmt">// scoring: nucleo (fzf algorithm)</span>
+<span class="kw">pub fn</span> <span class="fn">rerank</span>(items: &amp;<span class="kw">mut</span> <span class="ty">Vec</span>&lt;<span class="ty">Scored</span>&gt;, q: &amp;<span class="kw">str</span>) {
+    <span class="kw">let mut</span> matcher = <span class="ty">Matcher</span>::<span class="fn">new</span>(<span class="ty">Config</span>::DEFAULT);
+    items.<span class="fn">iter_mut</span>().<span class="fn">for_each</span>(|s| s.score = matcher.<span class="fn">fuzzy_match</span>(&amp;s.text, q));
+    items.<span class="fn">sort_by_key</span>(|s| <span class="ty">Reverse</span>(s.score));
+}</pre>
+
+<!-- ── 16 ───────────────────────────────────────────────── -->
+<h2 id="input"><span class="n">16</span> Keymaps</h2>
+
+<table>
+  <tr><th>Scope</th><th>Key</th><th>Action</th></tr>
+  <tr><td>Global</td><td><kbd>Ctrl-K</kbd></td><td>Toggle command palette</td></tr>
+  <tr><td>Global</td><td><kbd>?</kbd></td><td>Help overlay</td></tr>
+  <tr><td>Global</td><td><kbd>q</kbd></td><td>Quit (asks confirm if action pending)</td></tr>
+  <tr><td>Global</td><td><kbd>Tab</kbd> / <kbd>Shift-Tab</kbd></td><td>Cycle focus between panes on current screen</td></tr>
+  <tr><td>Global</td><td><kbd>1</kbd>…<kbd>0</kbd></td><td>Switch tabs</td></tr>
+  <tr><td>Global</td><td><kbd>g h</kbd></td><td>Go home (Hosts)</td></tr>
+  <tr><td>Lists</td><td><kbd>j</kbd>/<kbd>k</kbd> or <kbd>↓</kbd>/<kbd>↑</kbd></td><td>Move selection</td></tr>
+  <tr><td>Lists</td><td><kbd>Enter</kbd></td><td>Open / drill in</td></tr>
+  <tr><td>Lists</td><td><kbd>/</kbd></td><td>Filter</td></tr>
+  <tr><td>Services</td><td><kbd>r</kbd></td><td>Restart (confirm)</td></tr>
+  <tr><td>Services</td><td><kbd>R</kbd></td><td>Reload</td></tr>
+  <tr><td>Services</td><td><kbd>s</kbd></td><td>Stop (typed-phrase confirm)</td></tr>
+  <tr><td>Services</td><td><kbd>l</kbd></td><td>Jump to logs scoped to this unit</td></tr>
+  <tr><td>Processes</td><td><kbd>k</kbd></td><td>SIGTERM (confirm)</td></tr>
+  <tr><td>Processes</td><td><kbd>K</kbd></td><td>SIGKILL (typed-phrase confirm)</td></tr>
+  <tr><td>Logs</td><td><kbd>f</kbd></td><td>Toggle follow</td></tr>
+  <tr><td>Logs</td><td><kbd>p</kbd></td><td>Pause</td></tr>
+  <tr><td>Logs</td><td><kbd>m</kbd></td><td>Mark current position</td></tr>
+  <tr><td>Logs</td><td><kbd>e</kbd></td><td>Export visible to file</td></tr>
+  <tr><td>Confirm</td><td><kbd>Enter</kbd></td><td>Apply (when phrase satisfied)</td></tr>
+  <tr><td>Confirm</td><td><kbd>Esc</kbd></td><td>Cancel</td></tr>
+</table>
+
+<p>Vim users get <kbd>j</kbd>/<kbd>k</kbd>, others <kbd>↓</kbd>/<kbd>↑</kbd>. Both work; never the leader-key dance.</p>
+
+<!-- ── 17 ───────────────────────────────────────────────── -->
+<h2 id="config"><span class="n">17</span> Config files</h2>
+
+<h3><code>~/.config/systui/hosts.toml</code></h3>
+<pre class="lang" data-lang="toml"><span class="punct">[[</span><span class="ty">host</span><span class="punct">]]</span>
+id        = <span class="str">"prod-01"</span>
+addr      = <span class="str">"10.0.4.12"</span>
+user      = <span class="str">"root"</span>
+tags      = [<span class="str">"prod"</span>, <span class="str">"web"</span>]
+readonly  = <span class="kw">true</span>
+description = <span class="str">"nginx · php-fpm · redis-cache"</span>
+ssh_options = [<span class="str">"-o"</span>, <span class="str">"ProxyJump=bastion.lan"</span>]   <span class="cmt"># passed to ssh CLI</span>
+
+<span class="punct">[[</span><span class="ty">host</span><span class="punct">]]</span>
+id   = <span class="str">"homelab"</span>
+addr = <span class="str">"local"</span>                        <span class="cmt"># special — run probes locally, no SSH</span>
+tags = [<span class="str">"personal"</span>]
+readonly = <span class="kw">false</span>
+
+<span class="punct">[</span><span class="ty">defaults</span><span class="punct">]</span>
+keepalive_secs   = <span class="num">15</span>
+probe_concurrency = <span class="num">4</span>
+log_ring_lines   = <span class="num">10000</span></pre>
+
+<h3><code>~/.config/systui/keymap.toml</code></h3>
+<p>Optional. If absent, defaults from the previous section apply. Allows remapping any action; rebinds are flat <code>action = "key"</code> entries to keep diffs readable.</p>
+
+<h3><code>~/.local/share/systui/audit.log</code></h3>
+<p>JSONL, append-only, one entry per attempted action (including blocked ones). <code>fsync</code> after each line. Tools can grep this directly.</p>
+
+<!-- ── 18 ───────────────────────────────────────────────── -->
+<h2 id="perf"><span class="n">18</span> Perf budget</h2>
+
+<table>
+  <tr><th>Phase</th><th>Budget</th><th>Notes</th></tr>
+  <tr><td>Cold start to Hosts screen</td><td>&lt; 80ms</td><td>No SSH dials yet. Just read hosts.toml, draw chrome.</td></tr>
+  <tr><td>SSH dial to first Dashboard render</td><td>&lt; 1.2s on warm session, &lt; 3s cold</td><td>Fire all probes in parallel on the same channel-multiplexed session.</td></tr>
+  <tr><td>Frame render</td><td>&lt; 3ms p99</td><td>200×52 cells, full re-render every event.</td></tr>
+  <tr><td>Log line ingest</td><td>&gt; 50K lines/s sustained</td><td>Per tail. Filter+fingerprint runs on a 100ms debounce, not per line.</td></tr>
+  <tr><td>Memory after 1h idle</td><td>&lt; 80MB</td><td>Caps: 10K log lines/tail × 4 tails, 50 hosts, 200 findings each.</td></tr>
+</table>
+
+<div class="warn"><b>Watch for</b>: regex compiled per line (compile once, store in <code>Filter</code>); unbounded <code>VecDeque</code> on log tails when the user is offscreen; <code>String::new</code>+<code>push_str</code> in render hot path (use <code>write!</code> into a reused <code>String</code>); <code>tokio::spawn</code> per probe per tick (use the dispatcher's bounded queue).</div>
+
+<!-- ── 19 ───────────────────────────────────────────────── -->
+<h2 id="milestones"><span class="n">19</span> Build order</h2>
+
+<div class="deck">
+  <div class="card"><div class="ix">M0 · 4h</div><div class="t">Skeleton</div><div class="d">Terminal init, panic hook, render loop, <code>Tab</code> switching with stub screens. Crossterm + ratatui only.</div></div>
+  <div class="card"><div class="ix">M1 · 8h</div><div class="t">Local probes</div><div class="d">Wire <code>sysinfo</code> + parsing of <code>systemctl</code>/<code>ss</code>/<code>df</code> against <code>localhost</code> (no SSH yet). Get Dashboard + Services + Network rendering with real data.</div></div>
+  <div class="card"><div class="ix">M2 · 10h</div><div class="t">SSH pool</div><div class="d">Add <code>openssh</code>-backed Session; <code>Probe</code> indirection so the same code paths work local or remote. Hosts screen drives selection.</div></div>
+  <div class="card"><div class="ix">M3 · 12h</div><div class="t">Logs</div><div class="d">Streaming tail + ring buffer + level filter + fingerprinting. No fancy regex yet.</div></div>
+  <div class="card"><div class="ix">M4 · 14h</div><div class="t">Checks</div><div class="d">Check trait + 6 initial checks (disk, ssh, exposed ports, tls, docker priv, cron health). Score on Dashboard and Security.</div></div>
+  <div class="card"><div class="ix">M5 · 10h</div><div class="t">Actions</div><div class="d">Risk gating, typed-phrase confirm, audit log, backup-before-edit. Restart/reload only first.</div></div>
+  <div class="card"><div class="ix">M6 · 8h</div><div class="t">Palette + crons</div><div class="d">Command palette with <code>nucleo</code> fuzzy. Cron screen incl. "next 3 runs" via <code>cron</code> crate.</div></div>
+  <div class="card"><div class="ix">M7 · 8h</div><div class="t">Docker + processes</div><div class="d">Two more table-driven screens; reuse all primitives.</div></div>
+  <div class="card"><div class="ix">M8 · 12h</div><div class="t">Polish &amp; ship</div><div class="d">Themes, keymap.toml, help overlay, error messages, README, demo recording. Snap/AUR/Homebrew tap.</div></div>
+</div>
+
+<p style="color:var(--fg-muted);font-size:12.5px;margin-top:4px">~86 hours of focused work for an end-to-end MVP. Double it for the "stuff you forgot" tax. <b>~170 hours</b> is a realistic estimate to v0.1 release.</p>
+
+<!-- ── 20 ───────────────────────────────────────────────── -->
+<h2 id="risks"><span class="n">20</span> Risks &amp; open questions</h2>
+
+<h3>Risks</h3>
+<ul>
+  <li><b>SSH parsing brittleness.</b> <code>systemctl</code>, <code>ss</code>, <code>docker</code> output drift across distros. Pin to <code>--output=json</code> wherever it exists; for everything else, parse defensively and surface <i>"unknown format"</i> as a Finding rather than panicking.</li>
+  <li><b>Terminal capability detection.</b> Truecolor isn't universal — fall back gracefully to 256-color via <code>colorterm</code> detection; never assume Unicode beyond box-drawing + the 8 spark glyphs.</li>
+  <li><b>Long-running SSH and reconnects.</b> Wireguard naps, laptops sleep. The session must surface "lost connection · retry?" inline on the host chip, not crash.</li>
+  <li><b>Mouse on tmux.</b> Crossterm mouse works but tmux passthrough varies. Keep all flows keyboard-first.</li>
+</ul>
+
+<h3>Open questions</h3>
+<ul>
+  <li><b>Plugin model?</b> External binary that emits <code>Finding</code>s as JSONL? Defer to v0.2.</li>
+  <li><b>Multi-host fanout?</b> Run a check across all "prod" hosts at once? Useful, but adds a fleet view we haven't designed yet.</li>
+  <li><b>Persistent ring of historical metrics</b> beyond the in-memory buffer? Probably a <code>~/.local/share/systui/history.db</code> with sqlite. Defer.</li>
+  <li><b>Secrets in SSH commands.</b> Some probes need sudo. Today we assume passwordless sudo or root; full <code>askpass</code> integration is a separate spike.</li>
+</ul>
+
+<div class="endplate">
+  <span class="dot"></span>
+  <span><b>spec status</b> — v0.1 design · ready for review · maps 1:1 to <b>SysTUI.html</b> prototype.</span>
+  <span style="flex:1"></span>
+  <span>20 sections · ~9.5K words · ratatui 0.29 · rust 2024</span>
+</div>
+
+</main>
+</div>
+
+</body>
+</html>

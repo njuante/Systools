@@ -5,31 +5,41 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Tabs, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Sparkline, Table, Wrap,
+};
 use regex::RegexBuilder;
 use systui_collectors::{
-    BindScope, Container, CronEntry, CronSource, DatabaseInstance, Disk, ExposureEntry, LogEntry,
-    NetworkSnapshot, SystemSnapshot, parse_schedule,
+    BindScope, Container, CronEntry, CronSource, DatabaseInstance, LogEntry, NetworkSnapshot,
+    SystemSnapshot, parse_schedule,
 };
 use systui_core::{Finding, ModuleId, Severity};
 
 use crate::app::{ActionStage, App, InputMode, Tab, ViewState};
 use crate::form::render_form;
+use crate::theme::Theme;
 
 /// Draw the whole UI for the current state.
 pub fn render(frame: &mut Frame, app: &App) {
+    // Fill the whole frame with the theme background so the truecolor palette
+    // covers gutters between panels.
+    frame.render_widget(
+        Block::default().style(Style::new().bg(app.theme.bg).fg(app.theme.fg)),
+        frame.area(),
+    );
+
     let rows = Layout::vertical([
-        Constraint::Length(1), // title
+        Constraint::Length(3), // top bar
         Constraint::Length(1), // tabs
-        Constraint::Min(0),    // content
-        Constraint::Length(1), // footer
+        Constraint::Min(0),    // body
+        Constraint::Length(1), // status bar
     ])
     .split(frame.area());
 
-    render_title(frame, app, rows[0]);
+    render_top_bar(frame, app, rows[0]);
     render_tabs(frame, app, rows[1]);
     render_content(frame, app, rows[2]);
-    render_footer(frame, app, rows[3]);
+    render_status_bar(frame, app, rows[3]);
 
     if app.show_help {
         render_help(frame, app);
@@ -110,57 +120,224 @@ fn render_action_modal(frame: &mut Frame, app: &App) {
     );
 }
 
-fn render_title(frame: &mut Frame, app: &App, area: Rect) {
-    let title = Line::from(vec![
+/// The 3-row top bar: brand + host-attached pill on the left, health gauge and
+/// execution-mode badge on the right, inside a rounded panel (spec §13).
+fn render_top_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(app.theme.border));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Brand + host pill on a single, vertically-centered line.
+    let mut left = vec![
         Span::styled(
             "SysTUI",
             Style::new()
-                .fg(app.theme.title)
+                .fg(app.theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" — "),
-        Span::styled(app.host_label.clone(), Style::new().fg(app.theme.accent)),
-    ]);
-    frame.render_widget(Paragraph::new(title), area);
-
-    let status = match &app.capabilities {
-        Some(caps) => format!("{} · mode: {} ", caps.label(), app.mode),
-        None => format!("mode: {} ", app.mode),
+        Span::styled(
+            format!(" v{}  ", env!("CARGO_PKG_VERSION")),
+            Style::new().fg(app.theme.fg_dim),
+        ),
+    ];
+    // Host-attached pill: status dot · label · transport/mode.
+    let attached = app.snapshot.is_some();
+    let dot_color = match &app.health {
+        Some(h) if h.score >= 80 => app.theme.accent,
+        Some(h) if h.score >= 50 => app.theme.high,
+        Some(_) => app.theme.critical,
+        None => app.theme.fg_dim,
     };
-    let status = Line::from(status).alignment(Alignment::Right);
+    left.push(Span::styled("● ", Style::new().fg(dot_color)));
+    left.push(Span::styled(
+        app.host_label.clone(),
+        Style::new()
+            .fg(app.theme.fg_strong)
+            .add_modifier(Modifier::BOLD),
+    ));
+    if let Some(caps) = &app.capabilities {
+        left.push(Span::styled(
+            format!("  {}", caps.label()),
+            Style::new().fg(app.theme.fg_muted),
+        ));
+    }
+    left.push(Span::styled(
+        if attached { " · live" } else { " · detached" },
+        Style::new().fg(app.theme.fg_dim),
+    ));
+
+    let (badge_text, badge_color) = mode_badge(&app.theme, app.mode);
+    let health_score = app.health.as_ref().map(|h| h.score);
+
+    // Right side: HEALTH nn/100 [gauge]  [MODE]. Built as spans so it lives on
+    // the same centered row as the brand/host pill.
+    let mut right: Vec<Span> = Vec::new();
+    if let Some(score) = health_score {
+        let color = score_color(app, score);
+        right.push(Span::styled("HEALTH ", Style::new().fg(app.theme.fg_muted)));
+        right.push(Span::styled(
+            format!("{score}"),
+            Style::new().fg(color).add_modifier(Modifier::BOLD),
+        ));
+        right.push(Span::styled("/100 ", Style::new().fg(app.theme.fg_dim)));
+        right.push(Span::styled(
+            gauge_bar(score as f64, 10),
+            Style::new().fg(color),
+        ));
+        right.push(Span::raw("  "));
+    }
+    right.push(Span::styled(
+        format!(" {badge_text} "),
+        Style::new()
+            .fg(app.theme.bg)
+            .bg(badge_color)
+            .add_modifier(Modifier::BOLD),
+    ));
+
+    // Vertically center within the 3-row panel (inner is 1 row tall here).
+    let cols = Layout::horizontal([Constraint::Min(10), Constraint::Length(right_width(&right))])
+        .split(inner);
+    frame.render_widget(Paragraph::new(Line::from(left)), cols[0]);
     frame.render_widget(
-        Paragraph::new(status).style(Style::new().fg(app.theme.dim)),
-        area,
+        Paragraph::new(Line::from(right)).alignment(Alignment::Right),
+        cols[1],
     );
 }
 
+/// Badge label and color for an execution mode.
+fn mode_badge(
+    theme: &Theme,
+    mode: systui_core::ExecutionMode,
+) -> (&'static str, ratatui::style::Color) {
+    use systui_core::ExecutionMode;
+    match mode {
+        ExecutionMode::ReadOnly => ("READ-ONLY", theme.accent),
+        ExecutionMode::SafeActions => ("SAFE", theme.high),
+        ExecutionMode::Privileged => ("PRIVILEGED", theme.critical),
+    }
+}
+
+/// Approximate rendered width of a span run, for right-alignment sizing.
+fn right_width(spans: &[Span]) -> u16 {
+    spans
+        .iter()
+        .map(|s| s.content.chars().count() as u16)
+        .sum::<u16>()
+        .saturating_add(1)
+}
+
+/// Color for a 0–100 score: green/amber/red by band.
+fn score_color(app: &App, score: u8) -> ratatui::style::Color {
+    if score >= 80 {
+        app.theme.accent
+    } else if score >= 50 {
+        app.theme.high
+    } else {
+        app.theme.critical
+    }
+}
+
+/// A solid block-character gauge of `width` cells filled to `percent`.
+fn gauge_bar(percent: f64, width: usize) -> String {
+    let filled = ((percent.clamp(0.0, 100.0) / 100.0) * width as f64).round() as usize;
+    let filled = filled.min(width);
+    let mut s = String::with_capacity(width);
+    s.extend(std::iter::repeat_n('█', filled));
+    s.extend(std::iter::repeat_n('░', width - filled));
+    s
+}
+
+/// Numbered tab bar with per-tab count badges (spec §13/§14).
 fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
-    let titles: Vec<Line> = Tab::ALL.iter().map(|t| Line::from(t.title())).collect();
-    let tabs = Tabs::new(titles)
-        .select(app.active_tab)
-        .style(Style::new().fg(app.theme.dim))
-        .highlight_style(
+    let mut spans: Vec<Span> = vec![Span::raw(" ")];
+    for (i, tab) in Tab::ALL.iter().enumerate() {
+        let active = i == app.active_tab;
+        let key = if i < 9 { (b'1' + i as u8) as char } else { '0' };
+        spans.push(Span::styled(
+            format!("{key} "),
+            Style::new().fg(app.theme.fg_dim),
+        ));
+        let name_style = if active {
             Style::new()
-                .fg(app.theme.selected_fg)
-                .bg(app.theme.selected_bg)
-                .add_modifier(Modifier::BOLD),
-        )
-        .divider(" ");
-    frame.render_widget(tabs, area);
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            Style::new().fg(app.theme.fg_muted)
+        };
+        spans.push(Span::styled(tab.title(), name_style));
+        if let Some((count, color)) = tab_badge(app, *tab) {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                format!(" {count} "),
+                Style::new()
+                    .fg(app.theme.bg)
+                    .bg(color)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        spans.push(Span::styled("  ", Style::new().fg(app.theme.fg_dim)));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The "needs attention" count badge for a tab, with its color. `None` hides it.
+fn tab_badge(app: &App, tab: Tab) -> Option<(usize, ratatui::style::Color)> {
+    let module_findings = |module| app.findings.iter().filter(|f| f.module == module).count();
+    match tab {
+        Tab::Dashboard => app
+            .health
+            .as_ref()
+            .map(|h| h.checks.len())
+            .filter(|n| *n > 0)
+            .map(|n| (n, app.theme.high)),
+        Tab::Services => {
+            (!app.failed_units.is_empty()).then_some((app.failed_units.len(), app.theme.critical))
+        }
+        Tab::Logs => {
+            let errors = app.logs.iter().filter(|e| e.is_error()).count();
+            (errors > 0).then_some((errors, app.theme.critical))
+        }
+        Tab::Network => {
+            let risky = app.risky_exposure_count();
+            (risky > 0).then_some((risky, app.theme.critical))
+        }
+        Tab::Docker => {
+            let n = module_findings(ModuleId::Docker);
+            (n > 0).then_some((n, app.theme.high))
+        }
+        Tab::Crons => {
+            let n = module_findings(ModuleId::Crons);
+            (n > 0).then_some((n, app.theme.high))
+        }
+        Tab::Security => {
+            let [crit, high, ..] = app.finding_counts();
+            let total: usize = app.finding_counts().iter().sum();
+            let color = if crit > 0 || high > 0 {
+                app.theme.critical
+            } else {
+                app.theme.high
+            };
+            (total > 0).then_some((total, color))
+        }
+        _ => None,
+    }
 }
 
 fn render_content(frame: &mut Frame, app: &App, area: Rect) {
     let tab = app.current_tab();
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::new().fg(app.theme.border))
-        .title(format!(" {} ", tab.title()));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    // No outer titled border anymore — the active tab is shown in the tab bar
+    // and each screen draws its own panels. Pad the body for breathing room.
+    let inner = area.inner(ratatui::layout::Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
 
     match (&app.view_state, &app.snapshot, tab) {
         (ViewState::Ready, Some(snap), Tab::Dashboard) => {
-            frame.render_widget(Paragraph::new(dashboard_text(app, snap)), inner);
+            render_dashboard(frame, app, snap, inner);
         }
         (ViewState::Ready, Some(snap), Tab::System) => {
             frame.render_widget(Paragraph::new(system_text(app, snap)), inner);
@@ -178,9 +355,6 @@ fn render_content(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
-    render_log_filter_bar(frame, app, rows[0]);
-
     // Case-insensitive regex search; invalid patterns fall back to substring.
     let regex = if app.log_search.is_empty() {
         None
@@ -196,66 +370,222 @@ fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
         .filter(|e| log_matches(e, &app.log_search, regex.as_ref()))
         .collect();
 
+    let cols =
+        Layout::horizontal([Constraint::Percentage(68), Constraint::Percentage(32)]).split(area);
+    render_log_tail(frame, app, &filtered, cols[0]);
+    let right =
+        Layout::vertical([Constraint::Percentage(58), Constraint::Percentage(42)]).split(cols[1]);
+    render_log_fingerprints(frame, app, &filtered, right[0]);
+    render_log_sources(frame, app, &filtered, right[1]);
+}
+
+fn render_log_tail(frame: &mut Frame, app: &App, filtered: &[&LogEntry], area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "journalctl · live");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
+    render_log_filter_bar(frame, app, rows[0]);
+
     if filtered.is_empty() {
         let msg = if app.logs.is_empty() {
-            "No logs for this filter."
+            "no logs for this filter"
         } else {
-            "No matches."
+            "no matches"
         };
         frame.render_widget(
-            Paragraph::new(Span::styled(msg, Style::new().fg(app.theme.dim)))
+            Paragraph::new(Span::styled(msg, Style::new().fg(t.fg_dim)))
                 .alignment(Alignment::Center),
             rows[1],
         );
         return;
     }
 
-    let header = Row::new(["TIME", "PRIO", "SOURCE", "MESSAGE"])
-        .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
+    let header = Row::new(["TIME", "LVL", "SOURCE", "MESSAGE"])
+        .style(Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD));
     let body = filtered.iter().map(|e| {
+        let color = log_priority_color(app, e);
         Row::new([
-            Cell::from(e.time.clone()),
+            Cell::from(Span::styled(e.time.clone(), Style::new().fg(t.fg_dim))),
             Cell::from(Span::styled(
                 e.priority_label().to_owned(),
-                Style::new().fg(log_priority_color(app, e)),
+                Style::new().fg(color).add_modifier(Modifier::BOLD),
             )),
-            Cell::from(e.identifier.clone()),
-            Cell::from(e.message.clone()),
+            Cell::from(Span::styled(
+                e.identifier.clone(),
+                Style::new().fg(t.fg_muted),
+            )),
+            Cell::from(Span::styled(e.message.clone(), Style::new().fg(t.fg))),
         ])
     });
     let widths = [
-        Constraint::Length(9),
+        Constraint::Length(8),
         Constraint::Length(6),
-        Constraint::Length(18),
+        Constraint::Length(16),
         Constraint::Min(10),
     ];
-    let table = Table::new(body, widths)
-        .header(header)
-        .style(Style::new().fg(app.theme.text));
-    frame.render_widget(table, rows[1]);
+    frame.render_widget(
+        Table::new(body, widths)
+            .header(header)
+            .style(Style::new().fg(t.fg)),
+        rows[1],
+    );
 }
 
 fn render_log_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let dim = Style::new().fg(app.theme.dim);
-    let accent = Style::new().fg(app.theme.accent);
+    let t = app.theme;
+    let dim = Style::new().fg(t.fg_dim);
+    let accent = Style::new().fg(t.accent);
     let mut spans = vec![
+        Span::styled("level ", Style::new().fg(t.fg_muted)),
         Span::styled(
-            format!("level {} ", app.log_level_label()),
-            Style::new().fg(app.theme.text),
+            format!(" {} ", app.log_level_label()),
+            Style::new()
+                .fg(t.bg)
+                .bg(t.accent)
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("· window {} ", app.log_window_label()), dim),
+        Span::styled(
+            format!("  window {}  ", app.log_window_label()),
+            Style::new().fg(t.fg_muted),
+        ),
     ];
     if app.input_mode == InputMode::Search {
-        spans.push(Span::styled(
-            format!("· search: {}_", app.log_search),
-            accent,
-        ));
+        spans.push(Span::styled(format!("search: {}_", app.log_search), accent));
     } else if !app.log_search.is_empty() {
-        spans.push(Span::styled(format!("· /{}", app.log_search), accent));
+        spans.push(Span::styled(format!("/{}", app.log_search), accent));
     } else {
-        spans.push(Span::styled("· l level · t window · / search", dim));
+        spans.push(Span::styled("l level · t window · / search", dim));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// One grouped error/warning pattern aggregated from the visible log buffer.
+struct LogFingerprint {
+    sample: String,
+    count: usize,
+    first: String,
+    last: String,
+    worst: u8,
+}
+
+/// Collapse a message into a fingerprint key: digit runs become `#`, lowercased,
+/// whitespace normalised — so lines differing only in numbers group together.
+fn normalize_log(msg: &str) -> String {
+    let mut out = String::with_capacity(msg.len());
+    let mut prev_digit = false;
+    for ch in msg.chars() {
+        if ch.is_ascii_digit() {
+            if !prev_digit {
+                out.push('#');
+            }
+            prev_digit = true;
+        } else {
+            prev_digit = false;
+            out.push(ch.to_ascii_lowercase());
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Group error/warning lines from the buffer into fingerprints, worst-count first.
+fn log_fingerprints(entries: &[&LogEntry]) -> Vec<LogFingerprint> {
+    use std::collections::HashMap;
+    let mut map: HashMap<String, LogFingerprint> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for e in entries.iter().filter(|e| e.priority <= 4) {
+        let key = format!("{}|{}", e.identifier, normalize_log(&e.message));
+        let fp = map.entry(key.clone()).or_insert_with(|| {
+            order.push(key.clone());
+            LogFingerprint {
+                sample: format!("{}: {}", e.identifier, e.message),
+                count: 0,
+                first: e.time.clone(),
+                last: e.time.clone(),
+                worst: e.priority,
+            }
+        });
+        fp.count += 1;
+        fp.last = e.time.clone();
+        fp.worst = fp.worst.min(e.priority);
+    }
+    let mut v: Vec<LogFingerprint> = order.into_iter().filter_map(|k| map.remove(&k)).collect();
+    v.sort_by_key(|fp| std::cmp::Reverse(fp.count));
+    v
+}
+
+fn render_log_fingerprints(frame: &mut Frame, app: &App, filtered: &[&LogEntry], area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Error fingerprints");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let fps = log_fingerprints(filtered);
+    if fps.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no errors", Style::new().fg(t.accent))),
+            inner,
+        );
+        return;
+    }
+
+    let max = (inner.height as usize / 2).max(1);
+    let mut lines: Vec<Line> = Vec::new();
+    for fp in fps.iter().take(max) {
+        let color = if fp.worst <= 3 { t.critical } else { t.high };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{}x ", fp.count),
+                Style::new().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(fp.sample.clone(), Style::new().fg(t.fg_strong)),
+        ]));
+        lines.push(Line::from(Span::styled(
+            format!("   first {} · last {}", fp.first, fp.last),
+            Style::new().fg(t.fg_dim),
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_log_sources(frame: &mut Frame, app: &App, filtered: &[&LogEntry], area: Rect) {
+    use std::collections::HashMap;
+    let t = app.theme;
+    let block = panel_block(&t, "Sources");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    let mut order: Vec<&str> = Vec::new();
+    for e in filtered {
+        let key = e.identifier.as_str();
+        if !counts.contains_key(key) {
+            order.push(key);
+        }
+        *counts.entry(key).or_insert(0) += 1;
+    }
+    if order.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no sources", Style::new().fg(t.fg_dim))),
+            inner,
+        );
+        return;
+    }
+    order.sort_by_key(|s| std::cmp::Reverse(counts[*s]));
+
+    let max = (inner.height as usize).max(1);
+    let lines: Vec<Line> = order
+        .iter()
+        .take(max)
+        .map(|src| {
+            Line::from(vec![
+                Span::styled(format!("{:>4} ", counts[src]), Style::new().fg(t.fg_muted)),
+                Span::styled((*src).to_owned(), Style::new().fg(t.fg)),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn selected_style(app: &App) -> Style {
@@ -293,8 +623,8 @@ fn render_services(frame: &mut Frame, app: &App, area: Rect) {
     if app.failed_units.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                "No failed units — all good.",
-                Style::new().fg(app.theme.ok),
+                "✓ no failed units — all healthy",
+                Style::new().fg(app.theme.accent),
             ))
             .alignment(Alignment::Center),
             area,
@@ -302,34 +632,89 @@ fn render_services(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let header = Row::new(["UNIT", "ACTIVE", "SUB", "DESCRIPTION"])
-        .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
+    let cols =
+        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).split(area);
+    render_service_list(frame, app, cols[0]);
+    render_service_detail(frame, app, cols[1]);
+}
+
+fn render_service_list(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, &format!("systemd · {} failed", app.failed_units.len()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let header = Row::new(["", "UNIT", "ACTIVE", "SUB"])
+        .style(Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD));
     let body = app.failed_units.iter().enumerate().map(|(i, u)| {
         let row = Row::new([
-            Cell::from(Span::styled(
-                u.name.clone(),
-                Style::new().fg(app.theme.danger),
-            )),
-            Cell::from(u.active.clone()),
-            Cell::from(u.sub.clone()),
-            Cell::from(u.description.clone()),
+            Cell::from(Span::styled("●", Style::new().fg(t.critical))),
+            Cell::from(Span::styled(u.name.clone(), Style::new().fg(t.fg_strong))),
+            Cell::from(Span::styled(u.active.clone(), Style::new().fg(t.critical))),
+            Cell::from(Span::styled(u.sub.clone(), Style::new().fg(t.fg_muted))),
         ]);
         if i == app.services_selected {
-            row.style(selected_style(app))
+            row.style(Style::new().bg(t.bg_sel).add_modifier(Modifier::BOLD))
         } else {
             row
         }
     });
     let widths = [
-        Constraint::Length(28),
+        Constraint::Length(1),
+        Constraint::Min(16),
         Constraint::Length(8),
         Constraint::Length(10),
-        Constraint::Min(10),
     ];
-    let table = Table::new(body, widths)
-        .header(header)
-        .style(Style::new().fg(app.theme.text));
-    frame.render_widget(table, area);
+    frame.render_widget(
+        Table::new(body, widths)
+            .header(header)
+            .style(Style::new().fg(t.fg)),
+        inner,
+    );
+}
+
+fn render_service_detail(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let Some(u) = app.failed_units.get(app.services_selected) else {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no unit selected", Style::new().fg(t.fg_dim)))
+                .block(panel_block(&t, "Unit")),
+            area,
+        );
+        return;
+    };
+
+    let block = panel_block(&t, &u.name);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let field = |key: &str, value: String, color| {
+        Line::from(vec![
+            Span::styled(format!("{key:<8} "), Style::new().fg(t.fg_dim)),
+            Span::styled(value, Style::new().fg(color)),
+        ])
+    };
+    let mut lines = vec![
+        Line::from(Span::styled(
+            u.description.clone(),
+            Style::new().fg(t.fg_muted),
+        )),
+        Line::from(""),
+        field("load", u.load.clone(), t.fg),
+        field("active", u.active.clone(), t.critical),
+        field("sub", u.sub.clone(), t.high),
+        Line::from(""),
+    ];
+    let hint = if app.mode == systui_core::ExecutionMode::ReadOnly {
+        Span::styled("read-only — actions disabled", Style::new().fg(t.fg_dim))
+    } else {
+        Span::styled(
+            "press a to act on this unit (restart / stop / …)",
+            Style::new().fg(t.fg_muted),
+        )
+    };
+    lines.push(Line::from(hint));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 fn render_processes(frame: &mut Frame, app: &App, area: Rect) {
@@ -401,49 +786,182 @@ fn severity_badge(severity: Severity) -> String {
     format!("[{}]", severity.to_string().to_uppercase())
 }
 
+/// A finding's severity badge + title on one line (used by the Databases tab).
+fn finding_header(app: &App, finding: &Finding) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("  {:<10}", severity_badge(finding.severity)),
+            Style::new()
+                .fg(severity_color(app, finding.severity))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            finding.title.clone(),
+            Style::new()
+                .fg(app.theme.fg_strong)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
 fn render_network(frame: &mut Frame, app: &App, area: Rect) {
-    let rows = [area, area];
     let Some(net) = &app.network else {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 "No network data — `ip`/`ss` unavailable.",
-                Style::new().fg(app.theme.dim),
-            )),
-            rows[1],
+                Style::new().fg(app.theme.fg_dim),
+            ))
+            .alignment(Alignment::Center),
+            area,
         );
         return;
     };
+
+    let cols =
+        Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).split(area);
+    render_exposure_panel(frame, app, cols[0]);
+    let right = Layout::vertical([
+        Constraint::Percentage(46),
+        Constraint::Percentage(30),
+        Constraint::Percentage(24),
+    ])
+    .split(cols[1]);
+    render_net_interfaces(frame, app, net, right[0]);
+    render_net_dns_routes(frame, app, net, right[1]);
+    render_net_connections(frame, app, net, right[2]);
+}
+
+/// The ranked exposure map: one row per listening socket, address colour-coded
+/// by bind scope and a severity RISK badge (spec §14).
+fn render_exposure_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(
+        &t,
+        &format!("Exposure map · {} listening", app.exposures.len()),
+    );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.exposures.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "no listening sockets",
+                Style::new().fg(t.fg_dim),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let header = Row::new(["PROTO", "ADDRESS", "PROCESS", "SERVICE", "RISK"])
+        .style(Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD));
+    let body = app.exposures.iter().map(|e| {
+        let proto = format!("{:?}", e.listener.protocol).to_lowercase();
+        let ip = &e.listener.local_ip;
+        let addr_color = if ip == "0.0.0.0" || ip == "::" {
+            t.high
+        } else if e.scope == BindScope::Loopback {
+            t.fg_dim
+        } else {
+            t.fg
+        };
+        let owner = match (&e.listener.process, &e.listener.unit) {
+            (Some(p), Some(unit)) => format!("{} ({unit})", p.name),
+            (Some(p), None) => p.name.clone(),
+            (None, _) => "—".to_owned(),
+        };
+        let service = e.sensitive_service.unwrap_or("—").to_owned();
+        let risk = if e.severity > Severity::Info {
+            Span::styled(
+                format!(" {} ", severity_abbr(e.severity)),
+                Style::new()
+                    .fg(t.bg)
+                    .bg(t.severity(e.severity))
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled("ok", Style::new().fg(t.fg_dim))
+        };
+        Row::new([
+            Cell::from(Span::styled(proto, Style::new().fg(t.fg_muted))),
+            Cell::from(Span::styled(
+                format!("{ip}:{}", e.listener.port),
+                Style::new().fg(addr_color),
+            )),
+            Cell::from(Span::styled(owner, Style::new().fg(t.fg))),
+            Cell::from(Span::styled(service, Style::new().fg(t.fg_muted))),
+            Cell::from(risk),
+        ])
+    });
+    let widths = [
+        Constraint::Length(5),
+        Constraint::Length(20),
+        Constraint::Min(12),
+        Constraint::Length(10),
+        Constraint::Length(7),
+    ];
     frame.render_widget(
-        Paragraph::new(network_text(app, net)).wrap(Wrap { trim: false }),
-        area,
+        Table::new(body, widths)
+            .header(header)
+            .style(Style::new().fg(t.fg)),
+        inner,
     );
 }
 
-/// Interfaces, routing, DNS, connection states and the ranked exposure map.
-fn network_text(app: &App, net: &NetworkSnapshot) -> Text<'static> {
-    let dim = Style::new().fg(app.theme.dim);
-    let text_s = Style::new().fg(app.theme.text);
-    let accent = Style::new()
-        .fg(app.theme.accent)
-        .add_modifier(Modifier::BOLD);
+/// A short severity tag for tight badge columns: CRIT/HIGH/MED/LOW/INFO.
+fn severity_abbr(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Critical => "CRIT",
+        Severity::High => "HIGH",
+        Severity::Medium => "MED",
+        Severity::Low => "LOW",
+        Severity::Info => "INFO",
+    }
+}
 
-    let mut lines = vec![Line::from(Span::styled("Interfaces", accent))];
+fn render_net_interfaces(frame: &mut Frame, app: &App, net: &NetworkSnapshot, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Interfaces");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
     if net.interfaces.is_empty() {
-        lines.push(Line::from(Span::styled("  none", dim)));
+        lines.push(Line::from(Span::styled("none", Style::new().fg(t.fg_dim))));
     }
     for iface in &net.interfaces {
-        let addrs = iface
-            .addrs
-            .iter()
-            .map(|a| format!("{}/{}", a.ip, a.prefix_len))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let up = iface.state.eq_ignore_ascii_case("up");
         lines.push(Line::from(vec![
-            Span::styled(format!("  {:<10} ", iface.name), text_s),
-            Span::styled(format!("{:<8} ", iface.state), dim),
-            Span::styled(addrs, text_s),
+            Span::styled(
+                format!("{:<10} ", iface.name),
+                Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                iface.state.clone(),
+                Style::new().fg(if up { t.accent } else { t.fg_dim }),
+            ),
         ]));
+        if !iface.addrs.is_empty() {
+            let addrs = iface
+                .addrs
+                .iter()
+                .map(|a| format!("{}/{}", a.ip, a.prefix_len))
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(Line::from(Span::styled(
+                format!("  {addrs}"),
+                Style::new().fg(t.fg_muted),
+            )));
+        }
     }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+}
+
+fn render_net_dns_routes(frame: &mut Frame, app: &App, net: &NetworkSnapshot, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "DNS · routes");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
     let gateways: Vec<String> = net
         .routes
@@ -451,79 +969,60 @@ fn network_text(app: &App, net: &NetworkSnapshot) -> Text<'static> {
         .filter(|r| r.dst == "default")
         .filter_map(|r| r.gateway.clone().map(|g| format!("{g} via {}", r.dev)))
         .collect();
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("Gateway  ", accent),
-        Span::styled(
+    let field = |key: &str, value: String| {
+        Line::from(vec![
+            Span::styled(format!("{key:<8} "), Style::new().fg(t.fg_dim)),
+            Span::styled(value, Style::new().fg(t.fg)),
+        ])
+    };
+    let lines = vec![
+        field(
+            "gateway",
             if gateways.is_empty() {
                 "none".to_owned()
             } else {
                 gateways.join(", ")
             },
-            text_s,
         ),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("DNS      ", accent),
-        Span::styled(
+        field(
+            "dns",
             if net.dns.nameservers.is_empty() {
                 "none".to_owned()
             } else {
                 net.dns.nameservers.join(", ")
             },
-            text_s,
         ),
-    ]));
-
-    let counts = net.connection_state_counts();
-    if !counts.is_empty() {
-        let summary = counts
-            .iter()
-            .map(|(state, n)| format!("{state} {n}"))
-            .collect::<Vec<_>>()
-            .join(" · ");
-        lines.push(Line::from(vec![
-            Span::styled("Conns    ", accent),
-            Span::styled(summary, dim),
-        ]));
-    }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("Exposure map ", accent),
-        Span::styled("(worst first)", dim),
-    ]));
-    if app.exposures.is_empty() {
-        lines.push(Line::from(Span::styled("  no listening sockets", dim)));
-    }
-    for entry in app.exposures.iter().take(12) {
-        lines.push(exposure_line(app, entry));
-    }
-
-    Text::from(lines)
+    ];
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
-fn exposure_line(app: &App, entry: &ExposureEntry) -> Line<'static> {
-    let proto = format!("{:?}", entry.listener.protocol).to_lowercase();
-    let owner = match (&entry.listener.process, &entry.listener.unit) {
-        (Some(p), Some(unit)) => format!("{} ({unit})", p.name),
-        (Some(p), None) => p.name.clone(),
-        (None, _) => "—".to_owned(),
-    };
-    Line::from(vec![
-        Span::styled(
-            format!("  {:<10}", severity_badge(entry.severity)),
-            Style::new().fg(severity_color(app, entry.severity)),
-        ),
-        Span::styled(
-            format!(
-                "{proto} {}:{}",
-                entry.listener.local_ip, entry.listener.port
-            ),
-            Style::new().fg(app.theme.text),
-        ),
-        Span::styled(format!("  {owner}"), Style::new().fg(app.theme.dim)),
-    ])
+fn render_net_connections(frame: &mut Frame, app: &App, net: &NetworkSnapshot, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Connections");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let counts = net.connection_state_counts();
+    if counts.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "no active connections",
+                Style::new().fg(t.fg_dim),
+            )),
+            inner,
+        );
+        return;
+    }
+    let lines: Vec<Line> = counts
+        .iter()
+        .map(|(state, n)| {
+            Line::from(vec![
+                Span::styled(format!("{n:>4} "), Style::new().fg(t.fg_muted)),
+                Span::styled(state.clone(), Style::new().fg(t.fg)),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_docker(frame: &mut Frame, app: &App, area: Rect) {
@@ -554,63 +1053,163 @@ fn render_docker(frame: &mut Frame, app: &App, area: Rect) {
     let rows =
         Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
     render_container_table(frame, app, rows[0]);
-    render_container_detail(frame, app, rows[1]);
+    let bottom =
+        Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)]).split(rows[1]);
+    render_docker_risks(frame, app, bottom[0]);
+    render_container_detail(frame, app, bottom[1]);
 }
 
 fn render_container_table(frame: &mut Frame, app: &App, area: Rect) {
-    let header = Row::new(["NAME", "IMAGE", "STATE", "HEALTH", "PORTS"])
-        .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
+    let t = app.theme;
+    let block = panel_block(
+        &t,
+        &format!("docker ps · {} containers", app.containers.len()),
+    );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let header = Row::new([
+        "",
+        "CONTAINER",
+        "IMAGE",
+        "STATE",
+        "HEALTH",
+        "CPU%",
+        "MEM%",
+        "",
+    ])
+    .style(Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD));
     let body = app.containers.iter().enumerate().map(|(i, c)| {
-        let state_color = if c.is_running() {
-            app.theme.ok
+        let dot_color = if c.is_running() {
+            t.accent
         } else if c.state == "restarting" {
-            app.theme.warn
+            t.high
         } else {
-            app.theme.dim
+            t.fg_dim
         };
         let (health, health_color) = container_health(app, c);
+        let stats = app
+            .container_stats
+            .iter()
+            .find(|s| s.id == c.id || s.name == c.name);
+        let cpu = stats
+            .map(|s| format!("{:.1}", s.cpu_percent))
+            .unwrap_or_default();
+        let mem = stats
+            .map(|s| format!("{:.1}", s.mem_percent))
+            .unwrap_or_default();
+        let risk = container_risk(app, c);
+        let risk_cell = match risk {
+            Some(sev) => Span::styled(
+                " RISK ",
+                Style::new()
+                    .fg(t.bg)
+                    .bg(t.severity(sev))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            None => Span::styled("ok", Style::new().fg(t.fg_dim)),
+        };
         let row = Row::new([
-            Cell::from(c.name.clone()),
-            Cell::from(c.image.clone()),
-            Cell::from(Span::styled(c.state.clone(), Style::new().fg(state_color))),
+            Cell::from(Span::styled("●", Style::new().fg(dot_color))),
+            Cell::from(Span::styled(c.name.clone(), Style::new().fg(t.fg_strong))),
+            Cell::from(Span::styled(c.image.clone(), Style::new().fg(t.fg_muted))),
+            Cell::from(Span::styled(c.state.clone(), Style::new().fg(dot_color))),
             Cell::from(Span::styled(health, Style::new().fg(health_color))),
-            Cell::from(c.ports.clone()),
+            Cell::from(Span::styled(cpu, Style::new().fg(t.fg))),
+            Cell::from(Span::styled(mem, Style::new().fg(t.fg))),
+            Cell::from(risk_cell),
         ]);
         if i == app.containers_selected {
-            row.style(selected_style(app))
+            row.style(Style::new().bg(t.bg_sel).add_modifier(Modifier::BOLD))
         } else {
             row
         }
     });
     let widths = [
-        Constraint::Length(18),
-        Constraint::Length(22),
+        Constraint::Length(1),
+        Constraint::Min(14),
+        Constraint::Length(24),
         Constraint::Length(11),
         Constraint::Length(9),
-        Constraint::Min(10),
+        Constraint::Length(5),
+        Constraint::Length(5),
+        Constraint::Length(6),
     ];
-    let table = Table::new(body, widths)
-        .header(header)
-        .style(Style::new().fg(app.theme.text));
-    frame.render_widget(table, area);
+    frame.render_widget(
+        Table::new(body, widths)
+            .header(header)
+            .style(Style::new().fg(t.fg)),
+        inner,
+    );
+}
+
+/// The worst severity among the selected container's inspect-based risk checks.
+fn container_risk(app: &App, c: &Container) -> Option<Severity> {
+    let inspect = app.container_inspects.iter().find(|i| i.id == c.id)?;
+    systui_security::check_container(inspect)
+        .into_iter()
+        .map(|f| f.severity)
+        .max()
+}
+
+/// Risk-check side panel: the worst Docker findings across all containers.
+fn render_docker_risks(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Risk checks");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let risks: Vec<&Finding> = app
+        .findings
+        .iter()
+        .filter(|f| f.module == ModuleId::Docker)
+        .collect();
+    if risks.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no risks", Style::new().fg(t.accent))),
+            inner,
+        );
+        return;
+    }
+
+    let max = (inner.height as usize).max(1);
+    let mut lines: Vec<Line> = Vec::new();
+    for f in risks.iter().take(max) {
+        let color = t.severity(f.severity);
+        let sev = f.severity.to_string().to_uppercase();
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{sev:<5} "),
+                Style::new().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(f.title.clone(), Style::new().fg(t.fg_strong)),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn container_health(app: &App, c: &Container) -> (String, ratatui::style::Color) {
     use systui_collectors::ContainerHealth;
     match c.health {
-        Some(ContainerHealth::Healthy) => ("healthy".to_owned(), app.theme.ok),
-        Some(ContainerHealth::Unhealthy) => ("unhealthy".to_owned(), app.theme.danger),
-        Some(ContainerHealth::Starting) => ("starting".to_owned(), app.theme.warn),
-        None => ("-".to_owned(), app.theme.dim),
+        Some(ContainerHealth::Healthy) => ("healthy".to_owned(), app.theme.accent),
+        Some(ContainerHealth::Unhealthy) => ("unhealthy".to_owned(), app.theme.critical),
+        Some(ContainerHealth::Starting) => ("starting".to_owned(), app.theme.high),
+        None => ("-".to_owned(), app.theme.fg_dim),
     }
 }
 
 fn render_container_detail(frame: &mut Frame, app: &App, area: Rect) {
-    let dim = Style::new().fg(app.theme.dim);
-    let accent = Style::new()
-        .fg(app.theme.accent)
-        .add_modifier(Modifier::BOLD);
-    let text_s = Style::new().fg(app.theme.text);
+    let t = app.theme;
+    let dim = Style::new().fg(t.fg_muted);
+    let text_s = Style::new().fg(t.fg);
+
+    let title = app
+        .selected_container()
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| "Container".to_owned());
+    let block = panel_block(&t, &title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
     let Some(inspect) = app.selected_inspect() else {
         let name = app
@@ -618,33 +1217,43 @@ fn render_container_detail(frame: &mut Frame, app: &App, area: Rect) {
             .map(|c| c.name.as_str())
             .unwrap_or("container");
         frame.render_widget(
-            Paragraph::new(Span::styled(format!("No inspect data for {name}."), dim)),
-            area,
+            Paragraph::new(Span::styled(
+                format!("no inspect data for {name}"),
+                Style::new().fg(t.fg_dim),
+            )),
+            inner,
         );
         return;
     };
 
-    let mut lines = vec![Line::from(vec![
-        Span::styled(format!("{} ", inspect.name), accent),
-        Span::styled(inspect.image.clone(), dim),
-    ])];
+    let mut lines = vec![Line::from(Span::styled(inspect.image.clone(), dim))];
 
     let mem = if inspect.memory_limit_bytes == 0 {
         "unlimited".to_owned()
     } else {
         human_kb(inspect.memory_limit_bytes / 1024)
     };
-    lines.push(Line::from(Span::styled(
-        format!(
-            "  privileged {} · restart {} ({}) · mem {} · net {}",
-            inspect.privileged,
-            inspect.restart_policy,
-            inspect.restart_count,
-            mem,
-            inspect.networks.join(",")
+    let priv_color = if inspect.privileged { t.critical } else { t.fg };
+    lines.push(Line::from(vec![
+        Span::styled("privileged ", dim),
+        Span::styled(
+            format!("{}", inspect.privileged),
+            Style::new().fg(priv_color),
         ),
-        text_s,
-    )));
+        Span::styled(
+            format!(
+                "  ·  restart {} ({})  ·  mem {}",
+                inspect.restart_policy, inspect.restart_count, mem
+            ),
+            text_s,
+        ),
+    ]));
+    if !inspect.networks.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("net {}", inspect.networks.join(", ")),
+            dim,
+        )));
+    }
 
     if let Some(stats) = app
         .container_stats
@@ -653,7 +1262,7 @@ fn render_container_detail(frame: &mut Frame, app: &App, area: Rect) {
     {
         lines.push(Line::from(Span::styled(
             format!(
-                "  cpu {:.1}% · mem {:.1}% ({})",
+                "cpu {:.1}% · mem {:.1}% ({})",
                 stats.cpu_percent, stats.mem_percent, stats.mem_usage
             ),
             text_s,
@@ -661,120 +1270,269 @@ fn render_container_detail(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     if !inspect.mounts.is_empty() {
-        lines.push(Line::from(Span::styled("  mounts", dim)));
+        lines.push(Line::from(Span::styled("mounts", dim)));
         for m in &inspect.mounts {
             lines.push(Line::from(Span::styled(
                 format!(
-                    "    {} -> {} ({})",
+                    "  {} -> {} ({})",
                     m.source,
                     m.destination,
                     if m.rw { "rw" } else { "ro" }
                 ),
-                dim,
+                Style::new().fg(t.fg_dim),
             )));
         }
     }
 
-    let risks = systui_security::check_container(inspect);
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        format!("Risks ({})", risks.len()),
-        accent,
-    )));
-    if risks.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  none",
-            Style::new().fg(app.theme.ok),
-        )));
-    }
-    for finding in risks.iter().take(6) {
-        lines.push(finding_header(app, finding));
-    }
-
     frame.render_widget(
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
-        area,
+        inner,
     );
 }
 
 fn render_crons(frame: &mut Frame, app: &App, area: Rect) {
-    let rows = Layout::vertical([
-        Constraint::Percentage(45),
+    let cols =
+        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).split(area);
+    render_cron_table(frame, app, cols[0]);
+    let right = Layout::vertical([
+        Constraint::Percentage(42),
         Constraint::Percentage(30),
-        Constraint::Percentage(25),
+        Constraint::Percentage(28),
     ])
-    .split(area);
-    render_cron_jobs(frame, app, rows[0]);
-    render_cron_timers(frame, app, rows[1]);
-    render_cron_warnings(frame, app, rows[2]);
+    .split(cols[1]);
+    render_cron_preview(frame, app, right[0]);
+    render_cron_timers_panel(frame, app, right[1]);
+    render_cron_summary(frame, app, right[2]);
 }
 
-fn render_cron_jobs(frame: &mut Frame, app: &App, area: Rect) {
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+fn render_cron_timers_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, &format!("Systemd timers · {}", app.timers.len()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.timers.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("none", Style::new().fg(t.fg_dim))),
+            inner,
+        );
+        return;
+    }
+    let max = (inner.height as usize).max(1);
+    let lines: Vec<Line> = app
+        .timers
+        .iter()
+        .take(max)
+        .map(|tm| {
+            Line::from(vec![
+                Span::styled(tm.unit.clone(), Style::new().fg(t.fg_strong)),
+                Span::styled(format!("  next {}", tm.next), Style::new().fg(t.fg_muted)),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+}
+
+fn render_cron_table(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
     let user_jobs = app
         .crons
         .iter()
         .filter(|entry| entry.source == CronSource::User)
         .count();
-    let hint = if app.mode == systui_core::ExecutionMode::ReadOnly {
-        "read-only mode"
-    } else {
-        "a add  e edit  d delete  x enable/disable user crontab"
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!("Jobs {}  user {}", app.crons.len(), user_jobs),
-                Style::new().fg(app.theme.text),
-            ),
-            Span::styled(format!("  |  {hint}"), Style::new().fg(app.theme.dim)),
-        ])),
-        rows[0],
+    let block = panel_block(
+        &t,
+        &format!("Scheduled jobs · {} ({} user)", app.crons.len(), user_jobs),
     );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
     if app.crons.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                "No cron jobs found.",
-                Style::new().fg(app.theme.dim),
+                "no cron jobs found",
+                Style::new().fg(t.fg_dim),
             )),
-            rows[1],
+            inner,
         );
         return;
     }
-    let header = Row::new(["STATE", "SCHEDULE", "NEXT RUN", "USER", "COMMAND"])
-        .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
+
+    let header = Row::new(["", "SCHEDULE", "NEXT RUN", "USER", "COMMAND"])
+        .style(Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD));
     let body = app.crons.iter().enumerate().map(|(i, e)| {
         let (schedule, next) = cron_schedule_cells(app, e);
-        let state = if e.enabled { "enabled" } else { "disabled" };
-        let state_color = if e.enabled {
-            app.theme.ok
-        } else {
-            app.theme.dim
-        };
+        let dot_color = if e.enabled { t.accent } else { t.fg_dim };
+        let cmd_color = if e.enabled { t.fg } else { t.fg_dim };
         let row = Row::new([
-            Cell::from(Span::styled(state, Style::new().fg(state_color))),
-            Cell::from(schedule),
-            Cell::from(next),
-            Cell::from(e.user.clone().unwrap_or_else(|| "—".to_owned())),
-            Cell::from(e.command.clone()),
+            Cell::from(Span::styled("●", Style::new().fg(dot_color))),
+            Cell::from(Span::styled(schedule, Style::new().fg(t.fg))),
+            Cell::from(Span::styled(next, Style::new().fg(t.fg_muted))),
+            Cell::from(Span::styled(
+                e.user.clone().unwrap_or_else(|| "—".to_owned()),
+                Style::new().fg(t.fg_muted),
+            )),
+            Cell::from(Span::styled(e.command.clone(), Style::new().fg(cmd_color))),
         ]);
         if i == app.crons_selected {
-            row.style(selected_style(app))
+            row.style(Style::new().bg(t.bg_sel).add_modifier(Modifier::BOLD))
         } else {
             row
         }
     });
     let widths = [
+        Constraint::Length(1),
+        Constraint::Length(18),
+        Constraint::Length(16),
         Constraint::Length(9),
-        Constraint::Length(20),
-        Constraint::Length(17),
-        Constraint::Length(10),
         Constraint::Min(10),
     ];
-    let table = Table::new(body, widths)
-        .header(header)
-        .style(Style::new().fg(app.theme.text));
-    frame.render_widget(table, rows[1]);
+    frame.render_widget(
+        Table::new(body, widths)
+            .header(header)
+            .style(Style::new().fg(t.fg)),
+        inner,
+    );
+}
+
+/// Up to `n` upcoming run times for a cron expression, formatted for display.
+fn cron_next_runs(app: &App, schedule_str: &str, n: usize) -> Vec<String> {
+    let Ok(schedule) = parse_schedule(schedule_str) else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(n);
+    let mut cursor = app.now;
+    for _ in 0..n {
+        match schedule.next_after(cursor) {
+            Some(next) => {
+                out.push(next.format("%a %Y-%m-%d %H:%M").to_string());
+                cursor = next;
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+fn render_cron_preview(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Preview");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let Some(entry) = app.selected_cron() else {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no job selected", Style::new().fg(t.fg_dim))),
+            inner,
+        );
+        return;
+    };
+
+    let valid = parse_schedule(&entry.schedule).is_ok();
+    let field = |key: &str, value: String, color| {
+        Line::from(vec![
+            Span::styled(format!("{key:<9} "), Style::new().fg(t.fg_dim)),
+            Span::styled(value, Style::new().fg(color)),
+        ])
+    };
+    let mut lines = vec![
+        field(
+            "schedule",
+            entry.schedule.clone(),
+            if valid { t.fg } else { t.critical },
+        ),
+        field("human", cron_schedule_cells(app, entry).0, t.fg_muted),
+        field(
+            "user",
+            entry.user.clone().unwrap_or_else(|| "—".to_owned()),
+            t.fg,
+        ),
+        field("source", format!("{:?}", entry.source), t.fg_muted),
+        field("command", entry.command.clone(), t.fg_strong),
+    ];
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "next runs",
+        Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD),
+    )));
+    let runs = cron_next_runs(app, &entry.schedule, 3);
+    if runs.is_empty() {
+        lines.push(Line::from(Span::styled("  —", Style::new().fg(t.fg_dim))));
+    }
+    for r in runs {
+        lines.push(Line::from(Span::styled(
+            format!("  → {r}"),
+            Style::new().fg(t.fg),
+        )));
+    }
+
+    if entry.source == CronSource::User && app.mode != systui_core::ExecutionMode::ReadOnly {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "edits back up the crontab first",
+            Style::new().fg(t.fg_dim),
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+}
+
+fn render_cron_summary(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Cron health");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let warnings: Vec<&Finding> = app
+        .findings
+        .iter()
+        .filter(|f| f.module == ModuleId::Crons)
+        .collect();
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            format!("{}", app.crons.len()),
+            Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" jobs · ", Style::new().fg(t.fg_muted)),
+        Span::styled(
+            format!("{}", app.timers.len()),
+            Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" timers · ", Style::new().fg(t.fg_muted)),
+        Span::styled(
+            format!("{}", warnings.len()),
+            Style::new()
+                .fg(if warnings.is_empty() {
+                    t.accent
+                } else {
+                    t.high
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" warnings", Style::new().fg(t.fg_muted)),
+    ])];
+    lines.push(Line::from(""));
+
+    if warnings.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "no warnings",
+            Style::new().fg(t.accent),
+        )));
+    } else {
+        let max = (inner.height as usize).saturating_sub(3).max(1);
+        for f in warnings.iter().take(max) {
+            let color = t.severity(f.severity);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{:<5} ", f.severity.to_string().to_uppercase()),
+                    Style::new().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(f.title.clone(), Style::new().fg(t.fg_strong)),
+            ]));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 /// The natural-language schedule and next-run cells for a cron entry. An invalid
@@ -790,73 +1548,6 @@ fn cron_schedule_cells(app: &App, entry: &CronEntry) -> (String, String) {
         }
         Err(_) => ("invalid".to_owned(), "—".to_owned()),
     }
-}
-
-fn render_cron_timers(frame: &mut Frame, app: &App, area: Rect) {
-    let accent = Style::new()
-        .fg(app.theme.accent)
-        .add_modifier(Modifier::BOLD);
-    if app.timers.is_empty() {
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::styled("Systemd timers", accent)),
-                Line::from(Span::styled("  none", Style::new().fg(app.theme.dim))),
-            ]),
-            area,
-        );
-        return;
-    }
-    let header = Row::new(["TIMER", "NEXT", "ACTIVATES"])
-        .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
-    let body = app.timers.iter().map(|t| {
-        Row::new([
-            Cell::from(t.unit.clone()),
-            Cell::from(t.next.clone()),
-            Cell::from(t.activates.clone()),
-        ])
-    });
-    let widths = [
-        Constraint::Length(26),
-        Constraint::Length(26),
-        Constraint::Min(10),
-    ];
-    let table = Table::new(body, widths)
-        .header(header)
-        .style(Style::new().fg(app.theme.text));
-    frame.render_widget(table, area);
-}
-
-fn render_cron_warnings(frame: &mut Frame, app: &App, area: Rect) {
-    let accent = Style::new()
-        .fg(app.theme.accent)
-        .add_modifier(Modifier::BOLD);
-    let dim = Style::new().fg(app.theme.dim);
-    let warnings: Vec<&Finding> = app
-        .findings
-        .iter()
-        .filter(|f| f.module == ModuleId::Crons)
-        .collect();
-
-    let mut lines = vec![Line::from(Span::styled(
-        format!("Warnings ({})", warnings.len()),
-        accent,
-    ))];
-    if warnings.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  none",
-            Style::new().fg(app.theme.ok),
-        )));
-    }
-    for finding in warnings.iter().take(6) {
-        lines.push(finding_header(app, finding));
-        if let Some(evidence) = finding.evidence.first() {
-            lines.push(Line::from(Span::styled(format!("      {evidence}"), dim)));
-        }
-    }
-    frame.render_widget(
-        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
-        area,
-    );
 }
 
 fn render_databases(frame: &mut Frame, app: &App, area: Rect) {
@@ -1064,71 +1755,86 @@ fn render_security(frame: &mut Frame, app: &App, area: Rect) {
     if app.findings.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                "No findings — nothing flagged.",
-                Style::new().fg(app.theme.ok),
+                "✓ no findings — nothing flagged",
+                Style::new().fg(app.theme.accent),
             ))
             .alignment(Alignment::Center),
             area,
         );
         return;
     }
-    frame.render_widget(
-        Paragraph::new(security_text(app)).wrap(Wrap { trim: false }),
-        area,
-    );
+    let rows = Layout::vertical([Constraint::Length(4), Constraint::Min(0)]).split(area);
+    render_security_header(frame, app, rows[0]);
+    render_security_findings(frame, app, rows[1]);
 }
 
-/// The prioritized, evidence-based findings list (worst first).
-fn security_text(app: &App) -> Text<'static> {
-    let dim = Style::new().fg(app.theme.dim);
-    let text_s = Style::new().fg(app.theme.text);
+/// Severity-counter header band: one tile per severity with a big count.
+fn render_security_header(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Security findings");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    let [crit, high, med, low, info] = app.finding_counts();
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled("critical ", dim),
-            Span::styled(crit.to_string(), Style::new().fg(app.theme.danger)),
-            Span::styled("  high ", dim),
-            Span::styled(high.to_string(), Style::new().fg(app.theme.danger)),
-            Span::styled("  medium ", dim),
-            Span::styled(med.to_string(), Style::new().fg(app.theme.warn)),
-            Span::styled("  low ", dim),
-            Span::styled(low.to_string(), Style::new().fg(app.theme.accent)),
-            Span::styled("  info ", dim),
-            Span::styled(info.to_string(), text_s),
-        ]),
-        Line::from(""),
-    ];
+    let counts = app.finding_counts();
+    let labels = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
+    let colors = [t.critical, t.high, t.medium, t.low, t.fg_muted];
+    let cells = Layout::horizontal([Constraint::Ratio(1, 5); 5]).split(inner);
+    for (i, label) in labels.iter().enumerate() {
+        let n = counts[i];
+        let count_color = if n > 0 { colors[i] } else { t.fg_dim };
+        let lines = vec![
+            Line::from(Span::styled(
+                format!("{n}"),
+                Style::new().fg(count_color).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(*label, Style::new().fg(t.fg_dim))),
+        ];
+        frame.render_widget(Paragraph::new(lines), cells[i]);
+    }
+}
 
-    for finding in app.findings.iter().take(14) {
-        lines.push(finding_header(app, finding));
-        if let Some(evidence) = finding.evidence.first() {
-            lines.push(Line::from(Span::styled(format!("      {evidence}"), dim)));
-        }
-        if !finding.recommendation.is_empty() {
+/// Evidence-based findings list: severity edge bar, title + id/module, an inset
+/// evidence line and the recommendation (spec §14).
+fn render_security_findings(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Findings · evidence-based");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let per_finding = 3;
+    let max = (inner.height as usize / per_finding).max(1);
+    let mut lines: Vec<Line> = Vec::new();
+    for f in app.findings.iter().take(max) {
+        let color = t.severity(f.severity);
+        lines.push(Line::from(vec![
+            Span::styled("▌ ", Style::new().fg(color)),
+            Span::styled(
+                format!("{:<5} ", f.severity.to_string().to_uppercase()),
+                Style::new().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                f.title.clone(),
+                Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("   {} · {}", f.id, f.module),
+                Style::new().fg(t.fg_dim),
+            ),
+        ]));
+        if let Some(evidence) = f.evidence.first() {
             lines.push(Line::from(Span::styled(
-                format!("      → {}", finding.recommendation),
-                Style::new().fg(app.theme.ok),
+                format!("    {evidence}"),
+                Style::new().fg(t.fg_muted).bg(t.bg_elev),
+            )));
+        }
+        if !f.recommendation.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("    → {}", f.recommendation),
+                Style::new().fg(t.accent),
             )));
         }
     }
-
-    Text::from(lines)
-}
-
-fn finding_header(app: &App, finding: &Finding) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(
-            format!("  {:<10}", severity_badge(finding.severity)),
-            Style::new()
-                .fg(severity_color(app, finding.severity))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            finding.title.clone(),
-            Style::new().fg(app.theme.text).add_modifier(Modifier::BOLD),
-        ),
-    ])
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 fn render_message(frame: &mut Frame, app: &App, tab: Tab, area: Rect) {
@@ -1168,198 +1874,345 @@ fn content_message(app: &App, tab: Tab) -> (String, String) {
 }
 
 /// The prioritized overview: header, CPU/RAM/swap bars and disk usage.
-fn dashboard_text(app: &App, snap: &SystemSnapshot) -> Text<'static> {
-    let dim = Style::new().fg(app.theme.dim);
-    let text_s = Style::new().fg(app.theme.text);
-    let accent = Style::new()
-        .fg(app.theme.accent)
-        .add_modifier(Modifier::BOLD);
+/// Dashboard: metric tiles + health score + critical findings + at-a-glance,
+/// laid out as a two-column multi-panel screen (spec §14).
+fn render_dashboard(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
+    let cols =
+        Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).split(area);
+    let left = Layout::vertical([Constraint::Length(8), Constraint::Min(0)]).split(cols[0]);
+    let right = Layout::vertical([Constraint::Length(12), Constraint::Min(0)]).split(cols[1]);
 
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled(snap.hostname.clone(), accent),
-            Span::styled("  ·  ", dim),
-            Span::styled(
-                snap.os.clone().unwrap_or_else(|| "unknown OS".to_owned()),
-                text_s,
-            ),
-        ]),
-        Line::from(vec![Span::styled(
-            format!(
-                "up {} · load {:.2} {:.2} {:.2} · {} cores",
-                human_uptime(snap.uptime_secs),
-                snap.load.one,
-                snap.load.five,
-                snap.load.fifteen,
-                snap.cpu.cores,
-            ),
-            dim,
-        )]),
-        Line::from(""),
-        metric_line(app, "CPU ", snap.cpu.busy_percent, None),
-        metric_line(
-            app,
-            "RAM ",
-            snap.memory.used_percent(),
-            Some(format!(
-                "{} / {}",
-                human_kb(snap.memory.used_kb()),
-                human_kb(snap.memory.total_kb)
-            )),
+    render_metric_tiles(frame, app, snap, left[0]);
+    render_findings_panel(frame, app, left[1]);
+    render_health_panel(frame, app, right[0]);
+    render_at_a_glance(frame, app, snap, right[1]);
+}
+
+/// A rounded, titled panel block in the theme's surface style.
+fn panel_block(theme: &Theme, title: &str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.border))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::new().fg(theme.fg_muted).add_modifier(Modifier::BOLD),
+        ))
+}
+
+/// Color for a 0–100 utilisation: green / amber / red by band.
+fn usage_color(theme: &Theme, percent: f64) -> ratatui::style::Color {
+    if percent >= 85.0 {
+        theme.critical
+    } else if percent >= 60.0 {
+        theme.high
+    } else {
+        theme.accent
+    }
+}
+
+/// The four top metric tiles: CPU, RAM, DISK, LOAD.
+fn render_metric_tiles(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
+    let cells = Layout::horizontal([Constraint::Ratio(1, 4); 4]).split(area);
+
+    metric_tile(
+        frame,
+        &app.theme,
+        cells[0],
+        "CPU",
+        format!("{:.0}", snap.cpu.busy_percent),
+        "%",
+        format!("{} cores", snap.cpu.cores),
+        Some(&app.cpu_history),
+        snap.cpu.busy_percent,
+    );
+    metric_tile(
+        frame,
+        &app.theme,
+        cells[1],
+        "RAM",
+        format!("{:.0}", snap.memory.used_percent()),
+        "%",
+        format!(
+            "{} / {}",
+            human_kb(snap.memory.used_kb()),
+            human_kb(snap.memory.total_kb)
         ),
-    ];
-
-    let failed = app.failed_units.len();
-    let errors = app.logs.iter().filter(|e| e.is_error()).count();
-    let count_style = |n: usize| {
-        if n > 0 {
-            Style::new()
-                .fg(app.theme.danger)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::new().fg(app.theme.ok)
-        }
-    };
-    lines.insert(
-        2,
-        Line::from(vec![
-            Span::styled("failed units: ", dim),
-            Span::styled(failed.to_string(), count_style(failed)),
-            Span::styled("   recent errors: ", dim),
-            Span::styled(errors.to_string(), count_style(errors)),
-        ]),
+        Some(&app.mem_history),
+        snap.memory.used_percent(),
     );
 
-    if snap.swap.total_kb > 0 {
-        lines.push(metric_line(
-            app,
-            "Swap",
-            snap.swap.used_percent(),
-            Some(format!(
-                "{} / {}",
-                human_kb(snap.swap.used_kb()),
-                human_kb(snap.swap.total_kb)
-            )),
-        ));
+    let worst = snap.disks.iter().max_by_key(|d| d.use_percent);
+    let (dvalue, dsub, dpct) = match worst {
+        Some(d) => (
+            format!("{}", d.use_percent),
+            format!("{} {}", d.mount, human_kb(d.size_kb)),
+            d.use_percent as f64,
+        ),
+        None => ("–".to_owned(), "no disks".to_owned(), 0.0),
+    };
+    metric_tile(
+        frame, &app.theme, cells[2], "DISK", dvalue, "%", dsub, None, dpct,
+    );
+
+    let load_pct = if snap.cpu.cores > 0 {
+        (snap.load.one / snap.cpu.cores as f64 * 100.0).min(100.0)
     } else {
-        lines.push(Line::from(vec![
-            Span::styled("Swap  ", text_s),
-            Span::styled("none", dim),
-        ]));
-    }
+        0.0
+    };
+    metric_tile(
+        frame,
+        &app.theme,
+        cells[3],
+        "LOAD",
+        format!("{:.2}", snap.load.one),
+        "",
+        format!(
+            "{:.2} {:.2} · {} cores",
+            snap.load.five, snap.load.fifteen, snap.cpu.cores
+        ),
+        None,
+        load_pct,
+    );
+}
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("Disks", accent)));
-    for disk in &snap.disks {
-        lines.push(disk_line(app, disk));
-    }
+/// One metric tile: label, big value, sparkline-or-gauge, sub-line.
+#[allow(clippy::too_many_arguments)]
+fn metric_tile(
+    frame: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    label: &str,
+    value: String,
+    unit: &str,
+    sub: String,
+    history: Option<&[u64]>,
+    percent: f64,
+) {
+    let block = panel_block(theme, label);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    if let Some(health) = &app.health {
-        // Health score line at the very top, colored by severity band.
-        let score_color = if health.score >= 80 {
-            app.theme.ok
-        } else if health.score >= 50 {
-            app.theme.warn
-        } else {
-            app.theme.danger
-        };
-        lines.insert(
-            0,
-            Line::from(vec![
-                Span::styled("Health ", accent),
-                Span::styled(
-                    format!("{}/100", health.score),
-                    Style::new().fg(score_color).add_modifier(Modifier::BOLD),
-                ),
-            ]),
-        );
+    let color = usage_color(theme, percent);
+    let rows = Layout::vertical([
+        Constraint::Length(1), // value
+        Constraint::Length(1), // sparkline / gauge
+        Constraint::Min(0),    // sub
+    ])
+    .split(inner);
 
-        // Prioritized findings at the bottom.
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("Findings", accent)));
-        if health.checks.is_empty() {
-            lines.push(Line::from(Span::styled("  none — healthy", dim)));
-        } else {
-            for check in health.checks.iter().take(8) {
-                lines.push(finding_line(app, check));
-            }
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                value,
+                Style::new()
+                    .fg(theme.fg_strong)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!(" {unit}"), Style::new().fg(theme.fg_muted)),
+        ])),
+        rows[0],
+    );
+
+    match history {
+        Some(h) if !h.is_empty() => {
+            frame.render_widget(
+                Sparkline::default()
+                    .data(h)
+                    .max(100)
+                    .style(Style::new().fg(color)),
+                rows[1],
+            );
+        }
+        _ => {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    gauge_bar(percent, rows[1].width as usize),
+                    Style::new().fg(color),
+                )),
+                rows[1],
+            );
         }
     }
 
-    // Security posture: network exposure and the worst security findings.
-    let [crit, high, med, ..] = app.finding_counts();
-    let risky = app.risky_exposure_count();
-    let count_span = |n: usize, color| {
-        let style = if n > 0 {
-            Style::new().fg(color).add_modifier(Modifier::BOLD)
-        } else {
-            Style::new().fg(app.theme.ok)
-        };
-        Span::styled(n.to_string(), style)
+    frame.render_widget(
+        Paragraph::new(Span::styled(sub, Style::new().fg(theme.fg_dim))).wrap(Wrap { trim: true }),
+        rows[2],
+    );
+}
+
+/// Health-score panel: the score, a gauge, and the deduction breakdown.
+fn render_health_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let block = panel_block(&app.theme, "Health score");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let Some(health) = &app.health else {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no data", Style::new().fg(app.theme.fg_dim))),
+            inner,
+        );
+        return;
     };
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("Security", accent)));
-    lines.push(Line::from(vec![
-        Span::styled("  exposed ports: ", dim),
-        count_span(risky, app.theme.danger),
-        Span::styled("   critical: ", dim),
-        count_span(crit, app.theme.danger),
-        Span::styled("   high: ", dim),
-        count_span(high, app.theme.danger),
-        Span::styled("   medium: ", dim),
-        count_span(med, app.theme.warn),
-    ]));
 
-    // Docker & crons: running/total containers and job/timer counts, each with
-    // the number of risk findings their module produced.
-    let module_findings = |module| app.findings.iter().filter(|f| f.module == module).count();
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("Docker", accent)));
-    if app.docker_available {
-        let running = app.containers.iter().filter(|c| c.is_running()).count();
-        lines.push(Line::from(vec![
-            Span::styled("  running: ", dim),
+    let color = score_color(app, health.score);
+    let mut lines = vec![
+        Line::from(vec![
             Span::styled(
-                format!("{running}/{}", app.containers.len()),
-                Style::new().fg(app.theme.text),
+                format!("{}", health.score),
+                Style::new().fg(color).add_modifier(Modifier::BOLD),
             ),
-            Span::styled("   issues: ", dim),
-            count_span(module_findings(ModuleId::Docker), app.theme.warn),
-        ]));
+            Span::styled(" /100  ", Style::new().fg(app.theme.fg_dim)),
+            Span::styled(gauge_bar(health.score as f64, 16), Style::new().fg(color)),
+        ]),
+        Line::from(""),
+    ];
+    if health.checks.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  no deductions — healthy",
+            Style::new().fg(app.theme.accent),
+        )));
     } else {
-        lines.push(Line::from(Span::styled("  unavailable", dim)));
+        for check in health.checks.iter().take(7) {
+            lines.push(finding_line(app, check));
+        }
     }
-    lines.push(Line::from(Span::styled("Crons", accent)));
-    lines.push(Line::from(vec![
-        Span::styled("  jobs: ", dim),
-        Span::styled(app.crons.len().to_string(), Style::new().fg(app.theme.text)),
-        Span::styled("   timers: ", dim),
-        Span::styled(
-            app.timers.len().to_string(),
-            Style::new().fg(app.theme.text),
-        ),
-        Span::styled("   warnings: ", dim),
-        count_span(module_findings(ModuleId::Crons), app.theme.warn),
-    ]));
+    frame.render_widget(Paragraph::new(lines), inner);
+}
 
-    Text::from(lines)
+/// Critical-findings list with severity-colored left edge bars (spec §14).
+fn render_findings_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let block = panel_block(&app.theme, "Critical findings");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let t = app.theme;
+
+    if app.findings.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "no findings — clean",
+                Style::new().fg(t.accent),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let max = (inner.height as usize / 2).max(1);
+    let mut lines: Vec<Line> = Vec::new();
+    for f in app.findings.iter().take(max) {
+        let color = t.severity(f.severity);
+        let sev = format!("{:?}", f.severity).to_uppercase();
+        lines.push(Line::from(vec![
+            Span::styled("▌ ", Style::new().fg(color)),
+            Span::styled(
+                format!("{sev:<5} "),
+                Style::new().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(f.title.clone(), Style::new().fg(t.fg_strong)),
+        ]));
+        let evidence = f.evidence.first().cloned().unwrap_or_else(|| f.id.clone());
+        lines.push(Line::from(Span::styled(
+            format!("    {evidence}"),
+            Style::new().fg(t.fg_muted),
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// At-a-glance grid: small headline stats in two columns (spec §14).
+fn render_at_a_glance(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
+    let block = panel_block(&app.theme, "At a glance");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let t = app.theme;
+
+    let [crit, high, med, ..] = app.finding_counts();
+    let errors = app.logs.iter().filter(|e| e.is_error()).count();
+    let running = app.containers.iter().filter(|c| c.is_running()).count();
+    let risky = app.risky_exposure_count();
+
+    let stat = |label: &str, value: Vec<Span<'static>>| -> Vec<Line<'static>> {
+        vec![
+            Line::from(Span::styled(label.to_owned(), Style::new().fg(t.fg_dim))),
+            Line::from(value),
+        ]
+    };
+    let count = |n: usize, unit: &str, color| {
+        let c = if n > 0 { color } else { t.accent };
+        vec![
+            Span::styled(
+                format!("{n}"),
+                Style::new().fg(c).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!(" {unit}"), Style::new().fg(t.fg_muted)),
+        ]
+    };
+
+    let docker_value = if app.docker_available {
+        vec![
+            Span::styled(
+                format!("{running}"),
+                Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" running", Style::new().fg(t.fg_muted)),
+        ]
+    } else {
+        vec![Span::styled("n/a", Style::new().fg(t.fg_dim))]
+    };
+    let plain = |text: String| {
+        vec![Span::styled(
+            text,
+            Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD),
+        )]
+    };
+
+    let stats: Vec<Vec<Line>> = vec![
+        stat(
+            "SERVICES",
+            count(app.failed_units.len(), "failed", t.critical),
+        ),
+        stat("PORTS", count(risky, "risky", t.critical)),
+        stat("DOCKER", docker_value),
+        stat(
+            "SECURITY",
+            vec![
+                Span::styled(
+                    format!("{crit}"),
+                    Style::new().fg(t.critical).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!(" / {high} / {med}"), Style::new().fg(t.fg_muted)),
+            ],
+        ),
+        stat("CRONS", count(app.crons.len(), "jobs", t.high)),
+        stat("LOGS", count(errors, "errors", t.critical)),
+        stat("USERS", plain(format!("{} logged", snap.users.len()))),
+        stat("UPTIME", plain(human_uptime(snap.uptime_secs))),
+    ];
+
+    let half = stats.len().div_ceil(2);
+    let (mut left, mut right): (Vec<Line>, Vec<Line>) = (Vec::new(), Vec::new());
+    for (i, s) in stats.into_iter().enumerate() {
+        let target = if i < half { &mut left } else { &mut right };
+        target.extend(s);
+        target.push(Line::from(""));
+    }
+    let cols =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(inner);
+    frame.render_widget(Paragraph::new(left), cols[0]);
+    frame.render_widget(Paragraph::new(right), cols[1]);
 }
 
 fn finding_line(app: &App, check: &systui_collectors::Check) -> Line<'static> {
-    use systui_core::Severity;
-    let color = match check.severity {
-        Severity::Critical | Severity::High => app.theme.danger,
-        Severity::Medium => app.theme.warn,
-        _ => app.theme.dim,
-    };
-    let label = format!("[{:?}]", check.severity).to_uppercase();
+    let color = app.theme.severity(check.severity);
+    let label = format!("{:?}", check.severity).to_uppercase();
     Line::from(vec![
         Span::styled(
-            format!("  -{:<3}", check.points),
-            Style::new().fg(app.theme.dim),
+            format!("  -{:<3} ", check.points),
+            Style::new().fg(app.theme.fg_dim),
         ),
-        Span::styled(format!("{label:<10}"), Style::new().fg(color)),
-        Span::styled(check.message.clone(), Style::new().fg(app.theme.text)),
+        Span::styled(format!("{label:<5} "), Style::new().fg(color)),
+        Span::styled(check.message.clone(), Style::new().fg(app.theme.fg)),
     ])
 }
 
@@ -1461,40 +2314,6 @@ fn system_text(app: &App, snap: &SystemSnapshot) -> Text<'static> {
     Text::from(lines)
 }
 
-fn metric_line(app: &App, label: &str, percent: f64, detail: Option<String>) -> Line<'static> {
-    let dim = Style::new().fg(app.theme.dim);
-    let text_s = Style::new().fg(app.theme.text);
-    let mut spans = vec![
-        Span::styled(format!("{label} "), text_s),
-        Span::styled(
-            format!("[{}]", bar(percent, 20)),
-            Style::new().fg(app.theme.accent),
-        ),
-        Span::styled(format!(" {percent:>3.0}%"), text_s),
-    ];
-    if let Some(detail) = detail {
-        spans.push(Span::styled(format!("  {detail}"), dim));
-    }
-    Line::from(spans)
-}
-
-fn disk_line(app: &App, disk: &Disk) -> Line<'static> {
-    let dim = Style::new().fg(app.theme.dim);
-    let text_s = Style::new().fg(app.theme.text);
-    Line::from(vec![
-        Span::styled(format!("  {:<10} ", disk.mount), text_s),
-        Span::styled(
-            format!("[{}]", bar(disk.use_percent as f64, 16)),
-            Style::new().fg(app.theme.accent),
-        ),
-        Span::styled(format!(" {:>3}%", disk.use_percent), text_s),
-        Span::styled(
-            format!("  {} / {}", human_kb(disk.used_kb), human_kb(disk.size_kb)),
-            dim,
-        ),
-    ])
-}
-
 fn label_value(app: &App, key: &str, value: &str) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("  {key:<10}"), Style::new().fg(app.theme.dim)),
@@ -1503,16 +2322,6 @@ fn label_value(app: &App, key: &str, value: &str) -> Line<'static> {
             Style::new().fg(app.theme.text).add_modifier(Modifier::BOLD),
         ),
     ])
-}
-
-/// A textual progress bar of `width` cells.
-fn bar(percent: f64, width: usize) -> String {
-    let filled = ((percent.clamp(0.0, 100.0) / 100.0) * width as f64).round() as usize;
-    let filled = filled.min(width);
-    let mut s = String::with_capacity(width);
-    s.extend(std::iter::repeat_n('█', filled));
-    s.extend(std::iter::repeat_n('░', width - filled));
-    s
 }
 
 /// Format a kB amount (1024-based) as KiB/MiB/GiB/TiB.
@@ -1540,16 +2349,65 @@ fn human_uptime(secs: u64) -> String {
     format!("{days}d {hours}h {mins}m")
 }
 
-fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let hint = if app.current_tab() == Tab::Crons {
-        " r refresh | a add | e edit | d delete | x toggle | ? help | q quit "
-    } else {
-        " r refresh | / search | a actions | ? help | q quit "
+/// Status bar: contextual key hints on the left, a live indicator on the right.
+fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let hints: &[(&str, &str)] = match app.current_tab() {
+        Tab::Crons => &[
+            ("r", "refresh"),
+            ("a", "add"),
+            ("e", "edit"),
+            ("d", "delete"),
+            ("x", "toggle"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
+        Tab::Logs => &[
+            ("r", "refresh"),
+            ("/", "search"),
+            ("l", "level"),
+            ("t", "window"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
+        _ => &[
+            ("r", "refresh"),
+            ("/", "search"),
+            ("a", "actions"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(hint)).style(Style::new().fg(app.theme.dim)),
-        area,
-    );
+    let mut spans = vec![Span::raw(" ")];
+    for (i, (key, label)) in hints.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  ·  ", Style::new().fg(app.theme.fg_dim)));
+        }
+        spans.push(Span::styled(
+            *key,
+            Style::new()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            format!(" {label}"),
+            Style::new().fg(app.theme.fg_muted),
+        ));
+    }
+
+    let cols = Layout::horizontal([Constraint::Min(10), Constraint::Length(28)]).split(area);
+    frame.render_widget(Paragraph::new(Line::from(spans)), cols[0]);
+
+    // Right: live/attached indicator.
+    let (dot, label, color) = if app.snapshot.is_some() {
+        ("●", "live", app.theme.accent)
+    } else {
+        ("○", "detached", app.theme.fg_dim)
+    };
+    let right = Line::from(vec![
+        Span::styled(format!("{dot} "), Style::new().fg(color)),
+        Span::styled(format!("{label} "), Style::new().fg(app.theme.fg_muted)),
+    ]);
+    frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), cols[1]);
 }
 
 fn render_help(frame: &mut Frame, app: &App) {
@@ -1612,6 +2470,7 @@ mod tests {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use systui_collectors::Disk;
     use systui_core::ExecutionMode;
 
     fn render_to_string(app: &App, width: u16, height: u16) -> String {
@@ -1633,10 +2492,11 @@ mod tests {
     #[test]
     fn renders_chrome_and_empty_state() {
         let app = App::new("prod-01", ExecutionMode::ReadOnly);
-        let out = render_to_string(&app, 100, 24);
+        // 120 cols so the full 10-tab bar (through "Security") is visible.
+        let out = render_to_string(&app, 120, 24);
         assert!(out.contains("SysTUI"));
         assert!(out.contains("prod-01"));
-        assert!(out.contains("read-only"));
+        assert!(out.contains("READ-ONLY"));
         assert!(out.contains("Dashboard"));
         assert!(out.contains("Security"));
         assert!(out.contains("q quit"));
@@ -1654,7 +2514,7 @@ mod tests {
         });
         let out = render_to_string(&app, 100, 24);
         assert!(out.contains("admin (sudo)"));
-        assert!(out.contains("privileged"));
+        assert!(out.contains("PRIVILEGED"));
     }
 
     #[test]
@@ -1734,12 +2594,14 @@ mod tests {
         app.view_state = ViewState::Ready;
 
         let out = render_to_string(&app, 100, 24);
-        assert!(out.contains("prod-01"));
+        // The hostname now lives in the chrome (host label "local"); the body
+        // shows the metric tiles for the snapshot.
+        assert!(out.contains("local"));
         assert!(out.contains("CPU"));
         assert!(out.contains("RAM"));
-        assert!(out.contains("Disks"));
-        assert!(out.contains("/home"));
-        assert!(out.contains("89%"));
+        assert!(out.contains("DISK"));
+        assert!(out.contains("LOAD"));
+        assert!(out.contains("89")); // worst disk usage %
     }
 
     #[test]
@@ -1809,7 +2671,8 @@ mod tests {
         app.view_state = ViewState::Ready;
 
         let out = render_to_string(&app, 100, 24);
-        assert!(out.contains("failed units: 1"));
+        assert!(out.contains("SERVICES"));
+        assert!(out.contains("1 failed"));
     }
 
     #[test]
@@ -1840,7 +2703,7 @@ mod tests {
         app.select_tab(3); // Services
 
         let out = render_to_string(&app, 100, 24);
-        assert!(out.contains("No failed units"));
+        assert!(out.contains("no failed units"));
     }
 
     #[test]
@@ -1860,9 +2723,9 @@ mod tests {
         app.view_state = ViewState::Ready;
 
         let out = render_to_string(&app, 100, 30);
-        assert!(out.contains("Health"));
-        assert!(out.contains("72/100"));
-        assert!(out.contains("Findings"));
+        assert!(out.contains("Health score"));
+        assert!(out.contains("72"));
+        assert!(out.contains("/100"));
         assert!(out.contains("CRITICAL"));
         assert!(out.contains("95%"));
     }
@@ -1923,12 +2786,13 @@ mod tests {
         app.view_state = ViewState::Ready;
         app.select_tab(5); // Network
 
-        let out = render_to_string(&app, 100, 30);
+        // The exposure map is information-dense; render wide (the prototype is 200 cols).
+        let out = render_to_string(&app, 130, 30);
         assert!(out.contains("Interfaces"));
         assert!(out.contains("eth0"));
         assert!(out.contains("192.168.1.1")); // gateway
         assert!(out.contains("Exposure map"));
-        assert!(out.contains("CRITICAL")); // redis on 0.0.0.0:6379
+        assert!(out.contains("CRIT")); // redis on 0.0.0.0:6379
         assert!(out.contains("6379"));
         assert!(out.contains("redis.service"));
     }
@@ -1974,7 +2838,7 @@ mod tests {
         app.view_state = ViewState::Ready;
         app.select_tab(9);
         let out = render_to_string(&app, 100, 24);
-        assert!(out.contains("No findings"));
+        assert!(out.contains("no findings"));
     }
 
     #[test]
@@ -1991,9 +2855,10 @@ mod tests {
         app.view_state = ViewState::Ready;
 
         let out = render_to_string(&app, 100, 40);
-        assert!(out.contains("Security"));
-        assert!(out.contains("exposed ports:"));
-        assert!(out.contains("critical:"));
+        assert!(out.contains("SECURITY"));
+        assert!(out.contains("PORTS"));
+        // The critical finding surfaces in the findings panel.
+        assert!(out.contains("Sensitive service exposed"));
     }
 
     #[test]
@@ -2011,7 +2876,7 @@ mod tests {
         app.select_tab(4); // Logs
 
         let out = render_to_string(&app, 100, 24);
-        assert!(out.contains("PRIO"));
+        assert!(out.contains("LVL"));
         assert!(out.contains("ERR"));
         assert!(out.contains("nginx"));
         assert!(out.contains("upstream timed out"));
@@ -2123,9 +2988,10 @@ mod tests {
         assert!(out.contains("redis"));
         assert!(out.contains("redis:latest"));
         assert!(out.contains("unhealthy"));
-        assert!(out.contains("Risks"));
-        // The privileged + docker.sock risks surface in the detail panel.
-        assert!(out.contains("privileged") || out.contains("Docker socket"));
+        assert!(out.contains("Risk checks"));
+        // The privileged container surfaces in the detail panel and as a RISK badge.
+        assert!(out.contains("privileged"));
+        assert!(out.contains("RISK"));
     }
 
     #[test]
@@ -2177,7 +3043,7 @@ mod tests {
         assert!(out.contains("2026-05-25 02:00")); // next run
         assert!(out.contains("/opt/backup.sh"));
         assert!(out.contains("logrotate.timer"));
-        assert!(out.contains("Warnings"));
+        assert!(out.contains("warnings"));
         assert!(out.contains("not captured"));
     }
 
@@ -2257,7 +3123,38 @@ mod tests {
         app.push_search_char('n');
 
         let out = render_to_string(&app, 100, 24);
-        assert!(out.contains("level err+"));
+        assert!(out.contains("level"));
+        assert!(out.contains("err+"));
         assert!(out.contains("search: n"));
+    }
+
+    #[test]
+    fn log_fingerprints_group_lines_differing_only_in_numbers() {
+        let entries = [
+            LogEntry {
+                time: "09:00:01".to_owned(),
+                priority: 3,
+                identifier: "sshd".to_owned(),
+                message: "Failed password from 1.2.3.4 port 51220".to_owned(),
+            },
+            LogEntry {
+                time: "09:00:09".to_owned(),
+                priority: 3,
+                identifier: "sshd".to_owned(),
+                message: "Failed password from 1.2.3.4 port 51224".to_owned(),
+            },
+            LogEntry {
+                time: "09:00:10".to_owned(),
+                priority: 6, // info — excluded from fingerprints
+                identifier: "systemd".to_owned(),
+                message: "Started something".to_owned(),
+            },
+        ];
+        let refs: Vec<&LogEntry> = entries.iter().collect();
+        let fps = log_fingerprints(&refs);
+        assert_eq!(fps.len(), 1);
+        assert_eq!(fps[0].count, 2);
+        assert_eq!(fps[0].first, "09:00:01");
+        assert_eq!(fps[0].last, "09:00:09");
     }
 }

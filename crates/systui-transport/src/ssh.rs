@@ -90,12 +90,26 @@ impl SshTransport {
     }
 
     /// The full argument vector passed to `ssh` to run `remote_command`.
+    ///
+    /// Connection **multiplexing** (`ControlMaster=auto` + a persistent
+    /// `ControlPath`) is the key to usable remote performance: a refresh runs
+    /// dozens of commands, and without multiplexing each one pays a full SSH
+    /// handshake. With it, the first command opens a master connection that the
+    /// rest reuse, and `ControlPersist` keeps it warm between refreshes. The
+    /// `%C` token makes the socket per-destination, so it falls back cleanly if
+    /// the master can't be created.
     fn ssh_args(&self, remote_command: &str) -> Vec<String> {
         vec![
             "-o".to_owned(),
             "BatchMode=yes".to_owned(),
             "-o".to_owned(),
             format!("ConnectTimeout={}", self.connect_timeout.as_secs().max(1)),
+            "-o".to_owned(),
+            "ControlMaster=auto".to_owned(),
+            "-o".to_owned(),
+            format!("ControlPath={}", control_path()),
+            "-o".to_owned(),
+            "ControlPersist=60".to_owned(),
             "-p".to_owned(),
             self.port.to_string(),
             self.destination(),
@@ -267,6 +281,13 @@ fn make_label(user: &Option<String>, host: &str, port: u16) -> String {
     }
 }
 
+/// The `ControlPath` socket for SSH connection multiplexing. The `%C` token is
+/// expanded by `ssh` into a hash of the connection parameters, so the socket is
+/// short, unique per destination and lives in the temp dir (not the repo).
+fn control_path() -> String {
+    format!("{}/systui-ssh-%C", std::env::temp_dir().display())
+}
+
 /// Turn a [`CommandSpec`] into a single remote command string, POSIX-quoting the
 /// program and every argument so the remote login shell re-parses it back into
 /// exactly the same argument vector — no shell injection, no quoting surprises.
@@ -398,6 +419,10 @@ mod tests {
         assert_eq!(args.last().unwrap(), "uname -a");
         // ConnectTimeout is present.
         assert!(args.iter().any(|a| a.starts_with("ConnectTimeout=")));
+        // Connection multiplexing is enabled (the key to remote performance).
+        assert!(args.windows(2).any(|w| w == ["-o", "ControlMaster=auto"]));
+        assert!(args.iter().any(|a| a.starts_with("ControlPath=")));
+        assert!(args.windows(2).any(|w| w == ["-o", "ControlPersist=60"]));
     }
 
     #[test]

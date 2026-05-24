@@ -8,11 +8,16 @@
 //! never a crash. The richer finding lifecycle (accept/ignore/exception) is a
 //! later phase; for now every finding is reported as `Open`.
 
+pub mod certs;
 pub mod ports;
 pub mod ssh;
 pub mod sudo;
 pub mod system;
 
+pub use certs::{
+    CertInfo, certificate_findings, check_certificate, days_until_expiry, parse_x509,
+    read_local_cert, read_remote_cert,
+};
 pub use ports::check_exposed_ports;
 pub use ssh::{check_failed_logins, check_sshd_config, count_failed_logins};
 pub use sudo::{SudoEntry, check_sudo, parse_sudoers};
@@ -47,8 +52,15 @@ const DOCKER_SOCKET: &str = "/var/run/docker.sock";
 
 /// Run all read-only security checks against the host, returning a worst-first
 /// list of findings. `exposures` is the exposure map computed from the network
-/// snapshot; pass an empty slice to skip network findings.
-pub async fn security_scan(transport: &dyn Transport, exposures: &[ExposureEntry]) -> Vec<Finding> {
+/// snapshot (pass an empty slice to skip network findings); `cert_warning_days`
+/// is the certificate-expiry window (`config.security.cert_expiry_warning_days`)
+/// and `cert_hosts` are remote `host:port` endpoints to inspect for TLS certs.
+pub async fn security_scan(
+    transport: &dyn Transport,
+    exposures: &[ExposureEntry],
+    cert_warning_days: u32,
+    cert_hosts: &[(String, u16)],
+) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     if let Some(config) = read_text(transport, "/etc/ssh/sshd_config").await {
@@ -86,6 +98,7 @@ pub async fn security_scan(transport: &dyn Transport, exposures: &[ExposureEntry
     }
 
     findings.extend(check_exposed_ports(exposures));
+    findings.extend(certs::certificate_findings(transport, cert_hosts, cert_warning_days).await);
 
     // Worst severity first; ties broken by id for a stable order.
     findings.sort_by(|a, b| b.severity.cmp(&a.severity).then_with(|| a.id.cmp(&b.id)));
@@ -217,7 +230,7 @@ mod tests {
 
     #[tokio::test]
     async fn full_scan_assembles_prioritized_findings() {
-        let findings = security_scan(&mock_host(), &[]).await;
+        let findings = security_scan(&mock_host(), &[], 30, &[]).await;
         let ids: Vec<&str> = findings.iter().map(|f| f.id.as_str()).collect();
 
         assert!(ids.contains(&"ssh.root-login"));
@@ -242,7 +255,7 @@ mod tests {
     #[tokio::test]
     async fn empty_host_degrades_without_panicking() {
         // No tools, no files: only the "no firewall detected" finding remains.
-        let findings = security_scan(&MockTransport::new(), &[]).await;
+        let findings = security_scan(&MockTransport::new(), &[], 30, &[]).await;
         let ids: Vec<&str> = findings.iter().map(|f| f.id.as_str()).collect();
         assert_eq!(ids, ["firewall.absent"]);
     }

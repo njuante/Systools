@@ -101,6 +101,15 @@ actions are out of scope (the action engine exists, but v0.3 only inspects).
   SUID, exposed sensitive ports) and an async `security_scan(transport, exposures)`
   orchestrator that degrades on missing tools/perms and returns findings worst-first.
 - **S3.7 — Certificates**: local discovery + remote `host:443`, expiry/CN/issuer checks.
+  **Done.** `systui-security::certs` parses `openssl x509` output (subject/issuer/
+  notAfter), computes days-to-expiry against `cert_expiry_warning_days`, and flags
+  expired (High) / expiring (Medium) / self-signed (Low). Local files are read via
+  `openssl x509 -in` (discovered one level deep in common server-cert dirs, CA store
+  excluded); remote `host:443` via `openssl s_client` whose PEM is fed to `openssl
+  x509` through the new `CommandSpec::stdin` (no shell pipe; empty stdin stops
+  s_client hanging). Degrades when openssl is absent. `security_scan` now also takes
+  `cert_warning_days` + `cert_hosts`. **Core change:** added `CommandSpec::stdin`
+  (+ LocalTransport support) to enable piping without a shell.
 - **S3.8 — Security tab + polish**: Network/Security tabs render exposure + findings;
   dashboard shows a findings/exposure summary → **tag v0.3**.
 

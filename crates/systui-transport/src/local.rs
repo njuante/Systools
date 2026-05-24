@@ -1,10 +1,12 @@
 //! Transport that executes against the local machine.
 
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::time::Instant;
 
 use async_trait::async_trait;
 use systui_core::{CommandOutput, CommandSpec, CoreError, DirEntry, FileType, Result, Transport};
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 /// Runs commands and reads files on the current host.
@@ -35,8 +37,15 @@ impl Transport for LocalTransport {
         let mut cmd = Command::new(&command.program);
         cmd.args(&command.args);
         cmd.kill_on_drop(true);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        cmd.stdin(if command.stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
 
-        let exec = cmd.output();
+        let exec = run_child(&mut cmd, command.stdin.as_deref());
         let output = match command.timeout {
             Some(timeout) => tokio::time::timeout(timeout, exec)
                 .await
@@ -101,6 +110,21 @@ impl Transport for LocalTransport {
     }
 }
 
+/// Spawn `cmd`, optionally writing `input` to its stdin, and collect its output.
+async fn run_child(
+    cmd: &mut Command,
+    input: Option<&str>,
+) -> std::io::Result<std::process::Output> {
+    let mut child = cmd.spawn()?;
+    if let Some(input) = input
+        && let Some(mut stdin) = child.stdin.take()
+    {
+        stdin.write_all(input.as_bytes()).await?;
+        stdin.shutdown().await?;
+    }
+    child.wait_with_output().await
+}
+
 fn map_fs_err(e: std::io::Error, path: &str) -> CoreError {
     match e.kind() {
         std::io::ErrorKind::NotFound => CoreError::FileNotFound(PathBuf::from(path)),
@@ -127,6 +151,17 @@ mod tests {
         let out = t.run(&CommandSpec::new("echo").arg("hello")).await.unwrap();
         assert!(out.success());
         assert_eq!(out.stdout.trim(), "hello");
+    }
+
+    #[tokio::test]
+    async fn writes_stdin_to_the_process() {
+        let t = LocalTransport::new();
+        let out = t
+            .run(&CommandSpec::new("cat").stdin("piped input"))
+            .await
+            .unwrap();
+        assert!(out.success());
+        assert_eq!(out.stdout, "piped input");
     }
 
     #[tokio::test]

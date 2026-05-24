@@ -23,6 +23,11 @@ pub struct CommandSpec {
     pub requires_privilege: bool,
     /// Optional time budget; transports should abort and return [`CoreError::Timeout`].
     pub timeout: Option<Duration>,
+    /// Optional data written to the process's standard input. Lets commands be
+    /// fed input without a shell pipe (e.g. piping a PEM into `openssl x509`).
+    /// An empty string still closes stdin, so a command waiting on input
+    /// (such as `openssl s_client`) returns instead of hanging.
+    pub stdin: Option<String>,
 }
 
 impl CommandSpec {
@@ -33,6 +38,7 @@ impl CommandSpec {
             args: Vec::new(),
             requires_privilege: false,
             timeout: None,
+            stdin: None,
         }
     }
 
@@ -65,6 +71,13 @@ impl CommandSpec {
     #[must_use]
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
+        self
+    }
+
+    /// Provide data to write to the command's standard input.
+    #[must_use]
+    pub fn stdin(mut self, input: impl Into<String>) -> Self {
+        self.stdin = Some(input.into());
         self
     }
 }

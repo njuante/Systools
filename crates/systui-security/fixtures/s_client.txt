@@ -1,0 +1,18 @@
+CONNECTED(00000003)
+depth=2 C = US, O = Internet Security Research Group, CN = ISRG Root X1
+verify return:1
+---
+Certificate chain
+ 0 s:CN = example.com
+   i:C = US, O = Let's Encrypt, CN = R3
+---
+Server certificate
+-----BEGIN CERTIFICATE-----
+MIIDExampleFakeCertificateBodyForFixtureOnlyAAAAAAAAAAAAAAAAAAAAAAAA
+BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
+-----END CERTIFICATE-----
+subject=CN = example.com
+issuer=C = US, O = Let's Encrypt, CN = R3
+---
+SSL handshake has read 4096 bytes and written 412 bytes

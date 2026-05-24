@@ -103,13 +103,18 @@ snapshot may lag.
   service + signal actions, log filters + incremental search, the **action engine**
   (guardrail → read-only → risk → preview → confirm → execute → verify), the **audit
   log**, and UI action invocation (select + `a` → confirm → run → audited).
-- **Phase 3 / v0.3 (Network & security) — in progress.** Done: **S3.1** (phase
-  context, `docs/phases/phase-03-v0.3-net-security.md`).
-- **Next: S3.2 — Network collectors**: interfaces/IPs, routes, DNS, listening ports
-  and active connections with each listener's owning process (via `ss`/`ip`),
-  fixture-tested. Then S3.3 correlation, S3.4 exposure map, S3.5 connectivity tools,
-  S3.6 findings + security checks, S3.7 certificates, S3.8 Network/Security tabs →
-  tag `v0.3`. Read `docs/phases/phase-03-v0.3-net-security.md` first.
+- **Phase 3 / v0.3 (Network & security) — in progress.** Done: **S3.1** context;
+  **S3.2** network collectors (`ip`/`ss`/resolv.conf → `NetworkSnapshot`); **S3.3**
+  port→process→systemd-unit correlation (via `/proc/<pid>/cgroup`); **S3.4** exposure
+  map (`exposure_map`, risk-ranked listeners with evidence); **S3.5** connectivity
+  tools (ping/DNS lookup/TCP connect); **S3.6** `core::Finding` model + `systui-security`
+  posture checks (SSH, sudo, failed logins, firewall, file perms, docker socket, SUID,
+  exposed ports) with `security_scan`; **S3.7** certificates (local + remote `host:443`
+  via `openssl`, expiry/self-signed). A core enabler `CommandSpec::stdin` was added in
+  S3.7 to pipe without a shell.
+- **Next: S3.8 — Security tab + polish**: Network/Security tabs render exposure +
+  findings, dashboard shows a findings/exposure summary → **tag `v0.3`**. This is the
+  final session of the phase. Read `docs/phases/phase-03-v0.3-net-security.md` first.
 
 ## Starting a session
 

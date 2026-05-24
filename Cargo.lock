@@ -994,6 +994,7 @@ name = "systui-security"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "serde",
  "systui-collectors",
  "systui-core",

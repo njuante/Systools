@@ -1,0 +1,3 @@
+subject=CN = internal.local
+issuer=CN = internal.local
+notAfter=Jan 10 00:00:00 2027 GMT

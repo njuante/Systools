@@ -5,13 +5,13 @@
 use std::time::Instant;
 
 use systui_collectors::{
-    DatabaseCollector, DockerCollector, InspectSummary, LogQuery, NetworkCollector,
-    collect_cron_entries, collect_host_report, collect_timers, container_stats, exposure_map,
-    inspect_container, probe_capabilities, timing,
+    LogQuery, collect_host_report, collect_timers, probe_capabilities, timing,
 };
-use systui_core::{Collector, Config, ExecutionMode, Result, Transport};
-use systui_security::{cron_findings, database_findings, docker_findings, security_scan};
+use systui_core::{Config, ExecutionMode, Result, Transport};
 
+use crate::collect::{
+    gather_crons, gather_databases, gather_docker, gather_network, merge_findings,
+};
 use crate::model::{Report, ReportMeta};
 
 /// Gather a full [`Report`] for a host over `transport`.
@@ -32,70 +32,40 @@ pub async fn gather_report(
     let effective_mode = capabilities.effective_mode(mode);
 
     let gather_start = Instant::now();
-    let host = collect_host_report(transport, &config.thresholds, &LogQuery::default()).await?;
 
-    let network = timing::timed("network", NetworkCollector::new().collect(transport))
-        .await
-        .ok();
-    let exposures = network
-        .as_ref()
-        .map(|net| exposure_map(&net.listeners))
-        .unwrap_or_default();
-
-    let mut findings = timing::timed(
-        "security_scan",
-        security_scan(
-            transport,
-            &exposures,
-            config.security.cert_expiry_warning_days,
-            &[],
+    // Independent collector groups run concurrently; real dependencies are kept
+    // inside each group. Identical scheduling to the dashboard refresh.
+    let log_query = LogQuery::default();
+    let (host, net, dbs, docker, crons_group, timers) = tokio::join!(
+        timing::timed(
+            "host_report",
+            collect_host_report(transport, &config.thresholds, &log_query)
         ),
-    )
-    .await;
+        gather_network(transport, config.security.cert_expiry_warning_days),
+        gather_databases(transport),
+        gather_docker(transport),
+        gather_crons(transport),
+        timing::timed("timers", collect_timers(transport)),
+    );
 
-    // Docker (best-effort; an unreachable daemon yields an empty, unavailable view).
-    let (containers, container_inspects, container_stats_data, docker_available) =
-        match timing::timed("docker", DockerCollector::new().collect(transport)).await {
-            Ok(containers) => {
-                let inspect_start = Instant::now();
-                let inspects: Vec<InspectSummary> = {
-                    let mut v = Vec::new();
-                    for c in &containers {
-                        if let Ok(Some(summary)) = inspect_container(transport, &c.id).await {
-                            v.push(summary);
-                        }
-                    }
-                    v
-                };
-                tracing::info!(
-                    target: timing::PERF_TARGET,
-                    collector = "docker_inspects",
-                    elapsed_ms = inspect_start.elapsed().as_secs_f64() * 1000.0,
-                );
-                findings.extend(docker_findings(&inspects));
-                let stats = timing::timed("container_stats", container_stats(transport))
-                    .await
-                    .unwrap_or_default();
-                (containers, inspects, stats, true)
-            }
-            Err(_) => (Vec::new(), Vec::new(), Vec::new(), false),
-        };
+    let host = host?;
+    let (network, exposures, security_findings) = net;
+    let (databases, database_findings_v) = dbs;
+    let (containers, container_inspects, container_stats_data, docker_available, docker_findings_v) =
+        docker;
+    let (crons, cron_findings_v) = crons_group;
 
-    let crons = timing::timed("crons", collect_cron_entries(transport)).await;
-    findings.extend(timing::timed("cron_findings", cron_findings(transport, &crons)).await);
-    let timers = timing::timed("timers", collect_timers(transport)).await;
-    let databases = timing::timed("databases", DatabaseCollector::new().collect(transport))
-        .await
-        .unwrap_or_default();
-    findings.extend(database_findings(&databases));
+    let findings = merge_findings(
+        security_findings,
+        database_findings_v,
+        docker_findings_v,
+        cron_findings_v,
+    );
     tracing::info!(
         target: timing::PERF_TARGET,
         collector = "gather_total",
         elapsed_ms = gather_start.elapsed().as_secs_f64() * 1000.0,
     );
-
-    // Merged findings (security + docker + cron), worst-first.
-    findings.sort_by(|a, b| b.severity.cmp(&a.severity).then_with(|| a.id.cmp(&b.id)));
 
     Ok(Report {
         meta: ReportMeta {

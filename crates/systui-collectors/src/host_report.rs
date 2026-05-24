@@ -28,22 +28,26 @@ pub async fn collect_host_report(
     thresholds: &Thresholds,
     log_query: &LogQuery,
 ) -> Result<HostReport> {
-    let snapshot = timing::timed("system", SystemCollector::new().collect(transport)).await?;
-    let processes = timing::timed("processes", ProcessCollector::new().collect(transport))
-        .await
-        .unwrap_or_default();
-    let failed_units = timing::timed(
-        "failed_units",
-        FailedUnitsCollector::new().collect(transport),
-    )
-    .await
-    .unwrap_or_default();
-    let logs = timing::timed(
-        "logs",
-        LogsCollector::with_query(log_query.clone()).collect(transport),
-    )
-    .await
-    .unwrap_or_default();
+    // The four readers are independent, so run them concurrently: while the
+    // system collector waits out its CPU-sampling delay, the others' I/O
+    // overlaps it. Bound to locals so the collectors outlive the borrowed
+    // futures held by `join!`. Results are folded deterministically below.
+    let system = SystemCollector::new();
+    let processes_collector = ProcessCollector::new();
+    let failed_collector = FailedUnitsCollector::new();
+    let logs_collector = LogsCollector::with_query(log_query.clone());
+    let (snapshot, processes, failed_units, logs) = tokio::join!(
+        timing::timed("system", system.collect(transport)),
+        timing::timed("processes", processes_collector.collect(transport)),
+        timing::timed("failed_units", failed_collector.collect(transport)),
+        timing::timed("logs", logs_collector.collect(transport)),
+    );
+
+    // The system snapshot is required; the rest degrade to empty.
+    let snapshot = snapshot?;
+    let processes = processes.unwrap_or_default();
+    let failed_units = failed_units.unwrap_or_default();
+    let logs = logs.unwrap_or_default();
 
     let recent_errors = logs.iter().filter(|e| e.is_error()).count();
     let health = evaluate_health(&snapshot, failed_units.len(), recent_errors, thresholds);

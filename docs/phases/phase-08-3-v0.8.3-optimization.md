@@ -212,3 +212,38 @@ Key properties:
 Out of scope here (later sessions): collectors still run **sequentially** inside the
 gather (S8d.3), slow data is still re-collected each tick (S8d.4), and one-shot action
 execution + logs reload still use `block_on` (brief, user-initiated, acceptable).
+
+### S8d.3 — Concurrent collectors ✅
+
+Independent collectors now run concurrently within a refresh. Two levels:
+
+- **Inside `collect_host_report`** (shared by the dashboard and the report): the four
+  readers (system, processes, failed_units, logs) run under one `tokio::join!`, so the
+  others' I/O overlaps the system collector's ~200ms CPU-sampling delay instead of
+  waiting behind it.
+- **Across collector groups**: a new shared module `systui-report::collect` exposes the
+  independent groups — `gather_network` (network→exposures→security_scan),
+  `gather_databases`, `gather_docker` (docker→inspects→stats), `gather_crons`
+  (crons→cron_findings) — each keeping its *real* internal ordering. `data::gather`
+  (dashboard) and `gather_report` (headless) both `join!` these groups plus host_report
+  and timers, then merge findings via the shared `merge_findings`. This replaced the
+  near-duplicate sequential gather logic that used to live in both crates.
+
+**Determinism.** Concurrency changes only wall-clock interleaving, never results.
+`merge_findings` folds the per-group findings in a fixed order (security, database,
+docker, cron) and sorts worst-first by `(severity desc, id asc)`, so the merged list is
+identical regardless of which group finishes first.
+
+#### Before/after (release, via `systui report`, same hosts as S8d.1)
+
+| `gather_total`   | S8d.1 sequential | S8d.3 concurrent | change |
+|------------------|-----------------:|-----------------:|-------:|
+| local            |          390.6ms |          213.7ms | −45%   |
+| SSH `vpn`        |          902.5ms |          444.6ms | −51%   |
+
+The gather is no longer the sum of its collectors but the length of its longest chain.
+Locally that floor is host_report (~214ms), still dominated by the system collector's
+CPU-sampling delay (→ S8d.4 can collect the slow, non-CPU parts of `system` less often).
+Over SSH the floor is the two heaviest chains overlapping — host_report (~345ms) and the
+security scan (~354ms) — landing at ~445ms; S8d.5 (command batching) attacks the SSH
+round-trips inside those chains.

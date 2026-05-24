@@ -10,14 +10,14 @@ use std::time::Instant;
 
 use chrono::{Local, NaiveDateTime};
 use systui_collectors::{
-    Container, ContainerStats, CronEntry, DatabaseCollector, DatabaseSnapshot, DockerCollector,
-    ExposureEntry, HealthReport, InspectSummary, LogEntry, LogQuery, LogsCollector,
-    NetworkCollector, NetworkSnapshot, Process, ServiceUnit, SystemSnapshot, SystemdTimer,
-    collect_cron_entries, collect_host_report, collect_timers, container_stats, exposure_map,
-    inspect_container, timing,
+    Container, ContainerStats, CronEntry, DatabaseSnapshot, ExposureEntry, HealthReport,
+    InspectSummary, LogEntry, LogQuery, LogsCollector, NetworkSnapshot, Process, ServiceUnit,
+    SystemSnapshot, SystemdTimer, collect_host_report, collect_timers, timing,
 };
 use systui_core::{Collector, CoreError, Finding, Thresholds, Transport};
-use systui_security::{cron_findings, database_findings, docker_findings, security_scan};
+use systui_report::collect::{
+    gather_crons, gather_databases, gather_docker, gather_network, merge_findings,
+};
 use tokio::runtime::Runtime;
 
 use crate::app::{App, ViewState};
@@ -62,60 +62,37 @@ pub async fn gather(
     cert_warning_days: u32,
 ) -> RefreshOutcome {
     let started = Instant::now();
-    let report = timing::timed(
-        "host_report",
-        collect_host_report(transport, thresholds, log_query),
-    )
-    .await?;
 
-    let network = timing::timed("network", NetworkCollector::new().collect(transport))
-        .await
-        .ok();
-    let exposures = network
-        .as_ref()
-        .map(|net| exposure_map(&net.listeners))
-        .unwrap_or_default();
-    let mut findings = timing::timed(
-        "security_scan",
-        security_scan(transport, &exposures, cert_warning_days, &[]),
-    )
-    .await;
-    let databases = timing::timed("databases", DatabaseCollector::new().collect(transport))
-        .await
-        .unwrap_or_default();
-    findings.extend(database_findings(&databases));
+    // Independent collector groups run concurrently. Real dependencies are kept
+    // *inside* each group (exposures→security_scan, docker→inspects→stats,
+    // crons→cron_findings); the groups themselves share nothing, so a slow one
+    // (e.g. the SSH-heavy security scan) overlaps the others instead of adding to
+    // the total. host_report's failure fails the whole refresh.
+    let (report, net, dbs, docker, crons_group, timers) = tokio::join!(
+        timing::timed(
+            "host_report",
+            collect_host_report(transport, thresholds, log_query)
+        ),
+        gather_network(transport, cert_warning_days),
+        gather_databases(transport),
+        gather_docker(transport),
+        gather_crons(transport),
+        timing::timed("timers", collect_timers(transport)),
+    );
 
-    // Docker (best-effort; an unreachable daemon yields an empty, unavailable view).
-    let (containers, container_inspects, container_stats_data, docker_available) =
-        match timing::timed("docker", DockerCollector::new().collect(transport)).await {
-            Ok(containers) => {
-                let inspect_start = Instant::now();
-                let mut inspects: Vec<InspectSummary> = Vec::new();
-                for c in &containers {
-                    if let Ok(Some(summary)) = inspect_container(transport, &c.id).await {
-                        inspects.push(summary);
-                    }
-                }
-                tracing::info!(
-                    target: timing::PERF_TARGET,
-                    collector = "docker_inspects",
-                    elapsed_ms = inspect_start.elapsed().as_secs_f64() * 1000.0,
-                );
-                findings.extend(docker_findings(&inspects));
-                let stats = timing::timed("container_stats", container_stats(transport))
-                    .await
-                    .unwrap_or_default();
-                (containers, inspects, stats, true)
-            }
-            Err(_) => (Vec::new(), Vec::new(), Vec::new(), false),
-        };
+    let report = report?;
+    let (network, exposures, security_findings) = net;
+    let (databases, database_findings_v) = dbs;
+    let (containers, container_inspects, container_stats_data, docker_available, docker_findings_v) =
+        docker;
+    let (crons, cron_findings_v) = crons_group;
 
-    let crons = timing::timed("crons", collect_cron_entries(transport)).await;
-    findings.extend(timing::timed("cron_findings", cron_findings(transport, &crons)).await);
-    let timers = timing::timed("timers", collect_timers(transport)).await;
-
-    // Merged findings (security + docker + cron) sorted worst-first, deterministic.
-    findings.sort_by(|a, b| b.severity.cmp(&a.severity).then_with(|| a.id.cmp(&b.id)));
+    let findings = merge_findings(
+        security_findings,
+        database_findings_v,
+        docker_findings_v,
+        cron_findings_v,
+    );
 
     tracing::info!(
         target: timing::PERF_TARGET,

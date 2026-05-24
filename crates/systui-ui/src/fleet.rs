@@ -83,6 +83,9 @@ fn fleet_loop(
     mut gather: impl FnMut(&Config) -> FleetOverview,
 ) -> Result<FleetExit> {
     let theme = Theme::dark();
+    // The first gather blocks while it reviews every host (over SSH), so paint a
+    // loading frame first — otherwise the screen sits blank and looks hung.
+    terminal.draw(|frame| render_loading(frame, &theme))?;
     let mut view = FleetView {
         overview: gather(config),
         selected: 0,
@@ -487,6 +490,29 @@ fn render_title(frame: &mut Frame, overview: &FleetOverview, theme: &Theme, area
     let cols = Layout::horizontal([Constraint::Min(10), Constraint::Length(48)]).split(inner);
     frame.render_widget(Paragraph::new(left), cols[0]);
     frame.render_widget(Paragraph::new(status), cols[1]);
+}
+
+/// A simple centered "gathering" frame shown while the first review runs.
+fn render_loading(frame: &mut Frame, theme: &Theme) {
+    frame.render_widget(
+        Block::default().style(Style::new().bg(theme.bg).fg(theme.fg)),
+        frame.area(),
+    );
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                "SysTUI",
+                Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "gathering host state…",
+                Style::new().fg(theme.fg_muted),
+            )),
+        ])
+        .alignment(Alignment::Center),
+        frame.area(),
+    );
 }
 
 /// The host inventory as a 3-column card grid (spec §14 Hosts).

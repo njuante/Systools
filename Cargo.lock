@@ -1015,6 +1015,7 @@ dependencies = [
  "serde_json",
  "systui-core",
  "toml",
+ "toml_edit",
 ]
 
 [[package]]

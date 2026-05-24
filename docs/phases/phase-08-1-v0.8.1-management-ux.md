@@ -98,6 +98,14 @@ writing, and an audit record for every change.
 - **S8b.2 — Config persistence + inventory model**: `systui-storage` write via
   `toml_edit` (add/update/remove `[hosts.<id>]`, preserving the file);
   `systui-core` host upsert/remove helpers; tests (round-trip, comment preservation).
+  **Done.** `systui-core::Config` gains `upsert_host`/`remove_host` (in-memory).
+  `systui-storage` adds `save_host`/`save_host_to` and `remove_host`/`remove_host_from`
+  using **`toml_edit`** for surgical `[hosts.<id>]` edits: only SysTUI-managed keys are
+  written (optional/false fields removed so entries stay minimal), the rest of the
+  file — other tables, comments, ordering — is preserved, and writes are **atomic**
+  (temp file + rename). Missing file/dir are created. Tested: comment/other-table
+  preservation, create-on-missing, clearing optional fields on update, remove
+  existence reporting, and dropping the empty `[hosts]` table.
 - **S8b.3 — Host management in the fleet TUI**: a reusable multi-field form modal;
   `a`/`e`/`d` to add/edit/delete inventory hosts; persist + re-gather; read-only
   guard.

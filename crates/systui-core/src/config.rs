@@ -144,6 +144,17 @@ pub struct ResolvedHost {
 }
 
 impl Config {
+    /// Insert or replace an inventory host. Returns `true` if it replaced an
+    /// existing entry, `false` if it was newly added.
+    pub fn upsert_host(&mut self, id: impl Into<String>, host: Host) -> bool {
+        self.hosts.insert(id.into(), host).is_some()
+    }
+
+    /// Remove an inventory host by id. Returns whether it existed.
+    pub fn remove_host(&mut self, id: &str) -> bool {
+        self.hosts.remove(id).is_some()
+    }
+
     /// Resolve an `ssh` target. A target matching an inventory id (`[hosts.<id>]`)
     /// uses that profile; otherwise it is parsed as `user@host` or a bare `host`
     /// with default port and no profile overrides.
@@ -290,5 +301,31 @@ policy = "production-web"
         let resolved = Config::default().resolve_target("server.example.com");
         assert_eq!(resolved.user, None);
         assert_eq!(resolved.host, "server.example.com");
+    }
+
+    #[test]
+    fn upsert_and_remove_host() {
+        let mut cfg = Config::default();
+        let host = Host {
+            host: "10.0.0.1".to_owned(),
+            user: Some("admin".to_owned()),
+            port: 22,
+            tags: vec!["web".to_owned()],
+            read_only: false,
+            favorite: false,
+            policy: None,
+        };
+        // First insert is new.
+        assert!(!cfg.upsert_host("prod-01", host.clone()));
+        assert_eq!(cfg.hosts["prod-01"].host, "10.0.0.1");
+        // Re-inserting the same id replaces.
+        let mut updated = host;
+        updated.read_only = true;
+        assert!(cfg.upsert_host("prod-01", updated));
+        assert!(cfg.hosts["prod-01"].read_only);
+        // Remove reports prior existence.
+        assert!(cfg.remove_host("prod-01"));
+        assert!(!cfg.remove_host("prod-01"));
+        assert!(cfg.hosts.is_empty());
     }
 }

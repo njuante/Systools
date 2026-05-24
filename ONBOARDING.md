@@ -172,9 +172,31 @@ snapshot may lag.
   [-o FILE]`) — JSON is the full model, MD/HTML a digest, escaped and self-contained.
   Inspection & reporting only — no mass destructive actions. (Host-vs-snapshot drift
   deferred to phase 9.)
-- **Next: Phase 9 / v0.9 — Policies & expected state.** Start with the phase context
-  file (`docs/phases/`) before any code, per the methodology. Read `docs/ROADMAP.md`
-  for the v0.9 scope.
+- **Phase 8.5 / v0.8.1 (In-TUI management & UX polish) — IN PROGRESS** on
+  `release/v0.8.1` (an intermediate phase before Policies; see
+  `docs/phases/phase-08-1-v0.8.1-management-ux.md`). Done so far:
+  - **S8b.2** — config persistence: `systui-storage::save_host[_to]` /
+    `remove_host[_from]` edit only the `[hosts.<id>]` table via `toml_edit`
+    (preserving comments/other tables, atomic temp+rename); `Config::upsert_host` /
+    `remove_host` in-memory.
+  - **S8b.3** — host management in the fleet TUI: reusable `systui-ui::form` modal;
+    `a` add / `e` edit (id fixed, policy preserved) / `d` delete inventory hosts,
+    validated, persisted, mirrored in-memory, re-gathered without leaving the screen;
+    disabled in read-only mode. `run_fleet` now takes `&mut Config` + config path.
+  - **S8b.4** — `systui-actions::cron::CronAction` (add/edit/delete/enable/disable on
+    the **user crontab**) through the engine: schedule validated in `preview`, prior
+    crontab backed up to `/tmp/systui-crontab.bak` via `tee`, installed via
+    `crontab -` piping content through `CommandSpec::stdin`. Pure transforms tested.
+  - **TODO — S8b.5**: wire the form + `CronAction` into the **Crons tab** TUI (`a`
+    add, `e` edit, `d` delete, toggle enable/disable) through the engine
+    (preview/confirm/audit), refresh after. The cron *actions* exist; the **TUI
+    wiring in the Crons tab is not done yet**.
+  - **TODO — S8b.6**: TUI **layout polish** (header/status bar, borders/spacing,
+    severity badges, readable tables, loading/empty/error states) → then merge
+    `--no-ff` into `main` + tag `v0.8.1`.
+- **Next: Phase 9 / v0.9 — Policies & expected state** (after v0.8.1 is tagged).
+  Start with the phase context file (`docs/phases/`) before any code, per the
+  methodology. Read `docs/ROADMAP.md` for the v0.9 scope.
 
 ## Starting a session
 

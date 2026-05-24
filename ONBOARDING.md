@@ -92,9 +92,9 @@ offline once dependencies are cached.
 Source of truth is `git log` and the active phase context file — check them, this
 snapshot may lag.
 
-- **Phase 3 / v0.3 complete; `v0.3` tagged on `main`.** Each version is built on
+- **Current branch: `release/v0.4`** (Phase 4 in progress). Each version is built on
   `release/vX.Y` from `main`, then merged `--no-ff` + tagged at the end of its phase.
-  `v0.1`, `v0.2` and `v0.3` are tagged on `main`. Phase 4 starts a new `release/v0.4`.
+  `v0.1`, `v0.2` and `v0.3` are tagged on `main`.
 - **Phase 0 (Foundation) complete**: workspace, contracts, Local/Mock transports,
   CLI + config + tracing, TUI shell, async/sync bridge.
 - **Phase 1 / v0.1 complete**: dashboard with health score + findings,
@@ -111,8 +111,14 @@ snapshot may lag.
   docker socket, SUID, exposed ports) via `security_scan`, certificate checks (local +
   remote `host:443` over `openssl`), and the **Network/Security TUI tabs** + dashboard
   security summary. Core enabler added: `CommandSpec::stdin` (pipe without a shell).
-- **Next: Phase 4 / v0.4.** Create `release/v0.4` from `main` and write its phase
-  context file before any code. See `docs/ROADMAP.md` for the phase-4 theme.
+- **Phase 4 / v0.4 (Docker & crons) — in progress.** Done: **S4.1** (phase context,
+  `docs/phases/phase-04-v0.4-docker-crons.md`).
+- **Next: S4.2 — Docker collectors**: list containers (running/stopped) with image,
+  state, health and published ports, plus per-container inspect summary and stats,
+  via the `docker` CLI (`{{json .}}`) through the transport, fixture-tested and
+  degrading when Docker is unavailable. Then S4.3 docker ops, S4.4 docker risk
+  checks, S4.5 cron sources, S4.6 timers + validation, S4.7 cron checks → tag `v0.4`.
+  Read `docs/phases/phase-04-v0.4-docker-crons.md` first.
 
 ## Starting a session
 

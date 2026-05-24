@@ -7,7 +7,7 @@
 mod cli;
 
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,10 +23,27 @@ fn main() -> anyhow::Result<()> {
     init_tracing();
 
     let config = load_config(&args).context("failed to load configuration")?;
+    let config_path = config_path(&args);
     let mode = resolve_mode(&args);
     tracing::info!(%mode, "starting systui");
 
-    dispatch(args.command.unwrap_or(Command::Local), mode, &config)
+    dispatch(
+        args.command.unwrap_or(Command::Local),
+        mode,
+        &config,
+        &config_path,
+    )
+}
+
+/// The config file path to persist edits to: `--config` if given, else the default
+/// location (falling back to `config.toml` in the cwd if the home dir is unknown).
+fn config_path(args: &Cli) -> PathBuf {
+    match &args.config {
+        Some(path) => path.clone(),
+        None => {
+            systui_storage::paths::config_file().unwrap_or_else(|_| PathBuf::from("config.toml"))
+        }
+    }
 }
 
 /// Initialise tracing to stderr. Verbosity is controlled by `SYSTUI_LOG`
@@ -61,7 +78,12 @@ fn resolve_mode(args: &Cli) -> ExecutionMode {
     }
 }
 
-fn dispatch(command: Command, mode: ExecutionMode, config: &Config) -> anyhow::Result<()> {
+fn dispatch(
+    command: Command,
+    mode: ExecutionMode,
+    config: &Config,
+    config_path: &Path,
+) -> anyhow::Result<()> {
     match command {
         Command::Local => {
             let transport: Box<dyn systui_core::Transport> =
@@ -80,7 +102,15 @@ fn dispatch(command: Command, mode: ExecutionMode, config: &Config) -> anyhow::R
             output,
         } => {
             run_fleet(
-                tag, favorites, search, compare, format, output, mode, config,
+                tag,
+                favorites,
+                search,
+                compare,
+                format,
+                output,
+                mode,
+                config,
+                config_path,
             )?;
         }
         Command::Report {
@@ -160,8 +190,9 @@ fn run_fleet(
     output: Option<PathBuf>,
     mode: ExecutionMode,
     config: &Config,
+    config_path: &Path,
 ) -> anyhow::Result<()> {
-    if config.hosts.is_empty() {
+    if config.hosts.is_empty() && compare.len() != 2 {
         eprintln!("No hosts in the inventory. Add `[hosts.<id>]` entries to your config.");
         return Ok(());
     }
@@ -176,66 +207,75 @@ fn run_fleet(
         tags,
         favorites_only: favorites,
     };
-    let selected = config.select_fleet(&filter);
-    if selected.is_empty() {
-        eprintln!("No inventory hosts match the given filters.");
-        return Ok(());
-    }
 
-    eprintln!("Reviewing {} host(s)…", selected.len());
-    let gather = |runtime: &tokio::runtime::Runtime| {
+    // The headless modes (search, report, piped overview) need one eager gather of
+    // the current selection.
+    let interactive = search.is_none() && format.is_none() && std::io::stdout().is_terminal();
+    if !interactive {
+        let selected = config.select_fleet(&filter);
+        if selected.is_empty() {
+            eprintln!("No inventory hosts match the given filters.");
+            return Ok(());
+        }
+        eprintln!("Reviewing {} host(s)…", selected.len());
         let generated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-        runtime.block_on(gather_fleet(selected.clone(), mode, config, generated_at))
-    };
+        let review = runtime.block_on(gather_fleet(selected, mode, config, generated_at));
 
-    let review = gather(&runtime);
-
-    // Search mode: list hosts whose ports/services match the term, then exit.
-    if let Some(term) = search {
-        print_fleet_search(&review, &term);
-        return Ok(());
-    }
-
-    // Report mode: render a fleet report in the requested format, then exit.
-    if let Some(format) = format {
-        let report = systui_report::FleetReport::from_review(&review);
-        let rendered = match format.as_str() {
-            "markdown" | "md" => systui_report::fleet_to_markdown(&report),
-            "json" => systui_report::fleet_to_json(&report),
-            "html" => systui_report::fleet_to_html(&report),
-            other => anyhow::bail!("unknown report format `{other}`; use markdown, json or html"),
-        };
-        match output {
-            Some(path) => {
-                std::fs::write(&path, rendered)
-                    .with_context(|| format!("failed to write report to {}", path.display()))?;
-                eprintln!("Fleet report written to {}", path.display());
-            }
-            None => print!("{rendered}"),
+        if let Some(term) = search {
+            print_fleet_search(&review, &term);
+        } else if let Some(format) = format {
+            render_fleet_report(&review, &format, output)?;
+        } else {
+            print_fleet_overview(&review.overview());
         }
         return Ok(());
     }
 
-    let mut overview = review.overview();
-
-    // Non-interactive (piped/redirected): print the overview once and exit.
-    if !std::io::stdout().is_terminal() {
-        print_fleet_overview(&overview);
-        return Ok(());
-    }
-
-    // Interactive: the fleet TUI, re-gathering on refresh and after drill-in.
+    // Interactive TUI: an editable inventory + drill-in. The fleet view re-gathers
+    // through the closure after edits, so changes appear without leaving the screen.
+    let mut config = config.clone();
+    let read_only = mode == ExecutionMode::ReadOnly;
     loop {
-        match systui_ui::run_fleet(&overview)? {
+        let gather_overview = |cfg: &Config| {
+            let selected = cfg.select_fleet(&filter);
+            let generated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            runtime
+                .block_on(gather_fleet(selected, mode, cfg, generated_at))
+                .overview()
+        };
+        match systui_ui::run_fleet(&mut config, config_path, read_only, gather_overview)? {
             systui_ui::FleetExit::Quit => break,
-            systui_ui::FleetExit::Refresh => overview = gather(&runtime).overview(),
             systui_ui::FleetExit::Enter(id) => {
+                let selected = config.select_fleet(&filter);
                 if let Some(host) = selected.iter().find(|h| h.id == id) {
-                    drill_in_host(host, mode, config)?;
+                    drill_in_host(host, mode, &config)?;
                 }
-                overview = gather(&runtime).overview();
             }
         }
+    }
+    Ok(())
+}
+
+/// Render a fleet report from a gathered review and write it to a file or stdout.
+fn render_fleet_report(
+    review: &systui_report::FleetReview,
+    format: &str,
+    output: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let report = systui_report::FleetReport::from_review(review);
+    let rendered = match format {
+        "markdown" | "md" => systui_report::fleet_to_markdown(&report),
+        "json" => systui_report::fleet_to_json(&report),
+        "html" => systui_report::fleet_to_html(&report),
+        other => anyhow::bail!("unknown report format `{other}`; use markdown, json or html"),
+    };
+    match output {
+        Some(path) => {
+            std::fs::write(&path, rendered)
+                .with_context(|| format!("failed to write report to {}", path.display()))?;
+            eprintln!("Fleet report written to {}", path.display());
+        }
+        None => print!("{rendered}"),
     }
     Ok(())
 }

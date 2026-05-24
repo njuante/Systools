@@ -109,6 +109,18 @@ writing, and an audit record for every change.
 - **S8b.3 — Host management in the fleet TUI**: a reusable multi-field form modal;
   `a`/`e`/`d` to add/edit/delete inventory hosts; persist + re-gather; read-only
   guard.
+  **Done.** New `systui-ui::form` — a reusable modal of labelled text/bool fields
+  (focus nav, inline edit, error line, `render_form`), unit-tested. The fleet TUI now
+  manages the inventory: `a` add (form with id/host/user/port/tags/read_only/favorite,
+  validated: required id without spaces, no duplicate, valid port, comma-split tags),
+  `e` edit the selected host (id fixed, **policy preserved**), `d` delete (y/n
+  confirm). Edits persist via S8b.2 (`save_host_to`/`remove_host_from`) and mirror
+  into the in-memory `Config`, then the view **re-gathers** through a caller-supplied
+  closure (no screen exit). In **read-only mode** the management keys show a notice
+  and do nothing. `run_fleet` now takes `&mut Config` + `config_path` + `read_only` +
+  the gather closure; the CLI threads the resolved config path and gathers lazily
+  (headless modes still gather eagerly). `build_host` validation and the form
+  helpers are unit-tested; the render stays `TestBackend`-tested.
 - **S8b.4 — Cron actions**: `CronAction` (add/edit/delete/toggle on the user crontab)
   with schedule validation, backup and audit, built on `CommandSpec::stdin`;
   fixture-tested crontab read/modify/write.

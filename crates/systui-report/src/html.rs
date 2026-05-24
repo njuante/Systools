@@ -463,6 +463,7 @@ mod tests {
             containers,
             container_inspects: Vec::new(),
             container_stats: Vec::new(),
+            databases: Default::default(),
             crons: Vec::new(),
             timers: Vec::new(),
             notes: Vec::new(),

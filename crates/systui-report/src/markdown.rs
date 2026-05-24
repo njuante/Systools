@@ -430,6 +430,7 @@ mod tests {
             containers: Vec::new(),
             container_inspects: Vec::new(),
             container_stats: Vec::new(),
+            databases: Default::default(),
             crons: Vec::new(),
             timers: Vec::new(),
             notes: vec!["errors originate upstream on api-02".to_owned()],

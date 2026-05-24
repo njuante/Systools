@@ -5,9 +5,9 @@ use systui_actions::{
     ActionDecision, DockerAction, DockerOp, ServiceAction, ServiceOp, Signal, SignalAction,
 };
 use systui_collectors::{
-    Container, ContainerStats, CronEntry, ExposureEntry, HealthReport, HostCapabilities,
-    InspectSummary, LogEntry, LogQuery, NetworkSnapshot, Process, ServiceUnit, SystemSnapshot,
-    SystemdTimer,
+    Container, ContainerStats, CronEntry, DatabaseSnapshot, ExposureEntry, HealthReport,
+    HostCapabilities, InspectSummary, LogEntry, LogQuery, NetworkSnapshot, Process, ServiceUnit,
+    SystemSnapshot, SystemdTimer,
 };
 use systui_core::{Action, ExecutionMode, Finding, ModuleId, Severity, Thresholds};
 
@@ -219,6 +219,7 @@ pub struct App {
     pub network: Option<NetworkSnapshot>,
     pub exposures: Vec<ExposureEntry>,
     pub findings: Vec<Finding>,
+    pub databases: DatabaseSnapshot,
     pub cert_warning_days: u32,
     pub containers: Vec<Container>,
     pub container_inspects: Vec<InspectSummary>,
@@ -265,6 +266,7 @@ impl App {
             network: None,
             exposures: Vec::new(),
             findings: Vec::new(),
+            databases: DatabaseSnapshot::default(),
             cert_warning_days: 30,
             containers: Vec::new(),
             container_inspects: Vec::new(),

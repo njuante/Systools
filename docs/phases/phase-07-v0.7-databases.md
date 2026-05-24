@@ -71,6 +71,14 @@ operations, and producing recent errors, locally or over SSH.
 - **S7.2 - Detection & exposure**: add database engine models and collectors for
   PostgreSQL, Redis, MySQL/MariaDB and MongoDB service/port/version/state/exposure;
   add fixture tests and surface findings for risky exposure.
+  **Done.** Added a `DatabaseCollector` and serializable `DatabaseSnapshot` for
+  credential-free discovery from systemd services, listening sockets and optional
+  CLI version probes. The collector detects PostgreSQL, Redis, MySQL/MariaDB and
+  MongoDB by service/unit/process/default port, classifies loopback vs external
+  listeners, and degrades to partial data when `systemctl`, `ss` or engine CLIs
+  are missing. Database exposure findings (`db.*`) now feed the shared findings
+  stream in both the TUI refresh path and headless reports; parser/detection
+  fixtures cover database `ss` and `systemctl` output.
 - **S7.3 - Operational panels**: add read-only operational probes for
   connections, sizes, recent errors and replication/lock indicators; render a
   Databases TUI tab with list/detail state.

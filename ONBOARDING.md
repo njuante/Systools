@@ -92,9 +92,9 @@ offline once dependencies are cached.
 Source of truth is `git log` and the active phase context file — check them, this
 snapshot may lag.
 
-- **`v0.6` complete and tagged on `main`.** Each version is built on
+- **`v0.7` complete and tagged on `main`.** Each version is built on
   `release/vX.Y` from `main`, then merged `--no-ff` + tagged at the end of its phase.
-  `v0.1` through `v0.6` are tagged on `main`.
+  `v0.1` through `v0.7` are tagged on `main`.
 - **Phase 0 (Foundation) complete**: workspace, contracts, Local/Mock transports,
   CLI + config + tracing, TUI shell, async/sync bridge.
 - **Phase 1 / v0.1 complete**: dashboard with health score + findings,
@@ -148,9 +148,19 @@ snapshot may lag.
   --format markdown|json|html [--security] [-o FILE] [--note TEXT]…`) runs locally or
   over the v0.5 SSH transport, honouring per-host `read_only`. All host-derived text
   is HTML-escaped.
-- **Next: Phase 7 / v0.7 — Databases.** Start with the phase context file
+- **Phase 7 / v0.7 (Databases) complete** (S7.1–S7.4): database discovery and
+  operational visibility for PostgreSQL, Redis, MySQL/MariaDB and MongoDB over the
+  shared `Transport`: service/unit state, listeners, process ownership, version,
+  exposure classification, safe credential-source labels (local sockets, `.pgpass`,
+  `mysql_config_editor`, redacted env presence) and best-effort operational signals
+  (connections, sizes, replication, locks/blocked clients and recent errors).
+  Database findings (`db.*`) cover public exposure, Redis auth risk when no
+  credential source is detected, blocked work, broken replication and recent
+  errors. The TUI includes a **Databases** tab; JSON/Markdown/HTML reports include a
+  Databases section. No database password is stored or rendered.
+- **Next: Phase 8 / v0.8 — Fleet.** Start with the phase context file
   (`docs/phases/`) before any code, per the methodology. Read `docs/ROADMAP.md`
-  for the v0.7 scope.
+  for the v0.8 scope.
 
 ## Starting a session
 

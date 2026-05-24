@@ -1,0 +1,3 @@
+postgresql.service loaded active   exited  PostgreSQL RDBMS
+redis-server.service loaded active running Advanced key-value store
+mariadb.service loaded inactive dead MariaDB database server

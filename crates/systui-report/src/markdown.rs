@@ -5,6 +5,7 @@
 
 use std::fmt::Write as _;
 
+use systui_collectors::{BindScope, DatabaseInstance};
 use systui_core::Severity;
 
 use crate::model::{Report, ReportScope};
@@ -54,6 +55,7 @@ pub fn to_markdown(report: &Report, scope: ReportScope) -> String {
     security_findings(&mut out, report);
     open_ports(&mut out, report);
     docker(&mut out, report);
+    databases(&mut out, report);
     if full {
         failed_services(&mut out, report);
         crons(&mut out, report);
@@ -101,6 +103,11 @@ fn executive_summary(out: &mut String, report: &Report) {
         "- **Cron jobs:** {} · **timers:** {}",
         report.crons.len(),
         report.timers.len()
+    );
+    let _ = writeln!(
+        out,
+        "- **Databases:** {} detected",
+        report.databases.instances.len()
     );
     let _ = writeln!(out);
 }
@@ -245,6 +252,93 @@ fn docker(out: &mut String, report: &Report) {
     let _ = writeln!(out);
 }
 
+fn databases(out: &mut String, report: &Report) {
+    let instances = &report.databases.instances;
+    let _ = writeln!(out, "## Databases ({})", instances.len());
+    let _ = writeln!(out);
+    if instances.is_empty() {
+        let _ = writeln!(out, "No database services detected.");
+        let _ = writeln!(out);
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "| Engine | Service | Endpoint | Exposure | Connections | Size | Replication | Locks |"
+    );
+    let _ = writeln!(out, "| --- | --- | --- | --- | --- | --- | --- | --- |");
+    for db in instances {
+        let op = &db.operational;
+        let _ = writeln!(
+            out,
+            "| {} | {} | {} | {} | {} | {} | {} | {} |",
+            db.engine.label(),
+            db.service.as_ref().map(|s| s.unit.as_str()).unwrap_or("-"),
+            db.endpoint().unwrap_or_else(|| "-".to_owned()),
+            database_exposure_label(db),
+            op.connection_summary.as_deref().unwrap_or("-"),
+            op.size_summary.as_deref().unwrap_or("-"),
+            op.replication_summary.as_deref().unwrap_or("-"),
+            op.lock_summary.as_deref().unwrap_or("-"),
+        );
+    }
+    let _ = writeln!(out);
+
+    let credential_lines = instances
+        .iter()
+        .filter(|db| !db.credential_sources.is_empty())
+        .map(|db| {
+            let labels = db
+                .credential_sources
+                .iter()
+                .map(|s| s.label.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("- **{}:** {labels}", db.engine.label())
+        })
+        .collect::<Vec<_>>();
+    if !credential_lines.is_empty() {
+        let _ = writeln!(out, "### Credential sources");
+        let _ = writeln!(out);
+        for line in credential_lines {
+            let _ = writeln!(out, "{line}");
+        }
+        let _ = writeln!(out);
+    }
+
+    let errors: Vec<(&DatabaseInstance, _)> = instances
+        .iter()
+        .flat_map(|db| {
+            db.operational
+                .recent_errors
+                .iter()
+                .map(move |entry| (db, entry))
+        })
+        .collect();
+    if !errors.is_empty() {
+        let _ = writeln!(out, "### Recent database errors");
+        let _ = writeln!(out);
+        for (db, entry) in errors.iter().take(10) {
+            let _ = writeln!(
+                out,
+                "- **{} [{}]** {} {}",
+                db.engine.label(),
+                entry.priority_label(),
+                entry.time,
+                entry.message
+            );
+        }
+        let _ = writeln!(out);
+    }
+}
+
+fn database_exposure_label(db: &DatabaseInstance) -> &'static str {
+    match db.exposure {
+        Some(BindScope::External) => "external",
+        Some(BindScope::Loopback) => "loopback",
+        None => "unknown",
+    }
+}
+
 fn failed_services(out: &mut String, report: &Report) {
     let units = &report.host.failed_units;
     let _ = writeln!(out, "## Failed services ({})", units.len());
@@ -350,8 +444,9 @@ mod tests {
     use super::*;
     use crate::model::ReportMeta;
     use systui_collectors::{
-        Check, CpuUsage, Disk, HealthReport, HostReport, LoadAverage, Memory, ServiceUnit, Swap,
-        SystemSnapshot,
+        Check, CpuUsage, DatabaseCredentialKind, DatabaseCredentialSource, DatabaseEngine,
+        DatabaseInstance, DatabaseOperational, DatabaseService, DatabaseSnapshot, Disk,
+        HealthReport, HostReport, LoadAverage, LogEntry, Memory, ServiceUnit, Swap, SystemSnapshot,
     };
     use systui_core::{ExecutionMode, Finding, ModuleId};
 
@@ -430,6 +525,38 @@ mod tests {
             containers: Vec::new(),
             container_inspects: Vec::new(),
             container_stats: Vec::new(),
+            databases: DatabaseSnapshot {
+                instances: vec![DatabaseInstance {
+                    engine: DatabaseEngine::PostgreSql,
+                    service: Some(DatabaseService {
+                        unit: "postgresql.service".to_owned(),
+                        active: "active".to_owned(),
+                        sub: "running".to_owned(),
+                        description: "PostgreSQL".to_owned(),
+                    }),
+                    listener: None,
+                    version: Some("postgres (PostgreSQL) 15.5".to_owned()),
+                    exposure: None,
+                    credential_sources: vec![DatabaseCredentialSource {
+                        kind: DatabaseCredentialKind::LocalSocket,
+                        label: "PostgreSQL local socket directory".to_owned(),
+                    }],
+                    operational: DatabaseOperational {
+                        connection_summary: Some("14 SQL sessions".to_owned()),
+                        size_summary: Some("42 MB".to_owned()),
+                        replication_summary: Some("1 streaming replicas".to_owned()),
+                        lock_summary: Some("0 waiting locks".to_owned()),
+                        recent_errors: vec![LogEntry {
+                            time: "09:00:00".to_owned(),
+                            priority: 3,
+                            identifier: "postgres".to_owned(),
+                            message: "checkpoint warning".to_owned(),
+                        }],
+                        notes: Vec::new(),
+                    },
+                    detected_by: vec!["systemd unit postgresql.service".to_owned()],
+                }],
+            },
             crons: Vec::new(),
             timers: Vec::new(),
             notes: vec!["errors originate upstream on api-02".to_owned()],
@@ -453,6 +580,11 @@ mod tests {
         assert!(md.contains("## Open ports (0)"));
         assert!(md.contains("## Docker"));
         assert!(md.contains("Docker unavailable on this host."));
+        assert!(md.contains("## Databases (1)"));
+        assert!(md.contains("PostgreSQL"));
+        assert!(md.contains("14 SQL sessions"));
+        assert!(md.contains("PostgreSQL local socket directory"));
+        assert!(md.contains("checkpoint warning"));
         assert!(md.contains("## Failed services (1)"));
         assert!(md.contains("docker.service"));
         assert!(md.contains("## Crons"));
@@ -486,6 +618,7 @@ mod tests {
         assert!(md.contains("## Executive summary"));
         assert!(md.contains("## Security findings (1)"));
         assert!(md.contains("## Open ports"));
+        assert!(md.contains("## Databases (1)"));
         assert!(md.contains("## Recommendations"));
         assert!(md.contains("## Notes"));
         // Operational sections are omitted.

@@ -1,0 +1,13 @@
+# Clients
+connected_clients:12
+blocked_clients:1
+
+# Memory
+used_memory_human:10.40M
+
+# Replication
+role:master
+connected_slaves:2
+
+# Keyspace
+db0:keys=1200,expires=10,avg_ttl=1000

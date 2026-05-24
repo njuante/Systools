@@ -7,6 +7,7 @@
 pub mod capabilities;
 pub mod connectivity;
 pub mod cron;
+pub mod database;
 pub mod docker;
 pub mod exposure;
 pub mod health;
@@ -22,6 +23,11 @@ pub use connectivity::{DnsLookup, PingResult, TcpProbe, dns_lookup, ping, tcp_co
 pub use cron::{
     CronEntry, CronSchedule, CronSource, SystemdTimer, collect_cron_entries, collect_timers,
     parse_crontab, parse_schedule,
+};
+pub use database::{
+    DatabaseCollector, DatabaseCredentialKind, DatabaseCredentialSource, DatabaseEngine,
+    DatabaseInstance, DatabaseOperational, DatabaseService, DatabaseSnapshot,
+    detect_database_instances,
 };
 pub use docker::{
     Container, ContainerHealth, ContainerStats, DockerCollector, InspectSummary, Mount,

@@ -3,12 +3,12 @@
 //! dashboard refresh, used by the `report` CLI for local and remote hosts.
 
 use systui_collectors::{
-    DockerCollector, InspectSummary, LogQuery, NetworkCollector, collect_cron_entries,
-    collect_host_report, collect_timers, container_stats, exposure_map, inspect_container,
-    probe_capabilities,
+    DatabaseCollector, DockerCollector, InspectSummary, LogQuery, NetworkCollector,
+    collect_cron_entries, collect_host_report, collect_timers, container_stats, exposure_map,
+    inspect_container, probe_capabilities,
 };
 use systui_core::{Collector, Config, ExecutionMode, Result, Transport};
-use systui_security::{cron_findings, docker_findings, security_scan};
+use systui_security::{cron_findings, database_findings, docker_findings, security_scan};
 
 use crate::model::{Report, ReportMeta};
 
@@ -68,6 +68,11 @@ pub async fn gather_report(
     let crons = collect_cron_entries(transport).await;
     findings.extend(cron_findings(transport, &crons).await);
     let timers = collect_timers(transport).await;
+    let databases = DatabaseCollector::new()
+        .collect(transport)
+        .await
+        .unwrap_or_default();
+    findings.extend(database_findings(&databases));
 
     // Merged findings (security + docker + cron), worst-first.
     findings.sort_by(|a, b| b.severity.cmp(&a.severity).then_with(|| a.id.cmp(&b.id)));
@@ -87,6 +92,7 @@ pub async fn gather_report(
         containers,
         container_inspects,
         container_stats: container_stats_data,
+        databases,
         crons,
         timers,
         notes,

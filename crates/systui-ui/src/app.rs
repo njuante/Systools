@@ -5,9 +5,9 @@ use systui_actions::{
     ActionDecision, DockerAction, DockerOp, ServiceAction, ServiceOp, Signal, SignalAction,
 };
 use systui_collectors::{
-    Container, ContainerStats, CronEntry, ExposureEntry, HealthReport, HostCapabilities,
-    InspectSummary, LogEntry, LogQuery, NetworkSnapshot, Process, ServiceUnit, SystemSnapshot,
-    SystemdTimer,
+    Container, ContainerStats, CronEntry, DatabaseSnapshot, ExposureEntry, HealthReport,
+    HostCapabilities, InspectSummary, LogEntry, LogQuery, NetworkSnapshot, Process, ServiceUnit,
+    SystemSnapshot, SystemdTimer,
 };
 use systui_core::{Action, ExecutionMode, Finding, ModuleId, Severity, Thresholds};
 
@@ -101,12 +101,13 @@ pub enum Tab {
     Network,
     Docker,
     Crons,
+    Databases,
     Security,
 }
 
 impl Tab {
     /// All tabs, in display order.
-    pub const ALL: [Tab; 9] = [
+    pub const ALL: [Tab; 10] = [
         Tab::Dashboard,
         Tab::System,
         Tab::Processes,
@@ -115,6 +116,7 @@ impl Tab {
         Tab::Network,
         Tab::Docker,
         Tab::Crons,
+        Tab::Databases,
         Tab::Security,
     ];
 
@@ -129,6 +131,7 @@ impl Tab {
             Tab::Network => "Network",
             Tab::Docker => "Docker",
             Tab::Crons => "Crons",
+            Tab::Databases => "Databases",
             Tab::Security => "Security",
         }
     }
@@ -144,6 +147,7 @@ impl Tab {
             Tab::Network => ModuleId::Network,
             Tab::Docker => ModuleId::Docker,
             Tab::Crons => ModuleId::Crons,
+            Tab::Databases => ModuleId::Databases,
             Tab::Security => ModuleId::Security,
         }
     }
@@ -219,6 +223,7 @@ pub struct App {
     pub network: Option<NetworkSnapshot>,
     pub exposures: Vec<ExposureEntry>,
     pub findings: Vec<Finding>,
+    pub databases: DatabaseSnapshot,
     pub cert_warning_days: u32,
     pub containers: Vec<Container>,
     pub container_inspects: Vec<InspectSummary>,
@@ -228,6 +233,7 @@ pub struct App {
     pub crons: Vec<CronEntry>,
     pub timers: Vec<SystemdTimer>,
     pub crons_selected: usize,
+    pub databases_selected: usize,
     /// Reference time for cron next-run previews, refreshed each collection.
     pub now: NaiveDateTime,
     pub logs: Vec<LogEntry>,
@@ -265,6 +271,7 @@ impl App {
             network: None,
             exposures: Vec::new(),
             findings: Vec::new(),
+            databases: DatabaseSnapshot::default(),
             cert_warning_days: 30,
             containers: Vec::new(),
             container_inspects: Vec::new(),
@@ -274,6 +281,7 @@ impl App {
             crons: Vec::new(),
             timers: Vec::new(),
             crons_selected: 0,
+            databases_selected: 0,
             now: Local::now().naive_local(),
             logs: Vec::new(),
             log_query: LogQuery::default(),
@@ -435,6 +443,7 @@ impl App {
             Tab::Processes => self.processes.len(),
             Tab::Docker => self.containers.len(),
             Tab::Crons => self.crons.len(),
+            Tab::Databases => self.databases.instances.len(),
             _ => 0,
         }
     }
@@ -445,6 +454,7 @@ impl App {
             Tab::Processes => Some(&mut self.processes_selected),
             Tab::Docker => Some(&mut self.containers_selected),
             Tab::Crons => Some(&mut self.crons_selected),
+            Tab::Databases => Some(&mut self.databases_selected),
             _ => None,
         }
     }
@@ -460,6 +470,11 @@ impl App {
         self.container_inspects
             .iter()
             .find(|i| i.id == container.id)
+    }
+
+    /// The database instance currently selected on the Databases tab, if any.
+    pub fn selected_database(&self) -> Option<&systui_collectors::DatabaseInstance> {
+        self.databases.instances.get(self.databases_selected)
     }
 
     /// Move the selection down within the active list.
@@ -491,6 +506,9 @@ impl App {
             .containers_selected
             .min(self.containers.len().saturating_sub(1));
         self.crons_selected = self.crons_selected.min(self.crons.len().saturating_sub(1));
+        self.databases_selected = self
+            .databases_selected
+            .min(self.databases.instances.len().saturating_sub(1));
     }
 
     /// Build the default action for the selected item and request planning.

@@ -7,11 +7,12 @@
 
 use chrono::Local;
 use systui_collectors::{
-    DockerCollector, InspectSummary, LogsCollector, NetworkCollector, collect_cron_entries,
-    collect_host_report, collect_timers, container_stats, exposure_map, inspect_container,
+    DatabaseCollector, DockerCollector, InspectSummary, LogsCollector, NetworkCollector,
+    collect_cron_entries, collect_host_report, collect_timers, container_stats, exposure_map,
+    inspect_container,
 };
 use systui_core::{Collector, CoreError, Transport};
-use systui_security::{cron_findings, docker_findings, security_scan};
+use systui_security::{cron_findings, database_findings, docker_findings, security_scan};
 use tokio::runtime::Runtime;
 
 use crate::app::{App, ViewState};
@@ -61,6 +62,10 @@ fn refresh_network_security(runtime: &Runtime, transport: &dyn Transport, app: &
     app.network = network;
     app.exposures = exposures;
     app.findings = findings;
+    app.databases = runtime
+        .block_on(DatabaseCollector::new().collect(transport))
+        .unwrap_or_default();
+    app.findings.extend(database_findings(&app.databases));
 }
 
 /// Collect Docker containers and cron jobs, fold their risk findings into the

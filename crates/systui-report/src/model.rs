@@ -3,8 +3,8 @@
 
 use serde::Serialize;
 use systui_collectors::{
-    Container, ContainerStats, CronEntry, ExposureEntry, HostCapabilities, HostReport,
-    InspectSummary, NetworkSnapshot, SystemdTimer,
+    Container, ContainerStats, CronEntry, DatabaseSnapshot, ExposureEntry, HostCapabilities,
+    HostReport, InspectSummary, NetworkSnapshot, SystemdTimer,
 };
 use systui_core::{ExecutionMode, Finding};
 
@@ -15,7 +15,8 @@ pub enum ReportScope {
     /// Every section.
     Full,
     /// A security-focused report: summary, findings, exposed ports, containers,
-    /// recommendations and notes — skipping health, services, crons and inventory.
+    /// databases, recommendations and notes — skipping health, services, crons
+    /// and inventory.
     Security,
 }
 
@@ -48,6 +49,7 @@ pub struct Report {
     pub containers: Vec<Container>,
     pub container_inspects: Vec<InspectSummary>,
     pub container_stats: Vec<ContainerStats>,
+    pub databases: DatabaseSnapshot,
     pub crons: Vec<CronEntry>,
     pub timers: Vec<SystemdTimer>,
     /// Free-form notes captured during the review.

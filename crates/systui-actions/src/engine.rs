@@ -10,8 +10,11 @@
 //! `execute` it with the confirmation the user supplied. Audit persistence is
 //! layered on in S2.6.
 
+use std::time::Instant;
+
 use systui_core::{
-    Action, ActionOutcome, ActionPreview, CoreError, ExecutionMode, Result, RiskLevel,
+    Action, ActionOutcome, ActionPreview, AuditContext, AuditRecord, AuditStatus, CoreError,
+    ExecutionMode, Result, RiskLevel, Transport,
 };
 
 /// The result of planning an action against the current mode.
@@ -47,7 +50,7 @@ impl ActionEngine {
     pub async fn plan(
         &self,
         action: &dyn Action,
-        transport: &dyn systui_core::Transport,
+        transport: &dyn Transport,
     ) -> Result<ActionDecision> {
         if let Some(reason) = action.guardrail() {
             return Ok(ActionDecision::Rejected(format!("blocked: {reason}")));
@@ -76,7 +79,7 @@ impl ActionEngine {
     pub async fn execute(
         &self,
         action: &dyn Action,
-        transport: &dyn systui_core::Transport,
+        transport: &dyn Transport,
         confirmation: Option<&str>,
     ) -> Result<ActionOutcome> {
         if let Some(reason) = action.guardrail() {
@@ -107,6 +110,45 @@ impl ActionEngine {
         // cron/config edits will create backups here in later phases.
 
         action.execute(transport).await
+    }
+
+    /// Execute an action and produce an [`AuditRecord`] for it.
+    ///
+    /// Returns the execution result alongside the record so the caller can both
+    /// react to the outcome and persist the audit entry (via `systui-storage`).
+    pub async fn run(
+        &self,
+        action: &dyn Action,
+        transport: &dyn Transport,
+        confirmation: Option<&str>,
+        ctx: &AuditContext,
+    ) -> (Result<ActionOutcome>, AuditRecord) {
+        let start = Instant::now();
+        let result = self.execute(action, transport, confirmation).await;
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        let status = match &result {
+            Ok(outcome) if outcome.success => AuditStatus::Success,
+            Ok(_) => AuditStatus::Failure,
+            Err(_) => AuditStatus::Rejected,
+        };
+        let action_label = action
+            .preview(transport)
+            .await
+            .map(|p| p.summary)
+            .unwrap_or_else(|_| action.target());
+
+        let record = AuditRecord {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            host: ctx.host.clone(),
+            user: ctx.user.clone(),
+            module: action.module(),
+            action: action_label,
+            target: action.target(),
+            status,
+            duration_ms,
+        };
+        (result, record)
     }
 }
 
@@ -209,5 +251,41 @@ mod tests {
             engine.plan(&action, &MockTransport::new()).await.unwrap(),
             ActionDecision::Rejected(_)
         ));
+    }
+
+    fn ctx() -> systui_core::AuditContext {
+        systui_core::AuditContext {
+            host: "local".to_owned(),
+            user: "admin".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_produces_success_audit_record() {
+        let engine = ActionEngine::new(ExecutionMode::Privileged);
+        let action = ServiceAction::new(ServiceOp::Restart, "nginx.service");
+        let transport = MockTransport::new()
+            .with_command("systemctl restart nginx.service", ok(""))
+            .with_command("systemctl is-active nginx.service", ok("active\n"));
+
+        let (result, record) = engine
+            .run(&action, &transport, Some("restart nginx.service"), &ctx())
+            .await;
+        assert!(result.unwrap().success);
+        assert_eq!(record.status, systui_core::AuditStatus::Success);
+        assert_eq!(record.action, "Restart nginx.service");
+        assert_eq!(record.target, "nginx.service");
+        assert_eq!(record.user, "admin");
+    }
+
+    #[tokio::test]
+    async fn run_records_rejection_in_read_only() {
+        let engine = ActionEngine::new(ExecutionMode::ReadOnly);
+        let action = ServiceAction::new(ServiceOp::Restart, "nginx.service");
+        let (result, record) = engine
+            .run(&action, &MockTransport::new(), None, &ctx())
+            .await;
+        assert!(result.is_err());
+        assert_eq!(record.status, systui_core::AuditStatus::Rejected);
     }
 }

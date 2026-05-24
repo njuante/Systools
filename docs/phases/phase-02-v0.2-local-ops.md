@@ -91,8 +91,11 @@ Everything still goes through the `Transport`/`CommandSpec` contracts; the UI on
   execute → verify. `plan` returns Rejected / NeedsConfirmation / Ready; `execute`
   re-checks and verifies the typed phrase. Transport-agnostic. Audit persistence
   is wired in S2.6; UI invocation in S2.7.
-- **S2.6 — Read-only mode + audit log**: enforce read-only at the engine; append
-  audit records via `systui-storage`.
+- **S2.6 — Read-only mode + audit log** *(done)*: read-only is enforced by the
+  engine (S2.5). Added the `AuditRecord`/`AuditStatus`/`AuditContext` model (core),
+  `Action::target()`, `ActionEngine::run` (executes + builds a record), and
+  `systui-storage::AuditLog` (append JSON lines to `~/.local/share/systui/audit.log`).
+  UI persistence of records lands with action invocation in S2.7.
 - **S2.7 — Contextual confirmations + guardrails** + polish → **tag v0.2**.
 
 ## Definition of Done

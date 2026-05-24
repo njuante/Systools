@@ -57,6 +57,11 @@ pub trait Action: Send + Sync {
         None
     }
 
+    /// The action's target (a unit name, PID, ...), used for auditing.
+    fn target(&self) -> String {
+        String::new()
+    }
+
     /// Describe the action for the confirmation/preview step. Read-only.
     async fn preview(&self, transport: &dyn Transport) -> Result<ActionPreview>;
 

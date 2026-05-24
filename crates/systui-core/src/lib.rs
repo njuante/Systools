@@ -6,6 +6,7 @@
 //! over SSH, or against a mock in tests.
 
 pub mod action;
+pub mod audit;
 pub mod collector;
 pub mod command;
 pub mod config;
@@ -15,6 +16,7 @@ pub mod model;
 pub mod transport;
 
 pub use action::{Action, ActionOutcome, ActionPreview};
+pub use audit::{AuditContext, AuditRecord, AuditStatus};
 pub use collector::{Collector, ModuleId};
 pub use command::{CommandOutput, CommandSpec};
 pub use config::{Config, Thresholds};

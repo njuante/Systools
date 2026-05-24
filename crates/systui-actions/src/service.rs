@@ -132,6 +132,10 @@ impl Action for ServiceAction {
         true
     }
 
+    fn target(&self) -> String {
+        self.unit.clone()
+    }
+
     async fn preview(&self, _transport: &dyn Transport) -> Result<ActionPreview> {
         Ok(ActionPreview {
             summary: self.summary(),

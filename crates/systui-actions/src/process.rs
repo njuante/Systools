@@ -63,7 +63,7 @@ impl SignalAction {
         }
     }
 
-    fn target(&self) -> String {
+    fn describe(&self) -> String {
         if self.name.is_empty() {
             format!("PID {}", self.pid)
         } else {
@@ -105,17 +105,21 @@ impl Action for SignalAction {
         }
     }
 
+    fn target(&self) -> String {
+        self.describe()
+    }
+
     async fn preview(&self, _transport: &dyn Transport) -> Result<ActionPreview> {
         let mut details = vec![format!(
             "Sends SIG{} to {}.",
             self.signal.name(),
-            self.target()
+            self.describe()
         )];
         if let Some(reason) = self.guardrail() {
             details.push(format!("BLOCKED: {reason}"));
         }
         Ok(ActionPreview {
-            summary: format!("Send SIG{} to {}", self.signal.name(), self.target()),
+            summary: format!("Send SIG{} to {}", self.signal.name(), self.describe()),
             details,
             command: Some(self.command()),
             reversible: false,
@@ -134,7 +138,7 @@ impl Action for SignalAction {
                 success: false,
                 message: format!(
                     "failed to signal {}: {}",
-                    self.target(),
+                    self.describe(),
                     output.stderr.trim()
                 ),
             });
@@ -150,7 +154,7 @@ impl Action for SignalAction {
             message: format!(
                 "SIG{} sent to {} — {state}",
                 self.signal.name(),
-                self.target()
+                self.describe()
             ),
         })
     }

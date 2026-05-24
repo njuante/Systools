@@ -933,6 +933,7 @@ name = "systui-actions"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "systui-core",
  "systui-transport",
  "tokio",
@@ -997,6 +998,7 @@ name = "systui-storage"
 version = "0.1.0"
 dependencies = [
  "directories",
+ "serde_json",
  "systui-core",
  "toml",
 ]

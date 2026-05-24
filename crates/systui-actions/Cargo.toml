@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 systui-core.workspace = true
 async-trait.workspace = true
+chrono.workspace = true
 
 [dev-dependencies]
 systui-transport.workspace = true

@@ -14,3 +14,4 @@ workspace = true
 systui-core.workspace = true
 directories.workspace = true
 toml.workspace = true
+serde_json.workspace = true

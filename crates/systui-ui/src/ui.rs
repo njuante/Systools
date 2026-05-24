@@ -168,6 +168,12 @@ fn render_top_bar(frame: &mut Frame, app: &App, area: Rect) {
         if attached { " · live" } else { " · detached" },
         Style::new().fg(app.theme.fg_dim),
     ));
+    if app.refreshing {
+        left.push(Span::styled(
+            " · ⟳ refreshing",
+            Style::new().fg(app.theme.accent),
+        ));
+    }
 
     let (badge_text, badge_color) = mode_badge(&app.theme, app.mode);
     let health_score = app.health.as_ref().map(|h| h.score);

@@ -270,6 +270,9 @@ pub struct App {
     pub cron_form: Option<CronFormState>,
     pub show_help: bool,
     pub should_quit: bool,
+    /// A background gather is in flight; drives the refresh indicator and
+    /// coalesces refresh requests so only one gather runs at a time.
+    pub refreshing: bool,
     pub refresh_requested: bool,
     pub logs_reload_requested: bool,
     pub action_plan_requested: bool,
@@ -325,6 +328,7 @@ impl App {
             cron_form: None,
             show_help: false,
             should_quit: false,
+            refreshing: false,
             refresh_requested: false,
             logs_reload_requested: false,
             action_plan_requested: false,

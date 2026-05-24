@@ -180,3 +180,35 @@ where a collector issues many small commands: `security_scan` (28→310ms), `cro
 total is the sum of all of them — which is what S8d.2 (background), S8d.3
 (concurrency) and S8d.5 (batching) attack. Slow-changing data folded into `system`
 (hostname/kernel/etc.) is re-collected every tick → S8d.4 (tiering).
+
+### S8d.2 — Background refresh ✅
+
+The single-host refresh no longer blocks the UI thread. The gather logic moved out
+of `refresh_blocking` into a pure `systui-ui::data::gather` that returns a
+`RefreshResult` (a self-contained bundle of the whole refresh) and touches no `App`
+state. The event loop (`systui-ui::lib`) spawns it as a task on the shared tokio
+runtime, posts the result over an `std::sync::mpsc` channel, and drains the channel
+each tick via `try_recv`, folding the result in with `apply_refresh` on the main
+thread. Rendering therefore stays a pure, synchronous function of `App` — no locking
+in the draw path.
+
+Key properties:
+
+- **Never freezes.** Input and redraw stay live for the whole gather; `q`, tab
+  navigation and scrolling respond even mid-refresh (previously a `block_on` wedged
+  the loop for the gather's full duration). Manual `r` and auto-refresh both go
+  through the background path.
+- **Coalesced.** `spawn_refresh` is a no-op while a gather is in flight (`App.refreshing`),
+  so requests never stack up — at most one gather runs at a time.
+- **Atomic swap, error-safe.** Only a finished `RefreshResult` is applied; a failed
+  background refresh surfaces the error via `ViewState` but leaves the previous good
+  data on screen (covered by `failed_refresh_keeps_previous_good_data`).
+- **Indicator.** A subtle `⟳ refreshing` marker in the top bar shows activity while a
+  gather is in flight.
+- **Transport sharing.** `run` converts the `Box<dyn Transport>` to
+  `Arc<dyn Transport>` (the trait is `Send + Sync`) so the gather task owns a clone;
+  the main thread keeps one for synchronous action calls. No CLI changes.
+
+Out of scope here (later sessions): collectors still run **sequentially** inside the
+gather (S8d.3), slow data is still re-collected each tick (S8d.4), and one-shot action
+execution + logs reload still use `block_on` (brief, user-initiated, acceptable).

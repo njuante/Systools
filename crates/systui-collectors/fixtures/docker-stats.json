@@ -1,0 +1,2 @@
+{"ID":"abc123","Name":"redis","CPUPerc":"0.15%","MemPerc":"1.20%","MemUsage":"12MiB / 1GiB"}
+{"ID":"def456","Name":"web","CPUPerc":"2.50%","MemPerc":"3.00%","MemUsage":"30MiB / 1GiB"}

@@ -1,0 +1,27 @@
+[
+  {
+    "Id": "abc123def4567890",
+    "Name": "/redis",
+    "RestartCount": 7,
+    "Config": { "Image": "redis:latest" },
+    "HostConfig": {
+      "Privileged": true,
+      "Memory": 0,
+      "RestartPolicy": { "Name": "always", "MaximumRetryCount": 0 }
+    },
+    "Mounts": [
+      { "Source": "/var/run/docker.sock", "Destination": "/var/run/docker.sock", "Mode": "", "RW": true },
+      { "Source": "/data/redis", "Destination": "/data", "Mode": "rw", "RW": true }
+    ],
+    "State": { "Health": { "Status": "unhealthy" } },
+    "NetworkSettings": {
+      "Networks": { "bridge": {} },
+      "Ports": {
+        "6379/tcp": [
+          { "HostIp": "0.0.0.0", "HostPort": "6379" },
+          { "HostIp": "::", "HostPort": "6379" }
+        ]
+      }
+    }
+  }
+]

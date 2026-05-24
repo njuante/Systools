@@ -95,6 +95,12 @@ checks produce shared `Finding`s. Crons are **read-only/detection** this phase.
 
 - **S4.1 — Context** *(this file)*.
 - **S4.2 — Docker collectors**: containers (running/stopped), stats, inspect summary.
+  **Done.** `systui-collectors::docker`: `DockerCollector` → `Vec<Container>` via
+  `docker ps -a --format {{json .}}`; `container_stats` (no-stream) and
+  `inspect_container` → `InspectSummary { privileged, mounts, restart policy/count,
+  memory limit, networks, published ports, health }`. Pure JSON parsers, fixture-
+  tested; a missing/unreachable docker surfaces the transport error (honest
+  "unavailable" vs "no containers"). `InspectSummary` feeds the S4.4 risk checks.
 - **S4.3 — Docker ops**: logs, ports, volumes, networks; start/stop/restart/remove.
 - **S4.4 — Docker risk checks**: privileged, docker.sock mount, dangerous mounts,
   sensitive published ports, unhealthy, restart loops, `latest` tag, no mem limit.

@@ -67,11 +67,12 @@ This builds directly on the phase-0 foundation: collectors run through a
 
 ## Sessions
 
-- **S1.1 — Context** *(this file)*.
-- **S1.2 — System collectors**: OS/kernel/hostname/uptime, CPU, RAM, swap, load,
-  disks, users → `SystemSnapshot`, with fixture-based parser tests.
-- **S1.3 — Dashboard & system panels**: health header, CPU/RAM/swap, disk, load;
-  render the snapshot; generalise the data controller.
+- **S1.1 — Context** *(done — this file)*.
+- **S1.2 — System collectors** *(done)*: OS/kernel/hostname/uptime, CPU, RAM, swap,
+  load, disks, users → `SystemSnapshot`, with fixture-based parser tests.
+- **S1.3 — Dashboard & system panels** *(done)*: header, CPU/RAM/swap bars, disk
+  usage and load on the dashboard; full system detail tab; the data controller now
+  runs `SystemCollector` (the phase-0 `HostInfoCollector` demo was removed).
 - **S1.4 — Top processes**: collector (sort by CPU/RAM) + panel.
 - **S1.5 — Failed systemd units**: collector + panel.
 - **S1.6 — Basic journald logs**: recent critical/error lines + simple view.

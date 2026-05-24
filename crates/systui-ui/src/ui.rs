@@ -6,7 +6,7 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs, Wrap};
-use systui_collectors::HostInfo;
+use systui_collectors::{Disk, SystemSnapshot};
 
 use crate::app::{App, Tab, ViewState};
 
@@ -71,17 +71,21 @@ fn render_content(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::new().fg(app.theme.border))
         .title(format!(" {} ", tab.title()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    // When data is ready, the dashboard/system tabs show the collected host info.
-    if app.view_state == ViewState::Ready {
-        if let Some(info) = &app.host_info {
-            if matches!(tab, Tab::Dashboard | Tab::System) {
-                frame.render_widget(Paragraph::new(host_info_text(app, info)).block(block), area);
-                return;
-            }
+    match (&app.view_state, &app.snapshot, tab) {
+        (ViewState::Ready, Some(snap), Tab::Dashboard) => {
+            frame.render_widget(Paragraph::new(dashboard_text(app, snap)), inner);
         }
+        (ViewState::Ready, Some(snap), Tab::System) => {
+            frame.render_widget(Paragraph::new(system_text(app, snap)), inner);
+        }
+        _ => render_message(frame, app, tab, inner),
     }
+}
 
+fn render_message(frame: &mut Frame, app: &App, tab: Tab, area: Rect) {
     let (heading, body) = content_message(app, tab);
     let text = Text::from(vec![
         Line::from(""),
@@ -92,12 +96,12 @@ fn render_content(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
         Line::from(Span::styled(body, Style::new().fg(app.theme.dim))),
     ]);
-
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true });
-    frame.render_widget(paragraph, area);
+    frame.render_widget(
+        Paragraph::new(text)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: true }),
+        area,
+    );
 }
 
 fn content_message(app: &App, tab: Tab) -> (String, String) {
@@ -105,11 +109,11 @@ fn content_message(app: &App, tab: Tab) -> (String, String) {
         ViewState::Loading => ("Loading…".to_owned(), "Collecting data.".to_owned()),
         ViewState::Empty => (
             tab.title().to_owned(),
-            "No data wired yet — collectors arrive in v0.1.".to_owned(),
+            "No data yet — press r to refresh.".to_owned(),
         ),
         ViewState::Ready => (
             tab.title().to_owned(),
-            "No data for this module yet.".to_owned(),
+            "No data for this module yet — arrives in a later phase.".to_owned(),
         ),
         ViewState::PartialData(msg) => ("Partial data".to_owned(), msg.clone()),
         ViewState::PermissionDenied(msg) => ("Permission denied".to_owned(), msg.clone()),
@@ -117,20 +121,250 @@ fn content_message(app: &App, tab: Tab) -> (String, String) {
     }
 }
 
-fn host_info_text(app: &App, info: &HostInfo) -> Text<'static> {
-    let label = Style::new().fg(app.theme.dim);
-    let value = Style::new().fg(app.theme.text).add_modifier(Modifier::BOLD);
-    Text::from(vec![
+/// The prioritized overview: header, CPU/RAM/swap bars and disk usage.
+fn dashboard_text(app: &App, snap: &SystemSnapshot) -> Text<'static> {
+    let dim = Style::new().fg(app.theme.dim);
+    let text_s = Style::new().fg(app.theme.text);
+    let accent = Style::new()
+        .fg(app.theme.accent)
+        .add_modifier(Modifier::BOLD);
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(snap.hostname.clone(), accent),
+            Span::styled("  ·  ", dim),
+            Span::styled(
+                snap.os.clone().unwrap_or_else(|| "unknown OS".to_owned()),
+                text_s,
+            ),
+        ]),
+        Line::from(vec![Span::styled(
+            format!(
+                "up {} · load {:.2} {:.2} {:.2} · {} cores",
+                human_uptime(snap.uptime_secs),
+                snap.load.one,
+                snap.load.five,
+                snap.load.fifteen,
+                snap.cpu.cores,
+            ),
+            dim,
+        )]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  Hostname   ", label),
-            Span::styled(info.hostname.clone(), value),
-        ]),
-        Line::from(vec![
-            Span::styled("  Kernel     ", label),
-            Span::styled(info.kernel.clone(), value),
-        ]),
+        metric_line(app, "CPU ", snap.cpu.busy_percent, None),
+        metric_line(
+            app,
+            "RAM ",
+            snap.memory.used_percent(),
+            Some(format!(
+                "{} / {}",
+                human_kb(snap.memory.used_kb()),
+                human_kb(snap.memory.total_kb)
+            )),
+        ),
+    ];
+
+    if snap.swap.total_kb > 0 {
+        lines.push(metric_line(
+            app,
+            "Swap",
+            snap.swap.used_percent(),
+            Some(format!(
+                "{} / {}",
+                human_kb(snap.swap.used_kb()),
+                human_kb(snap.swap.total_kb)
+            )),
+        ));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("Swap  ", text_s),
+            Span::styled("none", dim),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Disks", accent)));
+    for disk in &snap.disks {
+        lines.push(disk_line(app, disk));
+    }
+
+    Text::from(lines)
+}
+
+/// The full system detail view.
+fn system_text(app: &App, snap: &SystemSnapshot) -> Text<'static> {
+    let dim = Style::new().fg(app.theme.dim);
+    let accent = Style::new()
+        .fg(app.theme.accent)
+        .add_modifier(Modifier::BOLD);
+
+    let rows = [
+        ("Hostname", snap.hostname.clone()),
+        (
+            "OS",
+            snap.os.clone().unwrap_or_else(|| "unknown".to_owned()),
+        ),
+        ("Kernel", snap.kernel.clone()),
+        ("Uptime", human_uptime(snap.uptime_secs)),
+        (
+            "CPU",
+            format!(
+                "{:.0}% busy · {} cores",
+                snap.cpu.busy_percent, snap.cpu.cores
+            ),
+        ),
+        (
+            "Load",
+            format!(
+                "{:.2}  {:.2}  {:.2}",
+                snap.load.one, snap.load.five, snap.load.fifteen
+            ),
+        ),
+        (
+            "Memory",
+            format!(
+                "{} / {} ({:.0}%)",
+                human_kb(snap.memory.used_kb()),
+                human_kb(snap.memory.total_kb),
+                snap.memory.used_percent()
+            ),
+        ),
+        (
+            "Swap",
+            if snap.swap.total_kb > 0 {
+                format!(
+                    "{} / {} ({:.0}%)",
+                    human_kb(snap.swap.used_kb()),
+                    human_kb(snap.swap.total_kb),
+                    snap.swap.used_percent()
+                )
+            } else {
+                "none".to_owned()
+            },
+        ),
+    ];
+
+    let mut lines = vec![Line::from("")];
+    for (key, value) in rows {
+        lines.push(label_value(app, key, &value));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Disks", accent)));
+    for disk in &snap.disks {
+        lines.push(Line::from(vec![Span::styled(
+            format!(
+                "  {:<10} {:>3}%  {} / {}  ({})",
+                disk.mount,
+                disk.use_percent,
+                human_kb(disk.used_kb),
+                human_kb(disk.size_kb),
+                disk.filesystem
+            ),
+            dim,
+        )]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Users", accent)));
+    if snap.users.is_empty() {
+        lines.push(Line::from(Span::styled("  none", dim)));
+    } else {
+        for user in &snap.users {
+            let from = user
+                .from
+                .as_deref()
+                .map(|f| format!(" ({f})"))
+                .unwrap_or_default();
+            lines.push(Line::from(vec![Span::styled(
+                format!(
+                    "  {:<10} {:<10} {}{}",
+                    user.name, user.tty, user.login_time, from
+                ),
+                dim,
+            )]));
+        }
+    }
+
+    Text::from(lines)
+}
+
+fn metric_line(app: &App, label: &str, percent: f64, detail: Option<String>) -> Line<'static> {
+    let dim = Style::new().fg(app.theme.dim);
+    let text_s = Style::new().fg(app.theme.text);
+    let mut spans = vec![
+        Span::styled(format!("{label} "), text_s),
+        Span::styled(
+            format!("[{}]", bar(percent, 20)),
+            Style::new().fg(app.theme.accent),
+        ),
+        Span::styled(format!(" {percent:>3.0}%"), text_s),
+    ];
+    if let Some(detail) = detail {
+        spans.push(Span::styled(format!("  {detail}"), dim));
+    }
+    Line::from(spans)
+}
+
+fn disk_line(app: &App, disk: &Disk) -> Line<'static> {
+    let dim = Style::new().fg(app.theme.dim);
+    let text_s = Style::new().fg(app.theme.text);
+    Line::from(vec![
+        Span::styled(format!("  {:<10} ", disk.mount), text_s),
+        Span::styled(
+            format!("[{}]", bar(disk.use_percent as f64, 16)),
+            Style::new().fg(app.theme.accent),
+        ),
+        Span::styled(format!(" {:>3}%", disk.use_percent), text_s),
+        Span::styled(
+            format!("  {} / {}", human_kb(disk.used_kb), human_kb(disk.size_kb)),
+            dim,
+        ),
     ])
+}
+
+fn label_value(app: &App, key: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("  {key:<10}"), Style::new().fg(app.theme.dim)),
+        Span::styled(
+            value.to_owned(),
+            Style::new().fg(app.theme.text).add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
+/// A textual progress bar of `width` cells.
+fn bar(percent: f64, width: usize) -> String {
+    let filled = ((percent.clamp(0.0, 100.0) / 100.0) * width as f64).round() as usize;
+    let filled = filled.min(width);
+    let mut s = String::with_capacity(width);
+    s.extend(std::iter::repeat_n('█', filled));
+    s.extend(std::iter::repeat_n('░', width - filled));
+    s
+}
+
+/// Format a kB amount (1024-based) as KiB/MiB/GiB/TiB.
+fn human_kb(kb: u64) -> String {
+    const MIB: f64 = 1024.0;
+    const GIB: f64 = 1024.0 * 1024.0;
+    const TIB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let kb_f = kb as f64;
+    if kb_f >= TIB {
+        format!("{:.1} TiB", kb_f / TIB)
+    } else if kb_f >= GIB {
+        format!("{:.1} GiB", kb_f / GIB)
+    } else if kb_f >= MIB {
+        format!("{:.1} MiB", kb_f / MIB)
+    } else {
+        format!("{kb} KiB")
+    }
+}
+
+/// Format seconds as `Xd Yh Zm`.
+fn human_uptime(secs: u64) -> String {
+    let days = secs / 86_400;
+    let hours = (secs % 86_400) / 3_600;
+    let mins = (secs % 3_600) / 60;
+    format!("{days}d {hours}h {mins}m")
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
@@ -223,7 +457,7 @@ mod tests {
         assert!(out.contains("Dashboard"));
         assert!(out.contains("Security"));
         assert!(out.contains("q quit"));
-        assert!(out.contains("No data wired yet"));
+        assert!(out.contains("No data yet"));
     }
 
     #[test]
@@ -245,19 +479,84 @@ mod tests {
         assert!(out.contains("quit"));
     }
 
-    #[test]
-    fn renders_collected_host_info_when_ready() {
-        let mut app = App::new("local", ExecutionMode::ReadOnly);
-        app.host_info = Some(HostInfo {
+    fn sample_snapshot() -> SystemSnapshot {
+        use systui_collectors::{CpuUsage, LoadAverage, LoggedUser, Memory, Swap};
+        SystemSnapshot {
             hostname: "prod-01".to_owned(),
-            kernel: "6.1.0".to_owned(),
-        });
+            os: Some("Debian GNU/Linux 12".to_owned()),
+            kernel: "6.1.0-18-amd64".to_owned(),
+            uptime_secs: 123_456,
+            load: LoadAverage {
+                one: 0.52,
+                five: 0.58,
+                fifteen: 0.59,
+            },
+            cpu: CpuUsage {
+                busy_percent: 28.0,
+                cores: 4,
+            },
+            memory: Memory {
+                total_kb: 16_000_000,
+                available_kb: 6_400_000,
+            },
+            swap: Swap {
+                total_kb: 4_000_000,
+                free_kb: 3_000_000,
+            },
+            disks: vec![
+                Disk {
+                    filesystem: "/dev/sda1".to_owned(),
+                    size_kb: 102_687_672,
+                    used_kb: 86_012_345,
+                    avail_kb: 11_425_327,
+                    use_percent: 89,
+                    mount: "/".to_owned(),
+                },
+                Disk {
+                    filesystem: "/dev/sda2".to_owned(),
+                    size_kb: 515_928_320,
+                    used_kb: 120_000_000,
+                    avail_kb: 369_000_000,
+                    use_percent: 25,
+                    mount: "/home".to_owned(),
+                },
+            ],
+            users: vec![LoggedUser {
+                name: "admin".to_owned(),
+                tty: "pts/0".to_owned(),
+                from: Some("10.0.0.5".to_owned()),
+                login_time: "2026-05-24 09:12".to_owned(),
+            }],
+        }
+    }
+
+    #[test]
+    fn renders_dashboard_when_ready() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
         app.view_state = ViewState::Ready;
 
         let out = render_to_string(&app, 100, 24);
-        assert!(out.contains("Hostname"));
         assert!(out.contains("prod-01"));
+        assert!(out.contains("CPU"));
+        assert!(out.contains("RAM"));
+        assert!(out.contains("Disks"));
+        assert!(out.contains("/home"));
+        assert!(out.contains("89%"));
+    }
+
+    #[test]
+    fn renders_system_detail_when_ready() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.view_state = ViewState::Ready;
+        app.select_tab(1); // System
+
+        let out = render_to_string(&app, 100, 30);
+        assert!(out.contains("Hostname"));
         assert!(out.contains("Kernel"));
-        assert!(out.contains("6.1.0"));
+        assert!(out.contains("6.1.0-18-amd64"));
+        assert!(out.contains("Users"));
+        assert!(out.contains("admin"));
     }
 }

@@ -1,6 +1,6 @@
 //! Global application state for the TUI.
 
-use systui_collectors::HostInfo;
+use systui_collectors::SystemSnapshot;
 use systui_core::{ExecutionMode, ModuleId};
 
 use crate::theme::Theme;
@@ -77,7 +77,7 @@ pub struct App {
     pub theme: Theme,
     pub active_tab: usize,
     pub view_state: ViewState,
-    pub host_info: Option<HostInfo>,
+    pub snapshot: Option<SystemSnapshot>,
     pub show_help: bool,
     pub should_quit: bool,
     pub refresh_requested: bool,
@@ -92,7 +92,7 @@ impl App {
             theme: Theme::dark(),
             active_tab: 0,
             view_state: ViewState::Empty,
-            host_info: None,
+            snapshot: None,
             show_help: false,
             should_quit: false,
             refresh_requested: false,

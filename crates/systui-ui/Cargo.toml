@@ -13,8 +13,11 @@ workspace = true
 [dependencies]
 systui-core.workspace = true
 systui-collectors.workspace = true
+systui-actions.workspace = true
+systui-storage.workspace = true
 ratatui.workspace = true
 tokio.workspace = true
+regex.workspace = true
 
 [dev-dependencies]
 systui-transport.workspace = true

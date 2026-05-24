@@ -4,7 +4,9 @@
 //!
 //! Config loading lands here in phase 0 (S0.5); the audit log in phase 2 (v0.2).
 
+pub mod audit;
 pub mod config;
 pub mod paths;
 
+pub use audit::AuditLog;
 pub use config::{load as load_config, load_from as load_config_from};

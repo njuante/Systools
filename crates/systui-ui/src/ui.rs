@@ -6,9 +6,10 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Tabs, Wrap};
-use systui_collectors::{Disk, Process, SystemSnapshot};
+use regex::RegexBuilder;
+use systui_collectors::{Disk, LogEntry, SystemSnapshot};
 
-use crate::app::{App, ProcessSort, Tab, ViewState};
+use crate::app::{ActionStage, App, InputMode, Tab, ViewState};
 
 /// Draw the whole UI for the current state.
 pub fn render(frame: &mut Frame, app: &App) {
@@ -28,6 +29,77 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.show_help {
         render_help(frame, app);
     }
+    if app.action.is_some() {
+        render_action_modal(frame, app);
+    }
+}
+
+fn render_action_modal(frame: &mut Frame, app: &App) {
+    let Some(modal) = &app.action else {
+        return;
+    };
+    let area = centered_rect(60, 50, frame.area());
+    frame.render_widget(Clear, area);
+
+    let (border, footer) = match modal.stage {
+        ActionStage::Confirm => (app.theme.warn, "Enter confirm · Esc cancel"),
+        ActionStage::Ready => (app.theme.accent, "Enter run · Esc cancel"),
+        ActionStage::Result => (app.theme.border, "press any key to close"),
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::new().fg(border))
+        .title(format!(" {} ", modal.title));
+
+    let mut lines = vec![Line::from("")];
+    for detail in &modal.details {
+        lines.push(Line::from(Span::styled(
+            format!("  {detail}"),
+            Style::new().fg(app.theme.dim),
+        )));
+    }
+    match modal.stage {
+        ActionStage::Confirm => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("  Type to confirm: ", Style::new().fg(app.theme.text)),
+                Span::styled(
+                    modal.phrase.clone(),
+                    Style::new().fg(app.theme.warn).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::from(Span::styled(
+                format!("  > {}_", modal.input),
+                Style::new().fg(app.theme.accent),
+            )));
+        }
+        ActionStage::Ready => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  Ready to run.",
+                Style::new().fg(app.theme.text),
+            )));
+        }
+        ActionStage::Result => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!("  {}", modal.message),
+                Style::new().fg(app.theme.text),
+            )));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("  [{footer}]"),
+        Style::new().fg(app.theme.dim),
+    )));
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn render_title(frame: &mut Frame, app: &App, area: Rect) {
@@ -89,36 +161,46 @@ fn render_content(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
-    if app.logs.is_empty() {
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    render_log_filter_bar(frame, app, rows[0]);
+
+    // Case-insensitive regex search; invalid patterns fall back to substring.
+    let regex = if app.log_search.is_empty() {
+        None
+    } else {
+        RegexBuilder::new(&app.log_search)
+            .case_insensitive(true)
+            .build()
+            .ok()
+    };
+    let filtered: Vec<&LogEntry> = app
+        .logs
+        .iter()
+        .filter(|e| log_matches(e, &app.log_search, regex.as_ref()))
+        .collect();
+
+    if filtered.is_empty() {
+        let msg = if app.logs.is_empty() {
+            "No logs for this filter."
+        } else {
+            "No matches."
+        };
         frame.render_widget(
-            Paragraph::new(Span::styled(
-                "No recent error logs.",
-                Style::new().fg(app.theme.ok),
-            ))
-            .alignment(Alignment::Center),
-            area,
+            Paragraph::new(Span::styled(msg, Style::new().fg(app.theme.dim)))
+                .alignment(Alignment::Center),
+            rows[1],
         );
         return;
     }
 
-    let priority_color = |entry: &systui_collectors::LogEntry| {
-        if entry.priority <= 3 {
-            app.theme.danger
-        } else if entry.priority == 4 {
-            app.theme.warn
-        } else {
-            app.theme.dim
-        }
-    };
-
     let header = Row::new(["TIME", "PRIO", "SOURCE", "MESSAGE"])
         .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
-    let body = app.logs.iter().map(|e| {
+    let body = filtered.iter().map(|e| {
         Row::new([
             Cell::from(e.time.clone()),
             Cell::from(Span::styled(
                 e.priority_label().to_owned(),
-                Style::new().fg(priority_color(e)),
+                Style::new().fg(log_priority_color(app, e)),
             )),
             Cell::from(e.identifier.clone()),
             Cell::from(e.message.clone()),
@@ -133,7 +215,61 @@ fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
     let table = Table::new(body, widths)
         .header(header)
         .style(Style::new().fg(app.theme.text));
-    frame.render_widget(table, area);
+    frame.render_widget(table, rows[1]);
+}
+
+fn render_log_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let dim = Style::new().fg(app.theme.dim);
+    let accent = Style::new().fg(app.theme.accent);
+    let mut spans = vec![
+        Span::styled(
+            format!("level {} ", app.log_level_label()),
+            Style::new().fg(app.theme.text),
+        ),
+        Span::styled(format!("· window {} ", app.log_window_label()), dim),
+    ];
+    if app.input_mode == InputMode::Search {
+        spans.push(Span::styled(
+            format!("· search: {}_", app.log_search),
+            accent,
+        ));
+    } else if !app.log_search.is_empty() {
+        spans.push(Span::styled(format!("· /{}", app.log_search), accent));
+    } else {
+        spans.push(Span::styled("· l level · t window · / search", dim));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn selected_style(app: &App) -> Style {
+    Style::new()
+        .fg(app.theme.selected_fg)
+        .bg(app.theme.selected_bg)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn log_priority_color(app: &App, entry: &LogEntry) -> ratatui::style::Color {
+    if entry.priority <= 3 {
+        app.theme.danger
+    } else if entry.priority == 4 {
+        app.theme.warn
+    } else {
+        app.theme.dim
+    }
+}
+
+fn log_matches(entry: &LogEntry, query: &str, regex: Option<&regex::Regex>) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    match regex {
+        Some(re) => re.is_match(&entry.identifier) || re.is_match(&entry.message),
+        None => {
+            let q = query.to_lowercase();
+            entry.identifier.to_lowercase().contains(&q)
+                || entry.message.to_lowercase().contains(&q)
+        }
+    }
 }
 
 fn render_services(frame: &mut Frame, app: &App, area: Rect) {
@@ -151,16 +287,21 @@ fn render_services(frame: &mut Frame, app: &App, area: Rect) {
 
     let header = Row::new(["UNIT", "ACTIVE", "SUB", "DESCRIPTION"])
         .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
-    let body = app.failed_units.iter().map(|u| {
-        Row::new([
+    let body = app.failed_units.iter().enumerate().map(|(i, u)| {
+        let row = Row::new([
             Cell::from(Span::styled(
-                u.unit.clone(),
+                u.name.clone(),
                 Style::new().fg(app.theme.danger),
             )),
             Cell::from(u.active.clone()),
             Cell::from(u.sub.clone()),
             Cell::from(u.description.clone()),
-        ])
+        ]);
+        if i == app.services_selected {
+            row.style(selected_style(app))
+        } else {
+            row
+        }
     });
     let widths = [
         Constraint::Length(28),
@@ -197,27 +338,22 @@ fn render_processes(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let mut procs: Vec<&Process> = app.processes.iter().collect();
-    let key = |p: &Process| match app.process_sort {
-        ProcessSort::Cpu => p.cpu_percent,
-        ProcessSort::Mem => p.mem_percent,
-    };
-    procs.sort_by(|a, b| {
-        key(b)
-            .partial_cmp(&key(a))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
+    let procs = app.visible_processes();
     let header = Row::new(["PID", "USER", "%CPU", "%MEM", "COMMAND"])
         .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
-    let body = procs.iter().take(20).map(|p| {
-        Row::new([
+    let body = procs.iter().take(20).enumerate().map(|(i, p)| {
+        let row = Row::new([
             p.pid.to_string(),
             p.user.clone(),
             format!("{:.1}", p.cpu_percent),
             format!("{:.1}", p.mem_percent),
             p.command.clone(),
-        ])
+        ]);
+        if i == app.processes_selected {
+            row.style(selected_style(app))
+        } else {
+            row
+        }
     });
     let widths = [
         Constraint::Length(7),
@@ -606,8 +742,12 @@ fn render_help(frame: &mut Frame, app: &App) {
         ("Tab / →", "next tab"),
         ("Shift+Tab / ←", "previous tab"),
         ("1–8", "jump to tab"),
+        ("↑ / ↓", "move selection (services/processes)"),
+        ("a", "act on selection (restart / signal)"),
         ("r", "refresh"),
         ("s", "sort processes by CPU/memory"),
+        ("/", "search logs (Esc to clear)"),
+        ("l / t", "cycle log level / time window"),
         ("?", "toggle this help"),
         ("q / Ctrl+C", "quit"),
         ("Esc", "close overlay / back"),
@@ -787,6 +927,7 @@ mod tests {
         app.processes = vec![
             Process {
                 pid: 1,
+                ppid: 0,
                 user: "root".to_owned(),
                 cpu_percent: 0.1,
                 mem_percent: 0.2,
@@ -794,6 +935,7 @@ mod tests {
             },
             Process {
                 pid: 3300,
+                ppid: 1,
                 user: "admin".to_owned(),
                 cpu_percent: 12.4,
                 mem_percent: 0.8,
@@ -816,11 +958,11 @@ mod tests {
 
     #[test]
     fn dashboard_shows_failed_unit_count() {
-        use systui_collectors::FailedUnit;
+        use systui_collectors::ServiceUnit;
         let mut app = App::new("local", ExecutionMode::ReadOnly);
         app.snapshot = Some(sample_snapshot());
-        app.failed_units = vec![FailedUnit {
-            unit: "nginx.service".to_owned(),
+        app.failed_units = vec![ServiceUnit {
+            name: "nginx.service".to_owned(),
             load: "loaded".to_owned(),
             active: "failed".to_owned(),
             sub: "failed".to_owned(),
@@ -834,11 +976,11 @@ mod tests {
 
     #[test]
     fn services_tab_lists_failed_units() {
-        use systui_collectors::FailedUnit;
+        use systui_collectors::ServiceUnit;
         let mut app = App::new("local", ExecutionMode::ReadOnly);
         app.snapshot = Some(sample_snapshot());
-        app.failed_units = vec![FailedUnit {
-            unit: "docker.service".to_owned(),
+        app.failed_units = vec![ServiceUnit {
+            name: "docker.service".to_owned(),
             load: "loaded".to_owned(),
             active: "failed".to_owned(),
             sub: "failed".to_owned(),
@@ -906,5 +1048,72 @@ mod tests {
         assert!(out.contains("ERR"));
         assert!(out.contains("nginx"));
         assert!(out.contains("upstream timed out"));
+    }
+
+    fn log(identifier: &str, message: &str) -> LogEntry {
+        LogEntry {
+            time: "09:00:00".to_owned(),
+            priority: 3,
+            identifier: identifier.to_owned(),
+            message: message.to_owned(),
+        }
+    }
+
+    #[test]
+    fn logs_tab_filters_by_search() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.logs = vec![
+            log("nginx", "upstream timed out"),
+            log("sshd", "failed password"),
+        ];
+        app.view_state = ViewState::Ready;
+        app.select_tab(4); // Logs
+        app.log_search = "sshd".to_owned();
+
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("failed password"));
+        assert!(!out.contains("upstream timed out"));
+    }
+
+    #[test]
+    fn action_modal_renders_confirmation() {
+        use crate::app::{ActionModal, ActionStage};
+        let mut app = App::new("local", ExecutionMode::Privileged);
+        app.snapshot = Some(sample_snapshot());
+        app.view_state = ViewState::Ready;
+        app.set_decision(systui_actions::ActionDecision::NeedsConfirmation {
+            preview: systui_core::ActionPreview {
+                summary: "Restart nginx.service".to_owned(),
+                details: vec!["Restarts the unit; it will be briefly unavailable.".to_owned()],
+                command: None,
+                reversible: false,
+                creates_backup: false,
+            },
+            phrase: "Restart nginx.service".to_owned(),
+        });
+
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("Restart nginx.service"));
+        assert!(out.contains("Type to confirm"));
+
+        // sanity: the modal type is what we expect
+        let modal: &ActionModal = app.action.as_ref().unwrap();
+        assert_eq!(modal.stage, ActionStage::Confirm);
+    }
+
+    #[test]
+    fn logs_tab_shows_filter_bar_and_search_input() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.logs = vec![log("nginx", "boom")];
+        app.view_state = ViewState::Ready;
+        app.select_tab(4);
+        app.enter_search();
+        app.push_search_char('n');
+
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("level err+"));
+        assert!(out.contains("search: n"));
     }
 }

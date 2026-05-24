@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use systui_core::{Collector, Result, Thresholds, Transport};
 
 use crate::{
-    FailedUnit, FailedUnitsCollector, HealthReport, LogEntry, LogsCollector, Process,
-    ProcessCollector, SystemCollector, SystemSnapshot, evaluate_health,
+    FailedUnitsCollector, HealthReport, LogEntry, LogQuery, LogsCollector, Process,
+    ProcessCollector, ServiceUnit, SystemCollector, SystemSnapshot, evaluate_health,
 };
 
 /// A complete collected view of a host at one point in time.
@@ -15,7 +15,7 @@ pub struct HostReport {
     pub snapshot: SystemSnapshot,
     pub health: HealthReport,
     pub processes: Vec<Process>,
-    pub failed_units: Vec<FailedUnit>,
+    pub failed_units: Vec<ServiceUnit>,
     pub logs: Vec<LogEntry>,
 }
 
@@ -26,6 +26,7 @@ pub struct HostReport {
 pub async fn collect_host_report(
     transport: &dyn Transport,
     thresholds: &Thresholds,
+    log_query: &LogQuery,
 ) -> Result<HostReport> {
     let snapshot = SystemCollector::new().collect(transport).await?;
     let processes = ProcessCollector::new()
@@ -36,7 +37,7 @@ pub async fn collect_host_report(
         .collect(transport)
         .await
         .unwrap_or_default();
-    let logs = LogsCollector::new()
+    let logs = LogsCollector::with_query(log_query.clone())
         .collect(transport)
         .await
         .unwrap_or_default();
@@ -73,16 +74,20 @@ mod tests {
                 b"cpu  1 0 1 8 0 0 0 0 0 0\ncpu0 1 0 1 8 0 0 0 0 0 0\n".to_vec(),
             )
             .with_stdout(
-                "ps -eo pid,user,pcpu,pmem,comm",
-                "  PID USER %CPU %MEM COMMAND\n  1 root 0.0 0.1 systemd\n",
+                "ps -eo pid,ppid,user,pcpu,pmem,comm",
+                "  PID PPID USER %CPU %MEM COMMAND\n  1 0 root 0.0 0.1 systemd\n",
             )
     }
 
     #[tokio::test]
     async fn collects_all_parts() {
-        let report = collect_host_report(&full_transport(), &Thresholds::default())
-            .await
-            .unwrap();
+        let report = collect_host_report(
+            &full_transport(),
+            &Thresholds::default(),
+            &LogQuery::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(report.snapshot.hostname, "prod-01");
         assert_eq!(report.processes.len(), 1);
         // df/who/systemctl/journalctl unconfigured -> empty, but no failure
@@ -95,7 +100,7 @@ mod tests {
     async fn fails_when_system_snapshot_fails() {
         let transport = MockTransport::new(); // nothing configured
         assert!(
-            collect_host_report(&transport, &Thresholds::default())
+            collect_host_report(&transport, &Thresholds::default(), &LogQuery::default())
                 .await
                 .is_err()
         );

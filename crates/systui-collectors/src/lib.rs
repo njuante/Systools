@@ -13,9 +13,11 @@ pub mod system;
 
 pub use health::{Check, HealthReport, evaluate_health};
 pub use host_report::{HostReport, collect_host_report};
-pub use logs::{LogEntry, LogsCollector};
-pub use process::{Process, ProcessCollector};
-pub use service::{FailedUnit, FailedUnitsCollector};
+pub use logs::{LogEntry, LogQuery, LogsCollector};
+pub use process::{
+    Process, ProcessCollector, ProcessDetail, TreeRow, build_process_tree, process_detail,
+};
+pub use service::{FailedUnitsCollector, ServiceCollector, ServiceUnit, UnitDetail, unit_detail};
 pub use system::{
     CpuUsage, Disk, LoadAverage, LoggedUser, Memory, Swap, SystemCollector, SystemSnapshot,
 };

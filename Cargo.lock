@@ -704,6 +704,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex"
+version = "1.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "regex-automata"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -919,6 +931,13 @@ dependencies = [
 [[package]]
 name = "systui-actions"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "systui-core",
+ "systui-transport",
+ "tokio",
+]
 
 [[package]]
 name = "systui-cli"
@@ -979,6 +998,7 @@ name = "systui-storage"
 version = "0.1.0"
 dependencies = [
  "directories",
+ "serde_json",
  "systui-core",
  "toml",
 ]
@@ -1001,8 +1021,11 @@ name = "systui-ui"
 version = "0.1.0"
 dependencies = [
  "ratatui",
+ "regex",
+ "systui-actions",
  "systui-collectors",
  "systui-core",
+ "systui-storage",
  "systui-transport",
  "tokio",
 ]

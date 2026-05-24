@@ -71,7 +71,7 @@ fn dispatch(command: Command, mode: ExecutionMode, config: &Config) -> anyhow::R
             println!("systui: fleet mode [{scope}] ({mode}) — implemented in phase 8");
         }
         Command::Report { host, format } => {
-            run_report(host, &format, config)?;
+            run_report(host, &format, mode, config)?;
         }
     }
     Ok(())
@@ -114,29 +114,37 @@ fn run_ssh(target: &str, mode: ExecutionMode, config: &Config) -> anyhow::Result
     Ok(())
 }
 
-/// Generate a health report for the local host. Remote (`--host`) and non-Markdown
-/// formats arrive in later phases.
-fn run_report(host: Option<String>, format: &str, config: &Config) -> anyhow::Result<()> {
+/// Generate a report for the local host. Remote (`--host`), JSON/HTML and section
+/// flags are wired up in S6.5; for now this renders a local Markdown report.
+fn run_report(
+    host: Option<String>,
+    format: &str,
+    mode: ExecutionMode,
+    config: &Config,
+) -> anyhow::Result<()> {
     if let Some(host) = host {
         anyhow::bail!(
-            "remote reports for `{host}` require SSH support (phase 5); only local is available in v0.1"
+            "remote reports for `{host}` require the report CLI wiring (S6.5); only local is available now"
         );
     }
     if format != "markdown" {
-        anyhow::bail!("report format `{format}` is not supported yet; use --format markdown");
+        anyhow::bail!("report format `{format}` is not wired yet; use --format markdown");
     }
 
     let runtime = tokio::runtime::Runtime::new().context("failed to start async runtime")?;
     let transport = systui_transport::LocalTransport::new();
-    let report = runtime
-        .block_on(systui_collectors::collect_host_report(
-            &transport,
-            &config.thresholds,
-            &systui_collectors::LogQuery::default(),
-        ))
-        .context("failed to collect host report")?;
-
     let generated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    print!("{}", systui_report::to_markdown(&report, &generated_at));
+    let report = runtime
+        .block_on(systui_report::gather_report(
+            &transport,
+            config,
+            systui_core::HostId::LOCAL,
+            mode,
+            generated_at,
+            Vec::new(),
+        ))
+        .context("failed to gather host report")?;
+
+    print!("{}", systui_report::to_markdown(&report));
     Ok(())
 }

@@ -1040,6 +1040,7 @@ dependencies = [
  "systui-actions",
  "systui-collectors",
  "systui-core",
+ "systui-report",
  "systui-security",
  "systui-storage",
  "systui-transport",

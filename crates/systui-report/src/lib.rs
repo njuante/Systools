@@ -1,5 +1,14 @@
-//! SysTUI report generation. v0.1 renders a health snapshot as Markdown; JSON
-//! and HTML formats arrive in phase 6.
+//! SysTUI report generation. A [`Report`] (assembled by [`gather_report`]) is
+//! rendered to JSON (the full model), Markdown or HTML. [`to_markdown`] currently
+//! renders the v0.1 health snapshot; the richer per-section renderers land in S6.3.
+
+pub mod gather;
+pub mod json;
+pub mod model;
+
+pub use gather::gather_report;
+pub use json::to_json;
+pub use model::{Report, ReportMeta};
 
 use std::fmt::Write as _;
 

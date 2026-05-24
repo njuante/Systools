@@ -4,6 +4,7 @@
 //! [`SystemCollector`] produces the [`SystemSnapshot`] shown on the dashboard.
 //! Process, service, log and network collectors arrive in later v0.1 sessions.
 
+pub mod exposure;
 pub mod health;
 pub mod host_report;
 pub mod logs;
@@ -12,6 +13,7 @@ pub mod process;
 pub mod service;
 pub mod system;
 
+pub use exposure::{BindScope, ExposureEntry, exposure_map};
 pub use health::{Check, HealthReport, evaluate_health};
 pub use host_report::{HostReport, collect_host_report};
 pub use logs::{LogEntry, LogQuery, LogsCollector};

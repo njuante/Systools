@@ -413,7 +413,7 @@ fn protocol_from_netid(netid: &str) -> Option<Protocol> {
     }
 }
 
-fn parse_ss_listeners(s: &str) -> Vec<Listener> {
+pub(crate) fn parse_ss_listeners(s: &str) -> Vec<Listener> {
     s.lines().filter_map(parse_ss_listener_line).collect()
 }
 

@@ -82,7 +82,11 @@ actions are out of scope (the action engine exists, but v0.3 only inspects).
   `.service`/`.scope` segment of the owning pid's cgroup (v1 + v2); PIDs read once,
   unreadable cgroups degrade to `None`. `NetworkCollector` runs it automatically.
 - **S3.4 — Exposure map**: classify listeners (scope + sensitivity) into risk-ranked
-  exposure entries with evidence.
+  exposure entries with evidence. **Done.** `exposure_map` in `systui-collectors`
+  maps each `Listener` to an `ExposureEntry { scope, sensitive_service, severity,
+  evidence }`: loopback binds = `Info`; external + sensitive port = `High`
+  (ssh/mysql/postgres) or `Critical` (redis/mongodb/memcached/elasticsearch/couchdb);
+  external + non-sensitive = `Low`. Reuses `core::Severity`; sorted worst-first.
 - **S3.5 — Connectivity tools**: ping, DNS lookup, TCP connect test.
 - **S3.6 — Findings & security checks**: `Finding` model + the initial posture checks.
 - **S3.7 — Certificates**: local discovery + remote `host:443`, expiry/CN/issuer checks.

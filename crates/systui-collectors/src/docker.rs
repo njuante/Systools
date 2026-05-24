@@ -168,6 +168,18 @@ pub async fn inspect_container(
     Ok(parse_inspect(&output.stdout))
 }
 
+/// Read the last `tail` log lines for a container (read-only snapshot, not a
+/// live stream). Docker writes container stdout and stderr to the command's
+/// stdout and stderr respectively; both are returned, stdout lines first.
+pub async fn container_logs(transport: &dyn Transport, id: &str, tail: u32) -> Result<Vec<String>> {
+    let tail = tail.to_string();
+    let spec = CommandSpec::new("docker").args(["logs", "--tail", &tail, "--timestamps", id]);
+    let output = transport.run(&spec).await?.into_result("docker")?;
+    let mut lines: Vec<String> = output.stdout.lines().map(str::to_owned).collect();
+    lines.extend(output.stderr.lines().map(str::to_owned));
+    Ok(lines)
+}
+
 // --- docker ps -------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -390,6 +402,7 @@ fn parse_inspect(s: &str) -> Option<InspectSummary> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use systui_core::CommandOutput;
     use systui_transport::MockTransport;
 
     const PS_CMD: &str = "docker ps -a --no-trunc --format {{json .}}";
@@ -498,6 +511,23 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn reads_container_logs_merging_streams() {
+        let transport = MockTransport::new().with_command(
+            "docker logs --tail 100 --timestamps redis",
+            CommandOutput {
+                exit_code: Some(0),
+                stdout: "2026-05-24T10:00:00Z Ready to accept connections\n".to_owned(),
+                stderr: "2026-05-24T10:00:01Z WARNING memory overcommit disabled\n".to_owned(),
+                duration: std::time::Duration::ZERO,
+            },
+        );
+        let logs = container_logs(&transport, "redis", 100).await.unwrap();
+        assert_eq!(logs.len(), 2);
+        assert!(logs[0].contains("Ready to accept connections"));
+        assert!(logs[1].contains("memory overcommit"));
     }
 
     #[tokio::test]

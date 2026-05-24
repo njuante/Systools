@@ -102,6 +102,12 @@ checks produce shared `Finding`s. Crons are **read-only/detection** this phase.
   tested; a missing/unreachable docker surfaces the transport error (honest
   "unavailable" vs "no containers"). `InspectSummary` feeds the S4.4 risk checks.
 - **S4.3 — Docker ops**: logs, ports, volumes, networks; start/stop/restart/remove.
+  **Done.** `systui-actions::docker::DockerAction` (`DockerOp` Start/Stop/Restart/
+  Remove) runs through the engine: Start = Low, Restart = Medium, Stop/Remove = High
+  (typed confirmation), Remove non-reversible; blocked in read-only and audited.
+  Each verifies the resulting state via `docker inspect -f`. `container_logs`
+  (read-only, `--tail --timestamps`, merges stdout+stderr) added to the collector;
+  ports/volumes(mounts)/networks already come from `InspectSummary` (S4.2).
 - **S4.4 — Docker risk checks**: privileged, docker.sock mount, dangerous mounts,
   sensitive published ports, unhealthy, restart loops, `latest` tag, no mem limit.
 - **S4.5 — Cron sources**: user crontab, `/etc/crontab`, `/etc/cron.d`, `cron.*`.

@@ -112,13 +112,14 @@ snapshot may lag.
   remote `host:443` over `openssl`), and the **Network/Security TUI tabs** + dashboard
   security summary. Core enabler added: `CommandSpec::stdin` (pipe without a shell).
 - **Phase 4 / v0.4 (Docker & crons) — in progress.** Done: **S4.1** context;
-  **S4.2** Docker collectors (`docker.rs`: `DockerCollector`, `container_stats`,
-  `inspect_container` → `InspectSummary`, via `docker {{json .}}`, fixture-tested).
-- **Next: S4.3 — Docker ops**: view logs, list ports/volumes/networks, and
-  start/stop/restart/remove containers through the action engine (remove confirmed,
-  blocked in read-only). Then S4.4 docker risk checks, S4.5 cron sources, S4.6
-  timers + validation, S4.7 cron checks → tag `v0.4`. Read
-  `docs/phases/phase-04-v0.4-docker-crons.md` first.
+  **S4.2** Docker collectors (`DockerCollector`, `container_stats`, `inspect_container`
+  → `InspectSummary`); **S4.3** Docker ops (`DockerAction` start/stop/restart/remove
+  via the action engine + `container_logs` reader).
+- **Next: S4.4 — Docker risk checks**: privileged, docker.sock mount, dangerous
+  mounts (`/`,`/etc`,`/var/run`), sensitive published ports, unhealthy, restart
+  loops, `latest` tag, no mem limit → `Finding`s in `systui-security` over
+  `InspectSummary`. Then S4.5 cron sources, S4.6 timers + validation, S4.7 cron
+  checks → tag `v0.4`. Read `docs/phases/phase-04-v0.4-docker-crons.md` first.
 
 ## Starting a session
 

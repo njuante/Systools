@@ -18,7 +18,7 @@ pub mod system;
 pub use connectivity::{DnsLookup, PingResult, TcpProbe, dns_lookup, ping, tcp_connect};
 pub use docker::{
     Container, ContainerHealth, ContainerStats, DockerCollector, InspectSummary, Mount,
-    PublishedPort, container_stats, inspect_container,
+    PublishedPort, container_logs, container_stats, inspect_container,
 };
 pub use exposure::{BindScope, ExposureEntry, exposure_map};
 pub use health::{Check, HealthReport, evaluate_health};

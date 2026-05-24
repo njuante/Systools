@@ -5,8 +5,8 @@
 //! foundation's single-collector wiring; phase 1 generalises it into a proper
 //! controller with background refresh.
 
-use systui_collectors::collect_host_report;
-use systui_core::{CoreError, Transport};
+use systui_collectors::{LogsCollector, collect_host_report};
+use systui_core::{Collector, CoreError, Transport};
 use tokio::runtime::Runtime;
 
 use crate::app::{App, ViewState};
@@ -17,7 +17,11 @@ use crate::app::{App, ViewState};
 /// Other collectors are best-effort and degrade to empty.
 pub fn refresh_blocking(runtime: &Runtime, transport: &dyn Transport, app: &mut App) {
     app.view_state = ViewState::Loading;
-    match runtime.block_on(collect_host_report(transport, &app.thresholds)) {
+    match runtime.block_on(collect_host_report(
+        transport,
+        &app.thresholds,
+        &app.log_query,
+    )) {
         Ok(report) => {
             app.snapshot = Some(report.snapshot);
             app.processes = report.processes;
@@ -27,6 +31,14 @@ pub fn refresh_blocking(runtime: &Runtime, transport: &dyn Transport, app: &mut 
             app.view_state = ViewState::Ready;
         }
         Err(err) => apply_error(app, err),
+    }
+}
+
+/// Re-collect only the logs, using the current log query (best-effort).
+pub fn reload_logs_blocking(runtime: &Runtime, transport: &dyn Transport, app: &mut App) {
+    let collector = LogsCollector::with_query(app.log_query.clone());
+    if let Ok(logs) = runtime.block_on(collector.collect(transport)) {
+        app.logs = logs;
     }
 }
 

@@ -81,8 +81,11 @@ Everything still goes through the `Transport`/`CommandSpec` contracts; the UI on
   with hard guardrails (PID 1 and the SysTUI process are never signaled) and
   post-signal verification. Fixture/Mock tested. (UI tree/detail/invocation land
   with the engine in S2.5+.)
-- **S2.4 — Log filters**: level/unit/time/regex filters + incremental search in the
-  Logs view.
+- **S2.4 — Log filters** *(done)*: `LogQuery` parameterizes `LogsCollector`
+  (priority/unit/time/lines, server-side). Logs tab: `l` cycles level, `t` cycles
+  time window (re-collect), `/` enters incremental case-insensitive regex search
+  (client-side) with a filter bar. Unit filter is collector-ready; its UI picker is
+  deferred to a later session.
 - **S2.5 — Action engine**: `systui-actions` pipeline (permission → read-only → risk
   → preview → confirm → backup → execute → verify → audit), transport-agnostic.
 - **S2.6 — Read-only mode + audit log**: enforce read-only at the engine; append

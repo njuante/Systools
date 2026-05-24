@@ -1,12 +1,34 @@
-//! Log collector. For v0.1 this reads recent error-or-worse journald entries via
-//! `journalctl -o json`. Filters, tailing and error grouping arrive in phase 4.
+//! Log collector. Reads recent journald entries via `journalctl -o json`,
+//! filtered server-side by priority/unit/time window. Tailing and error
+//! grouping arrive in phase 4.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use systui_core::{Collector, CommandSpec, ModuleId, Result, Transport};
 
-/// Maximum number of recent log lines to read.
-const MAX_LINES: usize = 200;
+/// Server-side journald filter passed to `journalctl`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogQuery {
+    /// Lowest priority to include (0 = emerg .. 7 = debug); shows this and worse.
+    pub min_priority: u8,
+    /// Restrict to a single unit (`-u`).
+    pub unit: Option<String>,
+    /// Time window, e.g. `"1 hour ago"` (`--since`).
+    pub since: Option<String>,
+    /// Maximum number of lines (`-n`).
+    pub lines: usize,
+}
+
+impl Default for LogQuery {
+    fn default() -> Self {
+        Self {
+            min_priority: 3, // err and worse
+            unit: None,
+            since: None,
+            lines: 200,
+        }
+    }
+}
 
 /// A single journald entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,13 +63,21 @@ impl LogEntry {
     }
 }
 
-/// Collects recent error-or-worse logs from journald.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct LogsCollector;
+/// Collects journald logs matching a [`LogQuery`].
+#[derive(Debug, Default, Clone)]
+pub struct LogsCollector {
+    query: LogQuery,
+}
 
 impl LogsCollector {
+    /// A collector with the default query (errors, last 200 lines).
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// A collector with a custom query.
+    pub fn with_query(query: LogQuery) -> Self {
+        Self { query }
     }
 }
 
@@ -60,19 +90,32 @@ impl Collector for LogsCollector {
     }
 
     async fn collect(&self, transport: &dyn Transport) -> Result<Vec<LogEntry>> {
-        let lines = MAX_LINES.to_string();
-        let spec = CommandSpec::new("journalctl").args([
-            "-p",
-            "err",
-            "-n",
-            &lines,
-            "-o",
-            "json",
-            "--no-pager",
-        ]);
+        let spec = CommandSpec::new("journalctl").args(build_args(&self.query));
         let output = transport.run(&spec).await?.into_result("journalctl")?;
         Ok(parse_journal_json(&output.stdout))
     }
+}
+
+/// Build the `journalctl` argument list for a query.
+fn build_args(query: &LogQuery) -> Vec<String> {
+    let mut args = vec![
+        "-p".to_owned(),
+        query.min_priority.to_string(),
+        "-n".to_owned(),
+        query.lines.to_string(),
+        "-o".to_owned(),
+        "json".to_owned(),
+        "--no-pager".to_owned(),
+    ];
+    if let Some(unit) = &query.unit {
+        args.push("-u".to_owned());
+        args.push(unit.clone());
+    }
+    if let Some(since) = &query.since {
+        args.push("--since".to_owned());
+        args.push(since.clone());
+    }
+    args
 }
 
 fn parse_journal_json(s: &str) -> Vec<LogEntry> {
@@ -136,7 +179,29 @@ mod tests {
     use super::*;
     use systui_transport::MockTransport;
 
-    const CMD: &str = "journalctl -p err -n 200 -o json --no-pager";
+    const CMD: &str = "journalctl -p 3 -n 200 -o json --no-pager";
+
+    #[test]
+    fn build_args_defaults() {
+        assert_eq!(
+            build_args(&LogQuery::default()).join(" "),
+            "-p 3 -n 200 -o json --no-pager"
+        );
+    }
+
+    #[test]
+    fn build_args_with_unit_and_since() {
+        let query = LogQuery {
+            min_priority: 4,
+            unit: Some("nginx.service".to_owned()),
+            since: Some("1 hour ago".to_owned()),
+            lines: 50,
+        };
+        assert_eq!(
+            build_args(&query).join(" "),
+            "-p 4 -n 50 -o json --no-pager -u nginx.service --since 1 hour ago"
+        );
+    }
 
     #[test]
     fn parses_journal_entries() {

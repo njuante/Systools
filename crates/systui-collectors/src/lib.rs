@@ -13,7 +13,7 @@ pub mod system;
 
 pub use health::{Check, HealthReport, evaluate_health};
 pub use host_report::{HostReport, collect_host_report};
-pub use logs::{LogEntry, LogsCollector};
+pub use logs::{LogEntry, LogQuery, LogsCollector};
 pub use process::{
     Process, ProcessCollector, ProcessDetail, TreeRow, build_process_tree, process_detail,
 };

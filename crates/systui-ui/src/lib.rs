@@ -78,6 +78,10 @@ fn event_loop(
             app.refresh_requested = false;
             data::refresh_blocking(runtime, transport, app);
             last_refresh = Instant::now();
+        } else if app.logs_reload_requested {
+            // A log filter changed: re-collect only the logs.
+            app.logs_reload_requested = false;
+            data::reload_logs_blocking(runtime, transport, app);
         }
     }
     Ok(())

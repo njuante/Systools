@@ -1,6 +1,6 @@
 //! Global application state for the TUI.
 
-use systui_collectors::{HealthReport, LogEntry, Process, ServiceUnit, SystemSnapshot};
+use systui_collectors::{HealthReport, LogEntry, LogQuery, Process, ServiceUnit, SystemSnapshot};
 use systui_core::{ExecutionMode, ModuleId, Thresholds};
 
 use crate::theme::Theme;
@@ -96,6 +96,24 @@ impl ProcessSort {
     }
 }
 
+/// Whether keystrokes drive navigation or the log search box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputMode {
+    Normal,
+    Search,
+}
+
+/// Preset time windows for the log view (`--since` value, label).
+const LOG_WINDOWS: &[(Option<&str>, &str)] = &[
+    (None, "all"),
+    (Some("15 min ago"), "15m"),
+    (Some("1 hour ago"), "1h"),
+    (Some("1 day ago"), "24h"),
+];
+
+/// Min-priority levels cycled in the log view (priority number, label).
+const LOG_LEVELS: &[(u8, &str)] = &[(3, "err+"), (4, "warning+"), (6, "info+"), (7, "all")];
+
 /// Everything the renderer needs to draw a frame.
 #[derive(Debug)]
 pub struct App {
@@ -109,11 +127,15 @@ pub struct App {
     pub process_sort: ProcessSort,
     pub failed_units: Vec<ServiceUnit>,
     pub logs: Vec<LogEntry>,
+    pub log_query: LogQuery,
+    pub log_search: String,
+    pub input_mode: InputMode,
     pub health: Option<HealthReport>,
     pub thresholds: Thresholds,
     pub show_help: bool,
     pub should_quit: bool,
     pub refresh_requested: bool,
+    pub logs_reload_requested: bool,
 }
 
 impl App {
@@ -130,11 +152,15 @@ impl App {
             process_sort: ProcessSort::Cpu,
             failed_units: Vec::new(),
             logs: Vec::new(),
+            log_query: LogQuery::default(),
+            log_search: String::new(),
+            input_mode: InputMode::Normal,
             health: None,
             thresholds: Thresholds::default(),
             show_help: false,
             should_quit: false,
             refresh_requested: false,
+            logs_reload_requested: false,
         }
     }
 
@@ -173,6 +199,65 @@ impl App {
     /// Switch the process list ordering between CPU and memory.
     pub fn toggle_process_sort(&mut self) {
         self.process_sort = self.process_sort.toggled();
+    }
+
+    /// Enter incremental log-search mode.
+    pub fn enter_search(&mut self) {
+        self.input_mode = InputMode::Search;
+    }
+
+    /// Leave search mode, clearing the query.
+    pub fn exit_search(&mut self) {
+        self.input_mode = InputMode::Normal;
+        self.log_search.clear();
+    }
+
+    /// Append a character to the log search query.
+    pub fn push_search_char(&mut self, c: char) {
+        self.log_search.push(c);
+    }
+
+    /// Remove the last character of the log search query.
+    pub fn pop_search_char(&mut self) {
+        self.log_search.pop();
+    }
+
+    /// Label of the current log min-priority level.
+    pub fn log_level_label(&self) -> &'static str {
+        LOG_LEVELS
+            .iter()
+            .find(|(p, _)| *p == self.log_query.min_priority)
+            .map_or("custom", |(_, label)| label)
+    }
+
+    /// Label of the current log time window.
+    pub fn log_window_label(&self) -> &'static str {
+        LOG_WINDOWS
+            .iter()
+            .find(|(since, _)| since.map(str::to_owned) == self.log_query.since)
+            .map_or("custom", |(_, label)| label)
+    }
+
+    /// Cycle the log min-priority level and request a logs reload.
+    pub fn cycle_log_level(&mut self) {
+        let current = LOG_LEVELS
+            .iter()
+            .position(|(p, _)| *p == self.log_query.min_priority)
+            .unwrap_or(0);
+        let (priority, _) = LOG_LEVELS[(current + 1) % LOG_LEVELS.len()];
+        self.log_query.min_priority = priority;
+        self.logs_reload_requested = true;
+    }
+
+    /// Cycle the log time window and request a logs reload.
+    pub fn cycle_log_window(&mut self) {
+        let current = LOG_WINDOWS
+            .iter()
+            .position(|(since, _)| since.map(str::to_owned) == self.log_query.since)
+            .unwrap_or(0);
+        let (since, _) = LOG_WINDOWS[(current + 1) % LOG_WINDOWS.len()];
+        self.log_query.since = since.map(str::to_owned);
+        self.logs_reload_requested = true;
     }
 
     /// Request application exit.

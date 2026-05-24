@@ -95,6 +95,7 @@ fn run_report(host: Option<String>, format: &str, config: &Config) -> anyhow::Re
         .block_on(systui_collectors::collect_host_report(
             &transport,
             &config.thresholds,
+            &systui_collectors::LogQuery::default(),
         ))
         .context("failed to collect host report")?;
 

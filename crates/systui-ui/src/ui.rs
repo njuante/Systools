@@ -6,9 +6,10 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Tabs, Wrap};
-use systui_collectors::{Disk, Process, SystemSnapshot};
+use regex::RegexBuilder;
+use systui_collectors::{Disk, LogEntry, Process, SystemSnapshot};
 
-use crate::app::{App, ProcessSort, Tab, ViewState};
+use crate::app::{App, InputMode, ProcessSort, Tab, ViewState};
 
 /// Draw the whole UI for the current state.
 pub fn render(frame: &mut Frame, app: &App) {
@@ -89,36 +90,46 @@ fn render_content(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
-    if app.logs.is_empty() {
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    render_log_filter_bar(frame, app, rows[0]);
+
+    // Case-insensitive regex search; invalid patterns fall back to substring.
+    let regex = if app.log_search.is_empty() {
+        None
+    } else {
+        RegexBuilder::new(&app.log_search)
+            .case_insensitive(true)
+            .build()
+            .ok()
+    };
+    let filtered: Vec<&LogEntry> = app
+        .logs
+        .iter()
+        .filter(|e| log_matches(e, &app.log_search, regex.as_ref()))
+        .collect();
+
+    if filtered.is_empty() {
+        let msg = if app.logs.is_empty() {
+            "No logs for this filter."
+        } else {
+            "No matches."
+        };
         frame.render_widget(
-            Paragraph::new(Span::styled(
-                "No recent error logs.",
-                Style::new().fg(app.theme.ok),
-            ))
-            .alignment(Alignment::Center),
-            area,
+            Paragraph::new(Span::styled(msg, Style::new().fg(app.theme.dim)))
+                .alignment(Alignment::Center),
+            rows[1],
         );
         return;
     }
 
-    let priority_color = |entry: &systui_collectors::LogEntry| {
-        if entry.priority <= 3 {
-            app.theme.danger
-        } else if entry.priority == 4 {
-            app.theme.warn
-        } else {
-            app.theme.dim
-        }
-    };
-
     let header = Row::new(["TIME", "PRIO", "SOURCE", "MESSAGE"])
         .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
-    let body = app.logs.iter().map(|e| {
+    let body = filtered.iter().map(|e| {
         Row::new([
             Cell::from(e.time.clone()),
             Cell::from(Span::styled(
                 e.priority_label().to_owned(),
-                Style::new().fg(priority_color(e)),
+                Style::new().fg(log_priority_color(app, e)),
             )),
             Cell::from(e.identifier.clone()),
             Cell::from(e.message.clone()),
@@ -133,7 +144,54 @@ fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
     let table = Table::new(body, widths)
         .header(header)
         .style(Style::new().fg(app.theme.text));
-    frame.render_widget(table, area);
+    frame.render_widget(table, rows[1]);
+}
+
+fn render_log_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let dim = Style::new().fg(app.theme.dim);
+    let accent = Style::new().fg(app.theme.accent);
+    let mut spans = vec![
+        Span::styled(
+            format!("level {} ", app.log_level_label()),
+            Style::new().fg(app.theme.text),
+        ),
+        Span::styled(format!("· window {} ", app.log_window_label()), dim),
+    ];
+    if app.input_mode == InputMode::Search {
+        spans.push(Span::styled(
+            format!("· search: {}_", app.log_search),
+            accent,
+        ));
+    } else if !app.log_search.is_empty() {
+        spans.push(Span::styled(format!("· /{}", app.log_search), accent));
+    } else {
+        spans.push(Span::styled("· l level · t window · / search", dim));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn log_priority_color(app: &App, entry: &LogEntry) -> ratatui::style::Color {
+    if entry.priority <= 3 {
+        app.theme.danger
+    } else if entry.priority == 4 {
+        app.theme.warn
+    } else {
+        app.theme.dim
+    }
+}
+
+fn log_matches(entry: &LogEntry, query: &str, regex: Option<&regex::Regex>) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    match regex {
+        Some(re) => re.is_match(&entry.identifier) || re.is_match(&entry.message),
+        None => {
+            let q = query.to_lowercase();
+            entry.identifier.to_lowercase().contains(&q)
+                || entry.message.to_lowercase().contains(&q)
+        }
+    }
 }
 
 fn render_services(frame: &mut Frame, app: &App, area: Rect) {
@@ -608,6 +666,8 @@ fn render_help(frame: &mut Frame, app: &App) {
         ("1–8", "jump to tab"),
         ("r", "refresh"),
         ("s", "sort processes by CPU/memory"),
+        ("/", "search logs (Esc to clear)"),
+        ("l / t", "cycle log level / time window"),
         ("?", "toggle this help"),
         ("q / Ctrl+C", "quit"),
         ("Esc", "close overlay / back"),
@@ -908,5 +968,46 @@ mod tests {
         assert!(out.contains("ERR"));
         assert!(out.contains("nginx"));
         assert!(out.contains("upstream timed out"));
+    }
+
+    fn log(identifier: &str, message: &str) -> LogEntry {
+        LogEntry {
+            time: "09:00:00".to_owned(),
+            priority: 3,
+            identifier: identifier.to_owned(),
+            message: message.to_owned(),
+        }
+    }
+
+    #[test]
+    fn logs_tab_filters_by_search() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.logs = vec![
+            log("nginx", "upstream timed out"),
+            log("sshd", "failed password"),
+        ];
+        app.view_state = ViewState::Ready;
+        app.select_tab(4); // Logs
+        app.log_search = "sshd".to_owned();
+
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("failed password"));
+        assert!(!out.contains("upstream timed out"));
+    }
+
+    #[test]
+    fn logs_tab_shows_filter_bar_and_search_input() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.logs = vec![log("nginx", "boom")];
+        app.view_state = ViewState::Ready;
+        app.select_tab(4);
+        app.enter_search();
+        app.push_search_char('n');
+
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("level err+"));
+        assert!(out.contains("search: n"));
     }
 }

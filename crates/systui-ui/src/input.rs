@@ -2,13 +2,25 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::App;
+use crate::app::{App, InputMode};
 
 /// Apply a key press to the application state.
 pub fn handle_key(app: &mut App, key: KeyEvent) {
     // Ctrl+C always quits.
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         app.quit();
+        return;
+    }
+
+    // Search mode captures typing for the log filter.
+    if app.input_mode == InputMode::Search {
+        match key.code {
+            KeyCode::Esc => app.exit_search(),
+            KeyCode::Enter => app.input_mode = InputMode::Normal,
+            KeyCode::Backspace => app.pop_search_char(),
+            KeyCode::Char(c) => app.push_search_char(c),
+            _ => {}
+        }
         return;
     }
 
@@ -28,6 +40,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('?') => app.toggle_help(),
         KeyCode::Char('r') => app.request_refresh(),
         KeyCode::Char('s') => app.toggle_process_sort(),
+        KeyCode::Char('/') => app.enter_search(),
+        KeyCode::Char('l') => app.cycle_log_level(),
+        KeyCode::Char('t') => app.cycle_log_window(),
         KeyCode::Tab | KeyCode::Right => app.next_tab(),
         KeyCode::BackTab | KeyCode::Left => app.prev_tab(),
         KeyCode::Char(c @ '1'..='9') => app.select_tab(c as usize - '1' as usize),

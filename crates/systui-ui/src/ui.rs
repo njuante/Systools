@@ -10,8 +10,8 @@ use ratatui::widgets::{
 };
 use regex::RegexBuilder;
 use systui_collectors::{
-    BindScope, Container, CronEntry, CronSource, DatabaseInstance, ExposureEntry, LogEntry,
-    NetworkSnapshot, SystemSnapshot, parse_schedule,
+    BindScope, Container, CronEntry, CronSource, DatabaseInstance, LogEntry, NetworkSnapshot,
+    SystemSnapshot, parse_schedule,
 };
 use systui_core::{Finding, ModuleId, Severity};
 
@@ -787,48 +787,163 @@ fn severity_badge(severity: Severity) -> String {
 }
 
 fn render_network(frame: &mut Frame, app: &App, area: Rect) {
-    let rows = [area, area];
     let Some(net) = &app.network else {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 "No network data — `ip`/`ss` unavailable.",
-                Style::new().fg(app.theme.dim),
-            )),
-            rows[1],
+                Style::new().fg(app.theme.fg_dim),
+            ))
+            .alignment(Alignment::Center),
+            area,
         );
         return;
     };
+
+    let cols =
+        Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).split(area);
+    render_exposure_panel(frame, app, cols[0]);
+    let right = Layout::vertical([
+        Constraint::Percentage(46),
+        Constraint::Percentage(30),
+        Constraint::Percentage(24),
+    ])
+    .split(cols[1]);
+    render_net_interfaces(frame, app, net, right[0]);
+    render_net_dns_routes(frame, app, net, right[1]);
+    render_net_connections(frame, app, net, right[2]);
+}
+
+/// The ranked exposure map: one row per listening socket, address colour-coded
+/// by bind scope and a severity RISK badge (spec §14).
+fn render_exposure_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(
+        &t,
+        &format!("Exposure map · {} listening", app.exposures.len()),
+    );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.exposures.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "no listening sockets",
+                Style::new().fg(t.fg_dim),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let header = Row::new(["PROTO", "ADDRESS", "PROCESS", "SERVICE", "RISK"])
+        .style(Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD));
+    let body = app.exposures.iter().map(|e| {
+        let proto = format!("{:?}", e.listener.protocol).to_lowercase();
+        let ip = &e.listener.local_ip;
+        let addr_color = if ip == "0.0.0.0" || ip == "::" {
+            t.high
+        } else if e.scope == BindScope::Loopback {
+            t.fg_dim
+        } else {
+            t.fg
+        };
+        let owner = match (&e.listener.process, &e.listener.unit) {
+            (Some(p), Some(unit)) => format!("{} ({unit})", p.name),
+            (Some(p), None) => p.name.clone(),
+            (None, _) => "—".to_owned(),
+        };
+        let service = e.sensitive_service.unwrap_or("—").to_owned();
+        let risk = if e.severity > Severity::Info {
+            Span::styled(
+                format!(" {} ", severity_abbr(e.severity)),
+                Style::new()
+                    .fg(t.bg)
+                    .bg(t.severity(e.severity))
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled("ok", Style::new().fg(t.fg_dim))
+        };
+        Row::new([
+            Cell::from(Span::styled(proto, Style::new().fg(t.fg_muted))),
+            Cell::from(Span::styled(
+                format!("{ip}:{}", e.listener.port),
+                Style::new().fg(addr_color),
+            )),
+            Cell::from(Span::styled(owner, Style::new().fg(t.fg))),
+            Cell::from(Span::styled(service, Style::new().fg(t.fg_muted))),
+            Cell::from(risk),
+        ])
+    });
+    let widths = [
+        Constraint::Length(5),
+        Constraint::Length(20),
+        Constraint::Min(12),
+        Constraint::Length(10),
+        Constraint::Length(7),
+    ];
     frame.render_widget(
-        Paragraph::new(network_text(app, net)).wrap(Wrap { trim: false }),
-        area,
+        Table::new(body, widths)
+            .header(header)
+            .style(Style::new().fg(t.fg)),
+        inner,
     );
 }
 
-/// Interfaces, routing, DNS, connection states and the ranked exposure map.
-fn network_text(app: &App, net: &NetworkSnapshot) -> Text<'static> {
-    let dim = Style::new().fg(app.theme.dim);
-    let text_s = Style::new().fg(app.theme.text);
-    let accent = Style::new()
-        .fg(app.theme.accent)
-        .add_modifier(Modifier::BOLD);
+/// A short severity tag for tight badge columns: CRIT/HIGH/MED/LOW/INFO.
+fn severity_abbr(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Critical => "CRIT",
+        Severity::High => "HIGH",
+        Severity::Medium => "MED",
+        Severity::Low => "LOW",
+        Severity::Info => "INFO",
+    }
+}
 
-    let mut lines = vec![Line::from(Span::styled("Interfaces", accent))];
+fn render_net_interfaces(frame: &mut Frame, app: &App, net: &NetworkSnapshot, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Interfaces");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
     if net.interfaces.is_empty() {
-        lines.push(Line::from(Span::styled("  none", dim)));
+        lines.push(Line::from(Span::styled("none", Style::new().fg(t.fg_dim))));
     }
     for iface in &net.interfaces {
-        let addrs = iface
-            .addrs
-            .iter()
-            .map(|a| format!("{}/{}", a.ip, a.prefix_len))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let up = iface.state.eq_ignore_ascii_case("up");
         lines.push(Line::from(vec![
-            Span::styled(format!("  {:<10} ", iface.name), text_s),
-            Span::styled(format!("{:<8} ", iface.state), dim),
-            Span::styled(addrs, text_s),
+            Span::styled(
+                format!("{:<10} ", iface.name),
+                Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                iface.state.clone(),
+                Style::new().fg(if up { t.accent } else { t.fg_dim }),
+            ),
         ]));
+        if !iface.addrs.is_empty() {
+            let addrs = iface
+                .addrs
+                .iter()
+                .map(|a| format!("{}/{}", a.ip, a.prefix_len))
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(Line::from(Span::styled(
+                format!("  {addrs}"),
+                Style::new().fg(t.fg_muted),
+            )));
+        }
     }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+}
+
+fn render_net_dns_routes(frame: &mut Frame, app: &App, net: &NetworkSnapshot, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "DNS · routes");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
     let gateways: Vec<String> = net
         .routes
@@ -836,79 +951,60 @@ fn network_text(app: &App, net: &NetworkSnapshot) -> Text<'static> {
         .filter(|r| r.dst == "default")
         .filter_map(|r| r.gateway.clone().map(|g| format!("{g} via {}", r.dev)))
         .collect();
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("Gateway  ", accent),
-        Span::styled(
+    let field = |key: &str, value: String| {
+        Line::from(vec![
+            Span::styled(format!("{key:<8} "), Style::new().fg(t.fg_dim)),
+            Span::styled(value, Style::new().fg(t.fg)),
+        ])
+    };
+    let lines = vec![
+        field(
+            "gateway",
             if gateways.is_empty() {
                 "none".to_owned()
             } else {
                 gateways.join(", ")
             },
-            text_s,
         ),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("DNS      ", accent),
-        Span::styled(
+        field(
+            "dns",
             if net.dns.nameservers.is_empty() {
                 "none".to_owned()
             } else {
                 net.dns.nameservers.join(", ")
             },
-            text_s,
         ),
-    ]));
-
-    let counts = net.connection_state_counts();
-    if !counts.is_empty() {
-        let summary = counts
-            .iter()
-            .map(|(state, n)| format!("{state} {n}"))
-            .collect::<Vec<_>>()
-            .join(" · ");
-        lines.push(Line::from(vec![
-            Span::styled("Conns    ", accent),
-            Span::styled(summary, dim),
-        ]));
-    }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("Exposure map ", accent),
-        Span::styled("(worst first)", dim),
-    ]));
-    if app.exposures.is_empty() {
-        lines.push(Line::from(Span::styled("  no listening sockets", dim)));
-    }
-    for entry in app.exposures.iter().take(12) {
-        lines.push(exposure_line(app, entry));
-    }
-
-    Text::from(lines)
+    ];
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
-fn exposure_line(app: &App, entry: &ExposureEntry) -> Line<'static> {
-    let proto = format!("{:?}", entry.listener.protocol).to_lowercase();
-    let owner = match (&entry.listener.process, &entry.listener.unit) {
-        (Some(p), Some(unit)) => format!("{} ({unit})", p.name),
-        (Some(p), None) => p.name.clone(),
-        (None, _) => "—".to_owned(),
-    };
-    Line::from(vec![
-        Span::styled(
-            format!("  {:<10}", severity_badge(entry.severity)),
-            Style::new().fg(severity_color(app, entry.severity)),
-        ),
-        Span::styled(
-            format!(
-                "{proto} {}:{}",
-                entry.listener.local_ip, entry.listener.port
-            ),
-            Style::new().fg(app.theme.text),
-        ),
-        Span::styled(format!("  {owner}"), Style::new().fg(app.theme.dim)),
-    ])
+fn render_net_connections(frame: &mut Frame, app: &App, net: &NetworkSnapshot, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Connections");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let counts = net.connection_state_counts();
+    if counts.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "no active connections",
+                Style::new().fg(t.fg_dim),
+            )),
+            inner,
+        );
+        return;
+    }
+    let lines: Vec<Line> = counts
+        .iter()
+        .map(|(state, n)| {
+            Line::from(vec![
+                Span::styled(format!("{n:>4} "), Style::new().fg(t.fg_muted)),
+                Span::styled(state.clone(), Style::new().fg(t.fg)),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_docker(frame: &mut Frame, app: &App, area: Rect) {
@@ -1177,83 +1273,248 @@ fn render_container_detail(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_crons(frame: &mut Frame, app: &App, area: Rect) {
-    let rows = Layout::vertical([
-        Constraint::Percentage(45),
+    let cols =
+        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).split(area);
+    render_cron_table(frame, app, cols[0]);
+    let right = Layout::vertical([
+        Constraint::Percentage(42),
         Constraint::Percentage(30),
-        Constraint::Percentage(25),
+        Constraint::Percentage(28),
     ])
-    .split(area);
-    render_cron_jobs(frame, app, rows[0]);
-    render_cron_timers(frame, app, rows[1]);
-    render_cron_warnings(frame, app, rows[2]);
+    .split(cols[1]);
+    render_cron_preview(frame, app, right[0]);
+    render_cron_timers_panel(frame, app, right[1]);
+    render_cron_summary(frame, app, right[2]);
 }
 
-fn render_cron_jobs(frame: &mut Frame, app: &App, area: Rect) {
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+fn render_cron_timers_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, &format!("Systemd timers · {}", app.timers.len()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.timers.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("none", Style::new().fg(t.fg_dim))),
+            inner,
+        );
+        return;
+    }
+    let max = (inner.height as usize).max(1);
+    let lines: Vec<Line> = app
+        .timers
+        .iter()
+        .take(max)
+        .map(|tm| {
+            Line::from(vec![
+                Span::styled(tm.unit.clone(), Style::new().fg(t.fg_strong)),
+                Span::styled(format!("  next {}", tm.next), Style::new().fg(t.fg_muted)),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+}
+
+fn render_cron_table(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
     let user_jobs = app
         .crons
         .iter()
         .filter(|entry| entry.source == CronSource::User)
         .count();
-    let hint = if app.mode == systui_core::ExecutionMode::ReadOnly {
-        "read-only mode"
-    } else {
-        "a add  e edit  d delete  x enable/disable user crontab"
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!("Jobs {}  user {}", app.crons.len(), user_jobs),
-                Style::new().fg(app.theme.text),
-            ),
-            Span::styled(format!("  |  {hint}"), Style::new().fg(app.theme.dim)),
-        ])),
-        rows[0],
+    let block = panel_block(
+        &t,
+        &format!("Scheduled jobs · {} ({} user)", app.crons.len(), user_jobs),
     );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
     if app.crons.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                "No cron jobs found.",
-                Style::new().fg(app.theme.dim),
+                "no cron jobs found",
+                Style::new().fg(t.fg_dim),
             )),
-            rows[1],
+            inner,
         );
         return;
     }
-    let header = Row::new(["STATE", "SCHEDULE", "NEXT RUN", "USER", "COMMAND"])
-        .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
+
+    let header = Row::new(["", "SCHEDULE", "NEXT RUN", "USER", "COMMAND"])
+        .style(Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD));
     let body = app.crons.iter().enumerate().map(|(i, e)| {
         let (schedule, next) = cron_schedule_cells(app, e);
-        let state = if e.enabled { "enabled" } else { "disabled" };
-        let state_color = if e.enabled {
-            app.theme.ok
-        } else {
-            app.theme.dim
-        };
+        let dot_color = if e.enabled { t.accent } else { t.fg_dim };
+        let cmd_color = if e.enabled { t.fg } else { t.fg_dim };
         let row = Row::new([
-            Cell::from(Span::styled(state, Style::new().fg(state_color))),
-            Cell::from(schedule),
-            Cell::from(next),
-            Cell::from(e.user.clone().unwrap_or_else(|| "—".to_owned())),
-            Cell::from(e.command.clone()),
+            Cell::from(Span::styled("●", Style::new().fg(dot_color))),
+            Cell::from(Span::styled(schedule, Style::new().fg(t.fg))),
+            Cell::from(Span::styled(next, Style::new().fg(t.fg_muted))),
+            Cell::from(Span::styled(
+                e.user.clone().unwrap_or_else(|| "—".to_owned()),
+                Style::new().fg(t.fg_muted),
+            )),
+            Cell::from(Span::styled(e.command.clone(), Style::new().fg(cmd_color))),
         ]);
         if i == app.crons_selected {
-            row.style(selected_style(app))
+            row.style(Style::new().bg(t.bg_sel).add_modifier(Modifier::BOLD))
         } else {
             row
         }
     });
     let widths = [
+        Constraint::Length(1),
+        Constraint::Length(18),
+        Constraint::Length(16),
         Constraint::Length(9),
-        Constraint::Length(20),
-        Constraint::Length(17),
-        Constraint::Length(10),
         Constraint::Min(10),
     ];
-    let table = Table::new(body, widths)
-        .header(header)
-        .style(Style::new().fg(app.theme.text));
-    frame.render_widget(table, rows[1]);
+    frame.render_widget(
+        Table::new(body, widths)
+            .header(header)
+            .style(Style::new().fg(t.fg)),
+        inner,
+    );
+}
+
+/// Up to `n` upcoming run times for a cron expression, formatted for display.
+fn cron_next_runs(app: &App, schedule_str: &str, n: usize) -> Vec<String> {
+    let Ok(schedule) = parse_schedule(schedule_str) else {
+        return Vec::new();
+    };
+    let mut out = Vec::with_capacity(n);
+    let mut cursor = app.now;
+    for _ in 0..n {
+        match schedule.next_after(cursor) {
+            Some(next) => {
+                out.push(next.format("%a %Y-%m-%d %H:%M").to_string());
+                cursor = next;
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+fn render_cron_preview(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Preview");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let Some(entry) = app.selected_cron() else {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no job selected", Style::new().fg(t.fg_dim))),
+            inner,
+        );
+        return;
+    };
+
+    let valid = parse_schedule(&entry.schedule).is_ok();
+    let field = |key: &str, value: String, color| {
+        Line::from(vec![
+            Span::styled(format!("{key:<9} "), Style::new().fg(t.fg_dim)),
+            Span::styled(value, Style::new().fg(color)),
+        ])
+    };
+    let mut lines = vec![
+        field(
+            "schedule",
+            entry.schedule.clone(),
+            if valid { t.fg } else { t.critical },
+        ),
+        field("human", cron_schedule_cells(app, entry).0, t.fg_muted),
+        field(
+            "user",
+            entry.user.clone().unwrap_or_else(|| "—".to_owned()),
+            t.fg,
+        ),
+        field("source", format!("{:?}", entry.source), t.fg_muted),
+        field("command", entry.command.clone(), t.fg_strong),
+    ];
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "next runs",
+        Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD),
+    )));
+    let runs = cron_next_runs(app, &entry.schedule, 3);
+    if runs.is_empty() {
+        lines.push(Line::from(Span::styled("  —", Style::new().fg(t.fg_dim))));
+    }
+    for r in runs {
+        lines.push(Line::from(Span::styled(
+            format!("  → {r}"),
+            Style::new().fg(t.fg),
+        )));
+    }
+
+    if entry.source == CronSource::User && app.mode != systui_core::ExecutionMode::ReadOnly {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "edits back up the crontab first",
+            Style::new().fg(t.fg_dim),
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+}
+
+fn render_cron_summary(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Cron health");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let warnings: Vec<&Finding> = app
+        .findings
+        .iter()
+        .filter(|f| f.module == ModuleId::Crons)
+        .collect();
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            format!("{}", app.crons.len()),
+            Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" jobs · ", Style::new().fg(t.fg_muted)),
+        Span::styled(
+            format!("{}", app.timers.len()),
+            Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" timers · ", Style::new().fg(t.fg_muted)),
+        Span::styled(
+            format!("{}", warnings.len()),
+            Style::new()
+                .fg(if warnings.is_empty() {
+                    t.accent
+                } else {
+                    t.high
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" warnings", Style::new().fg(t.fg_muted)),
+    ])];
+    lines.push(Line::from(""));
+
+    if warnings.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "no warnings",
+            Style::new().fg(t.accent),
+        )));
+    } else {
+        let max = (inner.height as usize).saturating_sub(3).max(1);
+        for f in warnings.iter().take(max) {
+            let color = t.severity(f.severity);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{:<5} ", f.severity.to_string().to_uppercase()),
+                    Style::new().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(f.title.clone(), Style::new().fg(t.fg_strong)),
+            ]));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 /// The natural-language schedule and next-run cells for a cron entry. An invalid
@@ -1269,73 +1530,6 @@ fn cron_schedule_cells(app: &App, entry: &CronEntry) -> (String, String) {
         }
         Err(_) => ("invalid".to_owned(), "—".to_owned()),
     }
-}
-
-fn render_cron_timers(frame: &mut Frame, app: &App, area: Rect) {
-    let accent = Style::new()
-        .fg(app.theme.accent)
-        .add_modifier(Modifier::BOLD);
-    if app.timers.is_empty() {
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::styled("Systemd timers", accent)),
-                Line::from(Span::styled("  none", Style::new().fg(app.theme.dim))),
-            ]),
-            area,
-        );
-        return;
-    }
-    let header = Row::new(["TIMER", "NEXT", "ACTIVATES"])
-        .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
-    let body = app.timers.iter().map(|t| {
-        Row::new([
-            Cell::from(t.unit.clone()),
-            Cell::from(t.next.clone()),
-            Cell::from(t.activates.clone()),
-        ])
-    });
-    let widths = [
-        Constraint::Length(26),
-        Constraint::Length(26),
-        Constraint::Min(10),
-    ];
-    let table = Table::new(body, widths)
-        .header(header)
-        .style(Style::new().fg(app.theme.text));
-    frame.render_widget(table, area);
-}
-
-fn render_cron_warnings(frame: &mut Frame, app: &App, area: Rect) {
-    let accent = Style::new()
-        .fg(app.theme.accent)
-        .add_modifier(Modifier::BOLD);
-    let dim = Style::new().fg(app.theme.dim);
-    let warnings: Vec<&Finding> = app
-        .findings
-        .iter()
-        .filter(|f| f.module == ModuleId::Crons)
-        .collect();
-
-    let mut lines = vec![Line::from(Span::styled(
-        format!("Warnings ({})", warnings.len()),
-        accent,
-    ))];
-    if warnings.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  none",
-            Style::new().fg(app.theme.ok),
-        )));
-    }
-    for finding in warnings.iter().take(6) {
-        lines.push(finding_header(app, finding));
-        if let Some(evidence) = finding.evidence.first() {
-            lines.push(Line::from(Span::styled(format!("      {evidence}"), dim)));
-        }
-    }
-    frame.render_widget(
-        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
-        area,
-    );
 }
 
 fn render_databases(frame: &mut Frame, app: &App, area: Rect) {
@@ -2559,12 +2753,13 @@ mod tests {
         app.view_state = ViewState::Ready;
         app.select_tab(5); // Network
 
-        let out = render_to_string(&app, 100, 30);
+        // The exposure map is information-dense; render wide (the prototype is 200 cols).
+        let out = render_to_string(&app, 130, 30);
         assert!(out.contains("Interfaces"));
         assert!(out.contains("eth0"));
         assert!(out.contains("192.168.1.1")); // gateway
         assert!(out.contains("Exposure map"));
-        assert!(out.contains("CRITICAL")); // redis on 0.0.0.0:6379
+        assert!(out.contains("CRIT")); // redis on 0.0.0.0:6379
         assert!(out.contains("6379"));
         assert!(out.contains("redis.service"));
     }
@@ -2815,7 +3010,7 @@ mod tests {
         assert!(out.contains("2026-05-25 02:00")); // next run
         assert!(out.contains("/opt/backup.sh"));
         assert!(out.contains("logrotate.timer"));
-        assert!(out.contains("Warnings"));
+        assert!(out.contains("warnings"));
         assert!(out.contains("not captured"));
     }
 

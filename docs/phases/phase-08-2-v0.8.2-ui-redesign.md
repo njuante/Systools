@@ -121,6 +121,19 @@ The design intent is captured by the prototype:
 - **S8c.4 — Network & Crons**: exposure table (address colour-coding), interfaces /
   firewall / connectivity panels; cron table with severity left-bar + schedule
   preview + backup callout.
+  **Done.** Network is now a two-column screen: a panelled **Exposure map** table
+  (proto, address colour-coded by bind scope — `0.0.0.0`/`::` amber, loopback dim —
+  process/unit, sensitive service, and a severity **RISK** badge) beside a right
+  rail of **Interfaces**, **DNS · routes** and **Connections** (state-count)
+  panels. Connectivity-test and firewall-backend panels from the prototype are
+  **omitted** (not collected — no ping/dns/http probes or firewall table). Crons
+  becomes a panelled **Scheduled jobs** table (enabled/disabled dot, human
+  schedule, next run, user, command) with a right rail of **Preview** (raw +
+  human schedule, user, source, command, the next 3 runs via `parse_schedule`, and
+  a backup-before-edit note for writable user entries), a **Systemd timers** panel,
+  and a **Cron health** summary (jobs/timers/warnings counts + the cron findings).
+  The exposure screen is information-dense and assumes a wide terminal. Render
+  tests updated.
 - **S8c.5 — Security & Hosts**: security score header + evidence-block findings; the
   Hosts/fleet card grid with health bars and tag chips.
 - **S8c.6 — Polish & close**: spacing/alignment pass, help overlay, render-test

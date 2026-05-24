@@ -87,7 +87,11 @@ actions are out of scope (the action engine exists, but v0.3 only inspects).
   evidence }`: loopback binds = `Info`; external + sensitive port = `High`
   (ssh/mysql/postgres) or `Critical` (redis/mongodb/memcached/elasticsearch/couchdb);
   external + non-sensitive = `Low`. Reuses `core::Severity`; sorted worst-first.
-- **S3.5 — Connectivity tools**: ping, DNS lookup, TCP connect test.
+- **S3.5 — Connectivity tools**: ping, DNS lookup, TCP connect test. **Done.**
+  `connectivity` module: `ping` (parses transmitted/received/loss + rtt min/avg/max),
+  `dns_lookup` (via `getent ahosts`, the portable NSS resolver) and `tcp_connect`
+  (via `nc -z`, reading the exit code). All run a single timeout-bounded
+  `CommandSpec` through the transport; read-only diagnostics, fixture-tested.
 - **S3.6 — Findings & security checks**: `Finding` model + the initial posture checks.
 - **S3.7 — Certificates**: local discovery + remote `host:443`, expiry/CN/issuer checks.
 - **S3.8 — Security tab + polish**: Network/Security tabs render exposure + findings;

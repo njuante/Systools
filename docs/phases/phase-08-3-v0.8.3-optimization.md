@@ -314,3 +314,49 @@ batch removed ~3 round-trips from the system chain (345→273ms), so `host_repor
 longer the gate; the remaining floor is the `security_scan` chain (~344ms) running
 concurrently. Further cuts there would mean batching the security module's many probes
 — deferred (out of scope for v0.8.3, which froze the security behaviour).
+
+### S8d.6 — Build profile + close ✅
+
+**Release profile.** Bumped `lto = "thin"` → `lto = true` (fat LTO) in
+`[profile.release]` (already had `strip`, `codegen-units = 1`). The binary shrank
+**5,745,768 → 5,447,280 bytes (−298 KB, −5.2%)**. Release compile time rises (~25s →
+~75s), which is acceptable for an occasional release build; dev builds are unaffected.
+
+**`panic = "abort"` — measured and rejected.** It cut a further ~586 KB (down to
+4,860,856), but was *not* adopted: with the S8d.2 background gather running on a tokio
+task, `abort` turns any panic — including one in a collector/parser fed malformed
+output by an arbitrary remote host — into an immediate process kill that bypasses the
+terminal restore (`ratatui::try_restore`), leaving the operator's terminal garbled.
+Unwinding keeps a stray gather-task panic from taking down the whole session. Since
+startup is already ~3ms (no win there) and refresh is I/O-bound (LTO doesn't help it),
+the size saving did not justify the loss of fault isolation. (Matches the phase's
+`panic=abort` risk note.)
+
+**Startup** is ~3ms to load (`systui --version`, best of 10); the interactive
+time-to-first-frame is effectively instant since S8d.2 draws a loading frame while the
+first gather runs in the background.
+
+#### Final v0.8.3 scorecard
+
+| metric                    | before (v0.8.2) | after (v0.8.3) | change |
+|---------------------------|----------------:|---------------:|-------:|
+| refresh `gather_total` — local | 390.6ms    |        ~212ms  | −46%   |
+| refresh `gather_total` — SSH `vpn` | 902.5ms |       ~409ms  | −55%   |
+| release binary size       |       5,745,768 |      5,447,280 | −5.2%  |
+| startup (`--version`)     |            ~3ms |           ~3ms | —      |
+
+## Definition of Done — met
+
+- **Never freezes** (S8d.2): the gather runs on a background task; input and redraw stay
+  live, with a `⟳ refreshing` indicator. Manual `r` and auto-refresh both go through it.
+- **Concurrent collectors** (S8d.3): independent collectors/groups run under one
+  `tokio::join!`; output stays deterministic via `merge_findings`.
+- **Slow data not re-collected every tick** (S8d.4): `HostStatics`/`NetStatics` tiers
+  reused for the session; ~6 fewer round-trips per warm tick.
+- **Partial data on timeout, no stall; cancellable** (S8d.5): per-collector
+  `COLLECTOR_TIMEOUT`; required host report → `CoreError::Timeout` keeping prior data;
+  every gather completes in bounded time.
+- **Before/after measurements recorded** (this file): refresh latency local + SSH,
+  startup, binary size.
+- **Behaviour/screens/keymaps/safety unchanged; render pure**; `cargo fmt --check`,
+  `cargo clippy -D warnings`, `cargo test --workspace` all green.

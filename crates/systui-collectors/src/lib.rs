@@ -5,9 +5,11 @@
 //! Process, service, log and network collectors arrive in later v0.1 sessions.
 
 pub mod process;
+pub mod service;
 pub mod system;
 
 pub use process::{Process, ProcessCollector};
+pub use service::{FailedUnit, FailedUnitsCollector};
 pub use system::{
     CpuUsage, Disk, LoadAverage, LoggedUser, Memory, Swap, SystemCollector, SystemSnapshot,
 };

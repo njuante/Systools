@@ -75,7 +75,9 @@ This builds directly on the phase-0 foundation: collectors run through a
   runs `SystemCollector` (the phase-0 `HostInfoCollector` demo was removed).
 - **S1.4 — Top processes** *(done)*: `ProcessCollector` (via `ps`) + a Processes
   tab with a sortable table (top 20; `s` toggles CPU/memory ordering).
-- **S1.5 — Failed systemd units**: collector + panel.
+- **S1.5 — Failed systemd units** *(done)*: `FailedUnitsCollector`
+  (`systemctl --failed`) + Services tab listing failed units, plus a failed-unit
+  count on the dashboard. Added severity colors (ok/warn/danger) to the theme.
 - **S1.6 — Basic journald logs**: recent critical/error lines + simple view.
 - **S1.7 — Checks & refresh**: threshold checks feeding the dashboard; manual +
   auto refresh wired to config.

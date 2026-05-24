@@ -5,7 +5,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table, Tabs, Wrap};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Tabs, Wrap};
 use systui_collectors::{Disk, Process, SystemSnapshot};
 
 use crate::app::{App, ProcessSort, Tab, ViewState};
@@ -82,8 +82,47 @@ fn render_content(frame: &mut Frame, app: &App, area: Rect) {
             frame.render_widget(Paragraph::new(system_text(app, snap)), inner);
         }
         (ViewState::Ready, _, Tab::Processes) => render_processes(frame, app, inner),
+        (ViewState::Ready, _, Tab::Services) => render_services(frame, app, inner),
         _ => render_message(frame, app, tab, inner),
     }
+}
+
+fn render_services(frame: &mut Frame, app: &App, area: Rect) {
+    if app.failed_units.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No failed units — all good.",
+                Style::new().fg(app.theme.ok),
+            ))
+            .alignment(Alignment::Center),
+            area,
+        );
+        return;
+    }
+
+    let header = Row::new(["UNIT", "ACTIVE", "SUB", "DESCRIPTION"])
+        .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
+    let body = app.failed_units.iter().map(|u| {
+        Row::new([
+            Cell::from(Span::styled(
+                u.unit.clone(),
+                Style::new().fg(app.theme.danger),
+            )),
+            Cell::from(u.active.clone()),
+            Cell::from(u.sub.clone()),
+            Cell::from(u.description.clone()),
+        ])
+    });
+    let widths = [
+        Constraint::Length(28),
+        Constraint::Length(8),
+        Constraint::Length(10),
+        Constraint::Min(10),
+    ];
+    let table = Table::new(body, widths)
+        .header(header)
+        .style(Style::new().fg(app.theme.text));
+    frame.render_widget(table, area);
 }
 
 fn render_processes(frame: &mut Frame, app: &App, area: Rect) {
@@ -221,6 +260,24 @@ fn dashboard_text(app: &App, snap: &SystemSnapshot) -> Text<'static> {
             )),
         ),
     ];
+
+    let failed = app.failed_units.len();
+    lines.insert(
+        2,
+        Line::from(vec![
+            Span::styled("failed units: ", dim),
+            Span::styled(
+                failed.to_string(),
+                if failed > 0 {
+                    Style::new()
+                        .fg(app.theme.danger)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new().fg(app.theme.ok)
+                },
+            ),
+        ]),
+    );
 
     if snap.swap.total_kb > 0 {
         lines.push(metric_line(
@@ -653,5 +710,54 @@ mod tests {
         let node_at = out.find("node").unwrap();
         let systemd_at = out.find("systemd").unwrap();
         assert!(node_at < systemd_at);
+    }
+
+    #[test]
+    fn dashboard_shows_failed_unit_count() {
+        use systui_collectors::FailedUnit;
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.failed_units = vec![FailedUnit {
+            unit: "nginx.service".to_owned(),
+            load: "loaded".to_owned(),
+            active: "failed".to_owned(),
+            sub: "failed".to_owned(),
+            description: "web server".to_owned(),
+        }];
+        app.view_state = ViewState::Ready;
+
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("failed units: 1"));
+    }
+
+    #[test]
+    fn services_tab_lists_failed_units() {
+        use systui_collectors::FailedUnit;
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.failed_units = vec![FailedUnit {
+            unit: "docker.service".to_owned(),
+            load: "loaded".to_owned(),
+            active: "failed".to_owned(),
+            sub: "failed".to_owned(),
+            description: "Docker Application Container Engine".to_owned(),
+        }];
+        app.view_state = ViewState::Ready;
+        app.select_tab(3); // Services
+
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("UNIT"));
+        assert!(out.contains("docker.service"));
+    }
+
+    #[test]
+    fn services_tab_reports_no_failures() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.view_state = ViewState::Ready;
+        app.select_tab(3); // Services
+
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("No failed units"));
     }
 }

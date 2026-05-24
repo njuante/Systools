@@ -13,6 +13,9 @@ pub struct Theme {
     pub border: Color,
     pub selected_fg: Color,
     pub selected_bg: Color,
+    pub ok: Color,
+    pub warn: Color,
+    pub danger: Color,
 }
 
 impl Theme {
@@ -26,6 +29,9 @@ impl Theme {
             border: Color::DarkGray,
             selected_fg: Color::Black,
             selected_bg: Color::Cyan,
+            ok: Color::Green,
+            warn: Color::Yellow,
+            danger: Color::Red,
         }
     }
 }

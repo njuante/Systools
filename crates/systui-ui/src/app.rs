@@ -1,6 +1,6 @@
 //! Global application state for the TUI.
 
-use systui_collectors::SystemSnapshot;
+use systui_collectors::{Process, SystemSnapshot};
 use systui_core::{ExecutionMode, ModuleId};
 
 use crate::theme::Theme;
@@ -11,6 +11,7 @@ use crate::theme::Theme;
 pub enum Tab {
     Dashboard,
     System,
+    Processes,
     Services,
     Logs,
     Network,
@@ -20,9 +21,10 @@ pub enum Tab {
 
 impl Tab {
     /// All tabs, in display order.
-    pub const ALL: [Tab; 7] = [
+    pub const ALL: [Tab; 8] = [
         Tab::Dashboard,
         Tab::System,
+        Tab::Processes,
         Tab::Services,
         Tab::Logs,
         Tab::Network,
@@ -35,6 +37,7 @@ impl Tab {
         match self {
             Tab::Dashboard => "Dashboard",
             Tab::System => "System",
+            Tab::Processes => "Processes",
             Tab::Services => "Services",
             Tab::Logs => "Logs",
             Tab::Network => "Network",
@@ -48,6 +51,7 @@ impl Tab {
         match self {
             Tab::Dashboard => ModuleId::Dashboard,
             Tab::System => ModuleId::System,
+            Tab::Processes => ModuleId::Processes,
             Tab::Services => ModuleId::Services,
             Tab::Logs => ModuleId::Logs,
             Tab::Network => ModuleId::Network,
@@ -69,6 +73,29 @@ pub enum ViewState {
     Error(String),
 }
 
+/// How the process list is ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessSort {
+    Cpu,
+    Mem,
+}
+
+impl ProcessSort {
+    pub fn label(self) -> &'static str {
+        match self {
+            ProcessSort::Cpu => "CPU",
+            ProcessSort::Mem => "memory",
+        }
+    }
+
+    pub fn toggled(self) -> Self {
+        match self {
+            ProcessSort::Cpu => ProcessSort::Mem,
+            ProcessSort::Mem => ProcessSort::Cpu,
+        }
+    }
+}
+
 /// Everything the renderer needs to draw a frame.
 #[derive(Debug)]
 pub struct App {
@@ -78,6 +105,8 @@ pub struct App {
     pub active_tab: usize,
     pub view_state: ViewState,
     pub snapshot: Option<SystemSnapshot>,
+    pub processes: Vec<Process>,
+    pub process_sort: ProcessSort,
     pub show_help: bool,
     pub should_quit: bool,
     pub refresh_requested: bool,
@@ -93,6 +122,8 @@ impl App {
             active_tab: 0,
             view_state: ViewState::Empty,
             snapshot: None,
+            processes: Vec::new(),
+            process_sort: ProcessSort::Cpu,
             show_help: false,
             should_quit: false,
             refresh_requested: false,
@@ -131,6 +162,11 @@ impl App {
         self.refresh_requested = true;
     }
 
+    /// Switch the process list ordering between CPU and memory.
+    pub fn toggle_process_sort(&mut self) {
+        self.process_sort = self.process_sort.toggled();
+    }
+
     /// Request application exit.
     pub fn quit(&mut self) {
         self.should_quit = true;
@@ -165,8 +201,8 @@ mod tests {
     fn select_tab_ignores_out_of_range() {
         let mut app = App::new("local", ExecutionMode::ReadOnly);
         app.select_tab(2);
-        assert_eq!(app.current_tab(), Tab::Services);
+        assert_eq!(app.current_tab(), Tab::Processes);
         app.select_tab(99);
-        assert_eq!(app.current_tab(), Tab::Services);
+        assert_eq!(app.current_tab(), Tab::Processes);
     }
 }

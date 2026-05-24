@@ -5,10 +5,10 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs, Wrap};
-use systui_collectors::{Disk, SystemSnapshot};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table, Tabs, Wrap};
+use systui_collectors::{Disk, Process, SystemSnapshot};
 
-use crate::app::{App, Tab, ViewState};
+use crate::app::{App, ProcessSort, Tab, ViewState};
 
 /// Draw the whole UI for the current state.
 pub fn render(frame: &mut Frame, app: &App) {
@@ -81,8 +81,67 @@ fn render_content(frame: &mut Frame, app: &App, area: Rect) {
         (ViewState::Ready, Some(snap), Tab::System) => {
             frame.render_widget(Paragraph::new(system_text(app, snap)), inner);
         }
+        (ViewState::Ready, _, Tab::Processes) => render_processes(frame, app, inner),
         _ => render_message(frame, app, tab, inner),
     }
+}
+
+fn render_processes(frame: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+
+    let hint = Line::from(vec![
+        Span::styled(
+            format!("sorted by {} ", app.process_sort.label()),
+            Style::new().fg(app.theme.text),
+        ),
+        Span::styled("(s to toggle)", Style::new().fg(app.theme.dim)),
+    ]);
+    frame.render_widget(Paragraph::new(hint), rows[0]);
+
+    if app.processes.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No process data.",
+                Style::new().fg(app.theme.dim),
+            )),
+            rows[1],
+        );
+        return;
+    }
+
+    let mut procs: Vec<&Process> = app.processes.iter().collect();
+    let key = |p: &Process| match app.process_sort {
+        ProcessSort::Cpu => p.cpu_percent,
+        ProcessSort::Mem => p.mem_percent,
+    };
+    procs.sort_by(|a, b| {
+        key(b)
+            .partial_cmp(&key(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let header = Row::new(["PID", "USER", "%CPU", "%MEM", "COMMAND"])
+        .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
+    let body = procs.iter().take(20).map(|p| {
+        Row::new([
+            p.pid.to_string(),
+            p.user.clone(),
+            format!("{:.1}", p.cpu_percent),
+            format!("{:.1}", p.mem_percent),
+            p.command.clone(),
+        ])
+    });
+    let widths = [
+        Constraint::Length(7),
+        Constraint::Length(12),
+        Constraint::Length(6),
+        Constraint::Length(6),
+        Constraint::Min(10),
+    ];
+    let table = Table::new(body, widths)
+        .header(header)
+        .style(Style::new().fg(app.theme.text));
+    frame.render_widget(table, rows[1]);
 }
 
 fn render_message(frame: &mut Frame, app: &App, tab: Tab, area: Rect) {
@@ -387,8 +446,9 @@ fn render_help(frame: &mut Frame, app: &App) {
     let keys = [
         ("Tab / →", "next tab"),
         ("Shift+Tab / ←", "previous tab"),
-        ("1–7", "jump to tab"),
+        ("1–8", "jump to tab"),
         ("r", "refresh"),
+        ("s", "sort processes by CPU/memory"),
         ("?", "toggle this help"),
         ("q / Ctrl+C", "quit"),
         ("Esc", "close overlay / back"),
@@ -558,5 +618,40 @@ mod tests {
         assert!(out.contains("6.1.0-18-amd64"));
         assert!(out.contains("Users"));
         assert!(out.contains("admin"));
+    }
+
+    #[test]
+    fn renders_top_processes_table() {
+        use systui_collectors::Process;
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.processes = vec![
+            Process {
+                pid: 1,
+                user: "root".to_owned(),
+                cpu_percent: 0.1,
+                mem_percent: 0.2,
+                command: "systemd".to_owned(),
+            },
+            Process {
+                pid: 3300,
+                user: "admin".to_owned(),
+                cpu_percent: 12.4,
+                mem_percent: 0.8,
+                command: "node".to_owned(),
+            },
+        ];
+        app.view_state = ViewState::Ready;
+        app.select_tab(2); // Processes
+
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("sorted by CPU"));
+        assert!(out.contains("COMMAND"));
+        assert!(out.contains("node"));
+        assert!(out.contains("3300"));
+        // node (12.4% CPU) must appear before systemd (0.1%) in CPU sort order
+        let node_at = out.find("node").unwrap();
+        let systemd_at = out.find("systemd").unwrap();
+        assert!(node_at < systemd_at);
     }
 }

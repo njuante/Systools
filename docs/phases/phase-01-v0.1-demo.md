@@ -73,7 +73,8 @@ This builds directly on the phase-0 foundation: collectors run through a
 - **S1.3 — Dashboard & system panels** *(done)*: header, CPU/RAM/swap bars, disk
   usage and load on the dashboard; full system detail tab; the data controller now
   runs `SystemCollector` (the phase-0 `HostInfoCollector` demo was removed).
-- **S1.4 — Top processes**: collector (sort by CPU/RAM) + panel.
+- **S1.4 — Top processes** *(done)*: `ProcessCollector` (via `ps`) + a Processes
+  tab with a sortable table (top 20; `s` toggles CPU/memory ordering).
 - **S1.5 — Failed systemd units**: collector + panel.
 - **S1.6 — Basic journald logs**: recent critical/error lines + simple view.
 - **S1.7 — Checks & refresh**: threshold checks feeding the dashboard; manual +

@@ -27,6 +27,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('q') => app.quit(),
         KeyCode::Char('?') => app.toggle_help(),
         KeyCode::Char('r') => app.request_refresh(),
+        KeyCode::Char('s') => app.toggle_process_sort(),
         KeyCode::Tab | KeyCode::Right => app.next_tab(),
         KeyCode::BackTab | KeyCode::Left => app.prev_tab(),
         KeyCode::Char(c @ '1'..='9') => app.select_tab(c as usize - '1' as usize),
@@ -72,8 +73,17 @@ mod tests {
     #[test]
     fn number_key_jumps_to_tab() {
         let mut app = App::new("local", ExecutionMode::ReadOnly);
-        handle_key(&mut app, press(KeyCode::Char('3')));
+        handle_key(&mut app, press(KeyCode::Char('4')));
         assert_eq!(app.current_tab(), crate::app::Tab::Services);
+    }
+
+    #[test]
+    fn s_toggles_process_sort() {
+        use crate::app::ProcessSort;
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        assert_eq!(app.process_sort, ProcessSort::Cpu);
+        handle_key(&mut app, press(KeyCode::Char('s')));
+        assert_eq!(app.process_sort, ProcessSort::Mem);
     }
 
     #[test]

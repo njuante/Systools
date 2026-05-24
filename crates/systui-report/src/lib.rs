@@ -227,6 +227,7 @@ mod tests {
             },
             processes: vec![Process {
                 pid: 1132,
+                ppid: 842,
                 user: "www-data".to_owned(),
                 cpu_percent: 5.6,
                 mem_percent: 3.1,

@@ -75,8 +75,12 @@ Everything still goes through the `Transport`/`CommandSpec` contracts; the UI on
   (`ServiceAction`/`ServiceOp`, all eight ops) in `systui-actions` implementing the
   `Action` contract with preview + execute + verify. Fixture/Mock tests. (UI list +
   action invocation are wired once the engine lands in S2.5.)
-- **S2.3 — Processes module**: full list, tree, detail and signal actions with
-  guardrails.
+- **S2.3 — Processes module** *(done)*: `Process` gains PPID; `build_process_tree`
+  flattens a depth-annotated tree; `process_detail` reads `/proc/<pid>`
+  (status + cmdline). `SignalAction`/`Signal` (TERM/KILL/HUP) in `systui-actions`
+  with hard guardrails (PID 1 and the SysTUI process are never signaled) and
+  post-signal verification. Fixture/Mock tested. (UI tree/detail/invocation land
+  with the engine in S2.5+.)
 - **S2.4 — Log filters**: level/unit/time/regex filters + incremental search in the
   Logs view.
 - **S2.5 — Action engine**: `systui-actions` pipeline (permission → read-only → risk

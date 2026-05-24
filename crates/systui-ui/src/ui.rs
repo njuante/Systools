@@ -787,6 +787,7 @@ mod tests {
         app.processes = vec![
             Process {
                 pid: 1,
+                ppid: 0,
                 user: "root".to_owned(),
                 cpu_percent: 0.1,
                 mem_percent: 0.2,
@@ -794,6 +795,7 @@ mod tests {
             },
             Process {
                 pid: 3300,
+                ppid: 1,
                 user: "admin".to_owned(),
                 cpu_percent: 12.4,
                 mem_percent: 0.8,

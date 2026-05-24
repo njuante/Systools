@@ -42,6 +42,13 @@ pub fn run(
     app.cert_warning_days = config.security.cert_expiry_warning_days;
     let refresh_interval = Duration::from_secs(config.general.default_refresh_seconds);
 
+    // Probe what the connected user can do (once), then degrade the mode to match:
+    // a non-privileged user can't run privileged actions. Works the same locally
+    // and over SSH.
+    let capabilities = runtime.block_on(systui_collectors::probe_capabilities(transport.as_ref()));
+    app.mode = capabilities.effective_mode(app.mode);
+    app.capabilities = Some(capabilities);
+
     data::refresh_blocking(&runtime, transport.as_ref(), &mut app);
 
     let mut terminal = ratatui::try_init()?;

@@ -4,6 +4,7 @@
 //! [`SystemCollector`] produces the [`SystemSnapshot`] shown on the dashboard.
 //! Process, service, log and network collectors arrive in later v0.1 sessions.
 
+pub mod capabilities;
 pub mod connectivity;
 pub mod cron;
 pub mod docker;
@@ -16,6 +17,7 @@ pub mod process;
 pub mod service;
 pub mod system;
 
+pub use capabilities::{HostCapabilities, probe_capabilities};
 pub use connectivity::{DnsLookup, PingResult, TcpProbe, dns_lookup, ping, tcp_connect};
 pub use cron::{
     CronEntry, CronSchedule, CronSource, SystemdTimer, collect_cron_entries, collect_timers,

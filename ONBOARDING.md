@@ -98,7 +98,7 @@ snapshot may lag.
   CLI + config + tracing, TUI shell, async/sync bridge.
 - **Phase 1 / v0.1 complete**: dashboard with health score + findings,
   system/processes/services/logs views, threshold checks, auto-refresh, Markdown report.
-- **Phase 2 / v0.2 complete** (S2.1–S2.8): full systemd + process collectors/detail,
+- **Phase 2 / v0.2 complete** (S2.1–S2.7): full systemd + process collectors/detail,
   service + signal actions, log filters + incremental search, the **action engine**
   (guardrail → read-only → risk → preview → confirm → execute → verify), the **audit
   log**, and UI action invocation (select + `a` → confirm → run → audited).

@@ -5,8 +5,9 @@ use systui_actions::{
     ActionDecision, DockerAction, DockerOp, ServiceAction, ServiceOp, Signal, SignalAction,
 };
 use systui_collectors::{
-    Container, ContainerStats, CronEntry, ExposureEntry, HealthReport, InspectSummary, LogEntry,
-    LogQuery, NetworkSnapshot, Process, ServiceUnit, SystemSnapshot, SystemdTimer,
+    Container, ContainerStats, CronEntry, ExposureEntry, HealthReport, HostCapabilities,
+    InspectSummary, LogEntry, LogQuery, NetworkSnapshot, Process, ServiceUnit, SystemSnapshot,
+    SystemdTimer,
 };
 use systui_core::{Action, ExecutionMode, Finding, ModuleId, Severity, Thresholds};
 
@@ -206,6 +207,8 @@ const LOG_LEVELS: &[(u8, &str)] = &[(3, "err+"), (4, "warning+"), (6, "info+"), 
 pub struct App {
     pub host_label: String,
     pub mode: ExecutionMode,
+    /// What the connected user can do on the host (probed once at startup).
+    pub capabilities: Option<HostCapabilities>,
     pub theme: Theme,
     pub active_tab: usize,
     pub view_state: ViewState,
@@ -251,6 +254,7 @@ impl App {
         Self {
             host_label: host_label.into(),
             mode,
+            capabilities: None,
             theme: Theme::dark(),
             active_tab: 0,
             view_state: ViewState::Empty,

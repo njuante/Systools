@@ -20,7 +20,7 @@ pub use action::{Action, ActionOutcome, ActionPreview};
 pub use audit::{AuditContext, AuditRecord, AuditStatus};
 pub use collector::{Collector, ModuleId};
 pub use command::{CommandOutput, CommandSpec};
-pub use config::{Config, Thresholds};
+pub use config::{Config, ResolvedHost, Thresholds};
 pub use error::{CoreError, Result};
 pub use finding::{Finding, FindingStatus};
 pub use mode::{ExecutionMode, RiskLevel};

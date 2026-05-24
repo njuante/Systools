@@ -119,9 +119,13 @@ fn render_title(frame: &mut Frame, app: &App, area: Rect) {
     ]);
     frame.render_widget(Paragraph::new(title), area);
 
-    let mode = Line::from(format!("mode: {} ", app.mode)).alignment(Alignment::Right);
+    let status = match &app.capabilities {
+        Some(caps) => format!("{} · mode: {} ", caps.label(), app.mode),
+        None => format!("mode: {} ", app.mode),
+    };
+    let status = Line::from(status).alignment(Alignment::Right);
     frame.render_widget(
-        Paragraph::new(mode).style(Style::new().fg(app.theme.dim)),
+        Paragraph::new(status).style(Style::new().fg(app.theme.dim)),
         area,
     );
 }
@@ -1395,6 +1399,20 @@ mod tests {
         assert!(out.contains("Security"));
         assert!(out.contains("q quit"));
         assert!(out.contains("No data yet"));
+    }
+
+    #[test]
+    fn title_shows_user_capabilities() {
+        use systui_collectors::HostCapabilities;
+        let mut app = App::new("prod-01", ExecutionMode::Privileged);
+        app.capabilities = Some(HostCapabilities {
+            user: "admin".to_owned(),
+            uid: Some(1000),
+            can_sudo: true,
+        });
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("admin (sudo)"));
+        assert!(out.contains("privileged"));
     }
 
     #[test]

@@ -40,6 +40,12 @@ pub enum Command {
         /// Restrict to hosts flagged as favorites.
         #[arg(long)]
         favorites: bool,
+        /// Search the fleet for a service or port; list matching hosts and exit.
+        #[arg(long, value_name = "TERM")]
+        search: Option<String>,
+        /// Compare two inventory hosts side by side: `--compare <A> <B>`.
+        #[arg(long, num_args = 2, value_names = ["A", "B"])]
+        compare: Vec<String>,
     },
 
     /// Generate a report of a host's state (local, or remote with `--host`).

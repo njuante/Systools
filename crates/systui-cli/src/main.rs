@@ -14,7 +14,6 @@ use std::time::Duration;
 use anyhow::Context;
 use clap::Parser;
 use systui_core::{Config, ExecutionMode, Transport};
-use systui_report::FleetHostSummary;
 use tracing_subscriber::EnvFilter;
 
 use crate::cli::{Cli, Command};
@@ -72,8 +71,13 @@ fn dispatch(command: Command, mode: ExecutionMode, config: &Config) -> anyhow::R
         Command::Ssh { target } => {
             run_ssh(&target, mode, config)?;
         }
-        Command::Fleet { tag, favorites } => {
-            run_fleet(tag, favorites, mode, config)?;
+        Command::Fleet {
+            tag,
+            favorites,
+            search,
+            compare,
+        } => {
+            run_fleet(tag, favorites, search, compare, mode, config)?;
         }
         Command::Report {
             host,
@@ -145,34 +149,49 @@ const FLEET_HOST_TIMEOUT: Duration = Duration::from_secs(30);
 fn run_fleet(
     tags: Vec<String>,
     favorites: bool,
+    search: Option<String>,
+    compare: Vec<String>,
     mode: ExecutionMode,
     config: &Config,
 ) -> anyhow::Result<()> {
+    if config.hosts.is_empty() {
+        eprintln!("No hosts in the inventory. Add `[hosts.<id>]` entries to your config.");
+        return Ok(());
+    }
+    let runtime = tokio::runtime::Runtime::new().context("failed to start async runtime")?;
+
+    // Comparison mode: gather exactly the two requested hosts and diff them.
+    if let [left, right] = compare.as_slice() {
+        return run_fleet_compare(left, right, mode, config, &runtime);
+    }
+
     let filter = systui_core::FleetFilter {
         tags,
         favorites_only: favorites,
     };
     let selected = config.select_fleet(&filter);
-
-    if config.hosts.is_empty() {
-        eprintln!("No hosts in the inventory. Add `[hosts.<id>]` entries to your config.");
-        return Ok(());
-    }
     if selected.is_empty() {
         eprintln!("No inventory hosts match the given filters.");
         return Ok(());
     }
 
-    let runtime = tokio::runtime::Runtime::new().context("failed to start async runtime")?;
     eprintln!("Reviewing {} host(s)…", selected.len());
     let gather = |runtime: &tokio::runtime::Runtime| {
         let generated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         runtime.block_on(gather_fleet(selected.clone(), mode, config, generated_at))
     };
 
-    let mut overview = gather(&runtime);
+    let review = gather(&runtime);
 
-    // Non-interactive (piped/redirected): print once and exit.
+    // Search mode: list hosts whose ports/services match the term, then exit.
+    if let Some(term) = search {
+        print_fleet_search(&review, &term);
+        return Ok(());
+    }
+
+    let mut overview = review.overview();
+
+    // Non-interactive (piped/redirected): print the overview once and exit.
     if !std::io::stdout().is_terminal() {
         print_fleet_overview(&overview);
         return Ok(());
@@ -182,15 +201,41 @@ fn run_fleet(
     loop {
         match systui_ui::run_fleet(&overview)? {
             systui_ui::FleetExit::Quit => break,
-            systui_ui::FleetExit::Refresh => overview = gather(&runtime),
+            systui_ui::FleetExit::Refresh => overview = gather(&runtime).overview(),
             systui_ui::FleetExit::Enter(id) => {
                 if let Some(host) = selected.iter().find(|h| h.id == id) {
                     drill_in_host(host, mode, config)?;
                 }
-                overview = gather(&runtime);
+                overview = gather(&runtime).overview();
             }
         }
     }
+    Ok(())
+}
+
+/// Gather two inventory hosts and print a side-by-side comparison with drift.
+fn run_fleet_compare(
+    left_id: &str,
+    right_id: &str,
+    mode: ExecutionMode,
+    config: &Config,
+    runtime: &tokio::runtime::Runtime,
+) -> anyhow::Result<()> {
+    let all = config.select_fleet(&systui_core::FleetFilter::all());
+    let find = |id: &str| all.iter().find(|h| h.id == id).cloned();
+    let (Some(left), Some(right)) = (find(left_id), find(right_id)) else {
+        anyhow::bail!("both hosts must be inventory ids; unknown: {left_id} or {right_id}");
+    };
+
+    eprintln!("Reviewing {left_id} and {right_id}…");
+    let generated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let review = runtime.block_on(gather_fleet(vec![left, right], mode, config, generated_at));
+
+    let (Some(lr), Some(rr)) = (review.report(left_id), review.report(right_id)) else {
+        anyhow::bail!("could not review both hosts (see the rows below for failures)");
+    };
+    let comparison = systui_report::HostComparison::new(left_id, lr, right_id, rr);
+    print_fleet_comparison(&comparison);
     Ok(())
 }
 
@@ -215,13 +260,15 @@ fn drill_in_host(
     Ok(())
 }
 
-/// Gather every selected host concurrently (bounded) into a [`FleetOverview`].
+/// Gather every selected host concurrently (bounded) into a [`FleetReview`],
+/// keeping each host's full report so the overview, search and comparison can all
+/// work from one gather.
 async fn gather_fleet(
     hosts: Vec<systui_core::FleetHost>,
     mode: ExecutionMode,
     config: &Config,
     generated_at: String,
-) -> systui_report::FleetOverview {
+) -> systui_report::FleetReview {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(FLEET_CONCURRENCY));
     let mut tasks = tokio::task::JoinSet::new();
 
@@ -240,26 +287,29 @@ async fn gather_fleet(
         });
     }
 
-    let mut summaries = Vec::new();
+    let mut hosts = Vec::new();
     while let Some(joined) = tasks.join_next().await {
         match joined {
-            Ok(summary) => summaries.push(summary),
+            Ok(host_report) => hosts.push(host_report),
             // A panicking review task should not lose the rest of the fleet.
             Err(err) => tracing::error!(%err, "fleet review task failed to join"),
         }
     }
 
-    systui_report::FleetOverview::build(generated_at, summaries)
+    systui_report::FleetReview {
+        generated_at,
+        hosts,
+    }
 }
 
 /// Review a single host over SSH, mapping any failure (connection, auth, timeout)
-/// to a failed summary row.
+/// to a failed report so it still shows up as an error row.
 async fn review_one_host(
     host: systui_core::FleetHost,
     mode: ExecutionMode,
     config: &Config,
     generated_at: String,
-) -> systui_report::FleetHostSummary {
+) -> systui_report::FleetHostReport {
     let mut transport = systui_transport::SshTransport::new(host.host.clone()).port(host.port);
     if let Some(user) = &host.user {
         transport = transport.user(user.clone());
@@ -279,17 +329,17 @@ async fn review_one_host(
         Vec::new(),
     );
 
-    match tokio::time::timeout(FLEET_HOST_TIMEOUT, gather).await {
-        Ok(Ok(report)) => FleetHostSummary::reviewed(host.id, host.tags, host.favorite, &report),
-        Ok(Err(err)) => {
-            FleetHostSummary::failed(host.id, host.tags, host.favorite, err.to_string())
-        }
-        Err(_) => FleetHostSummary::failed(
-            host.id,
-            host.tags,
-            host.favorite,
-            format!("timed out after {}s", FLEET_HOST_TIMEOUT.as_secs()),
-        ),
+    let report = match tokio::time::timeout(FLEET_HOST_TIMEOUT, gather).await {
+        Ok(Ok(report)) => Ok(report),
+        Ok(Err(err)) => Err(err.to_string()),
+        Err(_) => Err(format!("timed out after {}s", FLEET_HOST_TIMEOUT.as_secs())),
+    };
+
+    systui_report::FleetHostReport {
+        id: host.id,
+        tags: host.tags,
+        favorite: host.favorite,
+        report,
     }
 }
 
@@ -323,6 +373,88 @@ fn print_fleet_overview(overview: &systui_report::FleetOverview) {
         };
         println!("{marker} {:<16} {:<16} {status}", host.id, tags);
     }
+}
+
+/// Print the hosts whose ports/services match a global search term.
+fn print_fleet_search(review: &systui_report::FleetReview, term: &str) {
+    let matches = review.search(term);
+    if matches.is_empty() {
+        println!("No hosts match `{term}`.");
+        return;
+    }
+    println!("Hosts matching `{term}`:\n");
+    for host in &matches {
+        let mut parts = Vec::new();
+        if !host.ports.is_empty() {
+            let ports: Vec<String> = host.ports.iter().map(u16::to_string).collect();
+            parts.push(format!("ports: {}", ports.join(", ")));
+        }
+        if !host.services.is_empty() {
+            parts.push(format!("services: {}", host.services.join(", ")));
+        }
+        println!("  {:<16} {}", host.id, parts.join("  ·  "));
+    }
+}
+
+/// Print a side-by-side comparison of two hosts and their drift deltas.
+fn print_fleet_comparison(cmp: &systui_report::HostComparison) {
+    println!("Comparing {} vs {}:\n", cmp.left_id, cmp.right_id);
+    let row = |label: &str, left: &str, right: &str| {
+        println!("  {label:<14} {left:<28} {right}");
+    };
+    row("", &cmp.left_id, &cmp.right_id);
+    row("os", &cmp.left.os, &cmp.right.os);
+    row("kernel", &cmp.left.kernel, &cmp.right.kernel);
+    row(
+        "health",
+        &format!("{}/100", cmp.left.health),
+        &format!("{}/100", cmp.right.health),
+    );
+    row(
+        "open ports",
+        &cmp.left.open_ports.len().to_string(),
+        &cmp.right.open_ports.len().to_string(),
+    );
+    row(
+        "services",
+        &cmp.left.services.len().to_string(),
+        &cmp.right.services.len().to_string(),
+    );
+
+    if !cmp.has_drift() {
+        println!("\nNo port or service drift.");
+        return;
+    }
+    println!("\nDrift:");
+    print_drift_line(
+        &format!("only on {}", cmp.left_id),
+        &ports_and_services(cmp, true),
+    );
+    print_drift_line(
+        &format!("only on {}", cmp.right_id),
+        &ports_and_services(cmp, false),
+    );
+}
+
+/// Format the ports + services unique to one side of a comparison.
+fn ports_and_services(cmp: &systui_report::HostComparison, left: bool) -> Vec<String> {
+    let (ports, services) = if left {
+        (cmp.ports_only_left(), cmp.services_only_left())
+    } else {
+        (cmp.ports_only_right(), cmp.services_only_right())
+    };
+    let mut out: Vec<String> = ports.iter().map(|p| format!("port {p}")).collect();
+    out.extend(services);
+    out
+}
+
+fn print_drift_line(label: &str, items: &[String]) {
+    let value = if items.is_empty() {
+        "—".to_owned()
+    } else {
+        items.join(", ")
+    };
+    println!("  {label:<16} {value}");
 }
 
 /// Generate a report of a host's state, locally or over SSH (`--host`), in

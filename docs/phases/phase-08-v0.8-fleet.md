@@ -139,6 +139,21 @@ collectors.
 - **S8.4 — Global search + host comparison + basic drift**: search a service/port
   across the fleet; side-by-side host comparison; host-vs-host / host-vs-snapshot
   drift deltas.
+  **Done (host-vs-host).** The fleet gather now keeps each host's full report:
+  `systui-report::FleetReview` / `FleetHostReport` (the lightweight `FleetOverview`
+  is derived via `FleetReview::overview()`, so one concurrent gather feeds the
+  overview, search and comparison). A unified `HostFacts::from_report` extracts each
+  host's OS/kernel, health, open ports and service names (listener processes/units,
+  containers, db engines, failed units; lower-cased, de-duplicated) — the single
+  basis for both search and drift. `FleetReview::search` lists hosts whose open
+  ports (numeric term) or services (case-insensitive substring) match;
+  `HostComparison` gives a side-by-side plus `ports_only_*`/`services_only_*` drift
+  deltas and `has_drift`. CLI: `systui fleet --search <TERM>` and `systui fleet
+  --compare <A> <B>` (both headless/scriptable). Model logic unit-tested (search
+  matching, both-way drift, no-drift); CLI error/empty paths verified.
+  **Deferred to phase 9:** **host-vs-snapshot** drift — it needs `Report`
+  deserialization (a saved baseline) and overlaps the policy/expected-state engine,
+  so v0.8 drift is host-vs-host only.
 - **S8.5 — Global reports + polish → tag v0.8**: `FleetReport` over the existing
   JSON/MD/HTML renderers, escaped and self-contained; final polish; merge `--no-ff`
   into `main` + tag `v0.8` (inspection & reporting only — no mass destructive ops).

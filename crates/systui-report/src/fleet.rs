@@ -163,6 +163,227 @@ impl FleetOverview {
     }
 }
 
+/// A fleet review that keeps each host's full [`Report`] (or its failure reason),
+/// so global search, comparison and drift can work over real per-host data. The
+/// lightweight [`FleetOverview`] is derived from it.
+#[derive(Debug, Clone)]
+pub struct FleetReview {
+    pub generated_at: String,
+    pub hosts: Vec<FleetHostReport>,
+}
+
+/// One host's place in a [`FleetReview`]: its identity plus the gathered report or
+/// a human reason it could not be gathered.
+#[derive(Debug, Clone)]
+pub struct FleetHostReport {
+    pub id: String,
+    pub tags: Vec<String>,
+    pub favorite: bool,
+    pub report: std::result::Result<Report, String>,
+}
+
+impl FleetReview {
+    /// Derive the worst-first overview (the cheap summary view).
+    pub fn overview(&self) -> FleetOverview {
+        let summaries = self
+            .hosts
+            .iter()
+            .map(|h| match &h.report {
+                Ok(report) => {
+                    FleetHostSummary::reviewed(h.id.clone(), h.tags.clone(), h.favorite, report)
+                }
+                Err(error) => FleetHostSummary::failed(
+                    h.id.clone(),
+                    h.tags.clone(),
+                    h.favorite,
+                    error.clone(),
+                ),
+            })
+            .collect();
+        FleetOverview::build(self.generated_at.clone(), summaries)
+    }
+
+    /// The gathered report for a host id, if it was reviewed successfully.
+    pub fn report(&self, id: &str) -> Option<&Report> {
+        self.hosts
+            .iter()
+            .find(|h| h.id == id)
+            .and_then(|h| h.report.as_ref().ok())
+    }
+
+    /// Global search: list hosts whose open ports or services match `term`.
+    ///
+    /// A numeric term matches an open port; any term is also matched
+    /// case-insensitively against service names (listener processes/units,
+    /// container names, database engines, failed units). Failed hosts are skipped.
+    pub fn search(&self, term: &str) -> Vec<HostMatches> {
+        let needle = term.trim().to_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let as_port: Option<u16> = needle.parse().ok();
+        let mut results = Vec::new();
+        for host in &self.hosts {
+            let Ok(report) = &host.report else { continue };
+            let (ports, services) = HostFacts::from_report(report).search_matches(&needle, as_port);
+            if !ports.is_empty() || !services.is_empty() {
+                results.push(HostMatches {
+                    id: host.id.clone(),
+                    ports,
+                    services,
+                });
+            }
+        }
+        results
+    }
+}
+
+/// Hosts matched by a global search, with the matching ports and services.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HostMatches {
+    pub id: String,
+    pub ports: Vec<u16>,
+    pub services: Vec<String>,
+}
+
+/// The key facts of one host, extracted from its [`Report`] for comparison,
+/// drift and search. Services and ports are canonical (sorted, de-duplicated;
+/// service names lower-cased) so two hosts diff cleanly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HostFacts {
+    pub os: String,
+    pub kernel: String,
+    pub health: u8,
+    pub open_ports: std::collections::BTreeSet<u16>,
+    pub services: std::collections::BTreeSet<String>,
+    pub finding_counts: [usize; 5],
+}
+
+impl HostFacts {
+    pub fn from_report(report: &Report) -> Self {
+        let mut open_ports = std::collections::BTreeSet::new();
+        let mut services = std::collections::BTreeSet::new();
+
+        if let Some(net) = &report.network {
+            for listener in &net.listeners {
+                open_ports.insert(listener.port);
+                if let Some(process) = &listener.process {
+                    services.insert(process.name.to_lowercase());
+                }
+                if let Some(unit) = &listener.unit {
+                    services.insert(unit.to_lowercase());
+                }
+            }
+        }
+        for container in &report.containers {
+            services.insert(container.name.to_lowercase());
+        }
+        for instance in &report.databases.instances {
+            services.insert(instance.engine.id().to_lowercase());
+        }
+        for unit in &report.host.failed_units {
+            services.insert(unit.name.to_lowercase());
+        }
+
+        Self {
+            os: report
+                .host
+                .snapshot
+                .os
+                .clone()
+                .unwrap_or_else(|| "unknown".to_owned()),
+            kernel: report.host.snapshot.kernel.clone(),
+            health: report.host.health.score,
+            open_ports,
+            services,
+            finding_counts: report.finding_counts(),
+        }
+    }
+
+    /// Ports and services in these facts matching a search needle. `needle` is
+    /// already lower-cased; `as_port` is the needle parsed as a port when numeric.
+    fn search_matches(&self, needle: &str, as_port: Option<u16>) -> (Vec<u16>, Vec<String>) {
+        let ports = match as_port {
+            Some(port) if self.open_ports.contains(&port) => vec![port],
+            _ => Vec::new(),
+        };
+        let services = self
+            .services
+            .iter()
+            .filter(|service| service.contains(needle))
+            .cloned()
+            .collect();
+        (ports, services)
+    }
+}
+
+/// A side-by-side comparison of two hosts, with helpers for the drift deltas
+/// (what each host has that the other does not).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HostComparison {
+    pub left_id: String,
+    pub right_id: String,
+    pub left: HostFacts,
+    pub right: HostFacts,
+}
+
+impl HostComparison {
+    pub fn new(
+        left_id: impl Into<String>,
+        left: &Report,
+        right_id: impl Into<String>,
+        right: &Report,
+    ) -> Self {
+        Self {
+            left_id: left_id.into(),
+            right_id: right_id.into(),
+            left: HostFacts::from_report(left),
+            right: HostFacts::from_report(right),
+        }
+    }
+
+    /// Ports open on the left host but not the right.
+    pub fn ports_only_left(&self) -> Vec<u16> {
+        self.left
+            .open_ports
+            .difference(&self.right.open_ports)
+            .copied()
+            .collect()
+    }
+
+    /// Ports open on the right host but not the left.
+    pub fn ports_only_right(&self) -> Vec<u16> {
+        self.right
+            .open_ports
+            .difference(&self.left.open_ports)
+            .copied()
+            .collect()
+    }
+
+    /// Services on the left host but not the right.
+    pub fn services_only_left(&self) -> Vec<String> {
+        self.left
+            .services
+            .difference(&self.right.services)
+            .cloned()
+            .collect()
+    }
+
+    /// Services on the right host but not the left.
+    pub fn services_only_right(&self) -> Vec<String> {
+        self.right
+            .services
+            .difference(&self.left.services)
+            .cloned()
+            .collect()
+    }
+
+    /// Whether the two hosts differ in any compared port or service.
+    pub fn has_drift(&self) -> bool {
+        self.left.open_ports != self.right.open_ports || self.left.services != self.right.services
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,5 +449,60 @@ mod tests {
             FleetOverview::build("t", vec![reviewed("a", 90, 0, 0), failed("b"), failed("c")]);
         assert_eq!(overview.reviewed_count(), 1);
         assert_eq!(overview.failed_count(), 2);
+    }
+
+    fn facts(ports: &[u16], services: &[&str]) -> HostFacts {
+        HostFacts {
+            os: "Debian 12".to_owned(),
+            kernel: "6.1.0".to_owned(),
+            health: 90,
+            open_ports: ports.iter().copied().collect(),
+            services: services.iter().map(|s| (*s).to_owned()).collect(),
+            finding_counts: [0; 5],
+        }
+    }
+
+    #[test]
+    fn search_matches_numeric_port_and_service_substring() {
+        let f = facts(&[22, 443, 6379], &["nginx", "redis-server", "sshd"]);
+        // Numeric term hits an open port.
+        assert_eq!(f.search_matches("443", Some(443)), (vec![443], Vec::new()));
+        // A port that is not open does not match.
+        assert_eq!(
+            f.search_matches("8080", Some(8080)),
+            (Vec::new(), Vec::new())
+        );
+        // Substring matches services (case already lower).
+        let (ports, services) = f.search_matches("redis", None);
+        assert!(ports.is_empty());
+        assert_eq!(services, ["redis-server"]);
+    }
+
+    #[test]
+    fn comparison_reports_drift_both_ways() {
+        let cmp = HostComparison {
+            left_id: "a".to_owned(),
+            right_id: "b".to_owned(),
+            left: facts(&[22, 80, 443], &["nginx", "sshd"]),
+            right: facts(&[22, 443, 5432], &["postgres", "sshd"]),
+        };
+        assert_eq!(cmp.ports_only_left(), [80]);
+        assert_eq!(cmp.ports_only_right(), [5432]);
+        assert_eq!(cmp.services_only_left(), ["nginx"]);
+        assert_eq!(cmp.services_only_right(), ["postgres"]);
+        assert!(cmp.has_drift());
+    }
+
+    #[test]
+    fn identical_hosts_have_no_drift() {
+        let cmp = HostComparison {
+            left_id: "a".to_owned(),
+            right_id: "b".to_owned(),
+            left: facts(&[22, 443], &["nginx"]),
+            right: facts(&[443, 22], &["nginx"]),
+        };
+        assert!(!cmp.has_drift());
+        assert!(cmp.ports_only_left().is_empty());
+        assert!(cmp.services_only_right().is_empty());
     }
 }

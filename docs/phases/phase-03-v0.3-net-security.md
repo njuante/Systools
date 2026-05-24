@@ -93,6 +93,13 @@ actions are out of scope (the action engine exists, but v0.3 only inspects).
   (via `nc -z`, reading the exit code). All run a single timeout-bounded
   `CommandSpec` through the transport; read-only diagnostics, fixture-tested.
 - **S3.6 — Findings & security checks**: `Finding` model + the initial posture checks.
+  **Done.** `core::Finding { id, severity, module, title, evidence, impact,
+  recommendation, status }` + `FindingStatus` (default `Open`), stable dotted ids
+  (e.g. `ssh.password-auth`, `net.sensitive-port.6379`). `systui-security` adds pure,
+  fixture-tested checks (sshd root/password, failed logins, sudoers grants + NOPASSWD,
+  firewall presence, critical-file perms + `/etc/shadow`, docker socket, unexpected
+  SUID, exposed sensitive ports) and an async `security_scan(transport, exposures)`
+  orchestrator that degrades on missing tools/perms and returns findings worst-first.
 - **S3.7 — Certificates**: local discovery + remote `host:443`, expiry/CN/issuer checks.
 - **S3.8 — Security tab + polish**: Network/Security tabs render exposure + findings;
   dashboard shows a findings/exposure summary → **tag v0.3**.

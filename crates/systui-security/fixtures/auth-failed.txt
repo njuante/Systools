@@ -1,0 +1,5 @@
+May 24 10:00:01 host sshd[1234]: Failed password for invalid user admin from 10.0.0.5 port 4444 ssh2
+May 24 10:00:03 host sshd[1234]: Failed password for root from 10.0.0.5 port 4445 ssh2
+May 24 10:00:05 host sshd[1235]: Accepted password for deploy from 10.0.0.2 port 5000 ssh2
+May 24 10:00:07 host sshd[1236]: Failed password for invalid user test from 10.0.0.6 port 4446 ssh2
+May 24 10:00:09 host sshd[1237]: pam_unix(sshd:auth): authentication failure; rhost=10.0.0.6

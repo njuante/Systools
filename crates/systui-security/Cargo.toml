@@ -11,3 +11,11 @@ description = "SysTUI security posture checks and evidence-based findings"
 workspace = true
 
 [dependencies]
+systui-core.workspace = true
+systui-collectors.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+systui-transport.workspace = true

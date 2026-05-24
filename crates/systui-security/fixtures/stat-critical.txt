@@ -1,0 +1,4 @@
+644 root root /etc/passwd
+644 root shadow /etc/shadow
+600 root root /etc/ssh/sshd_config
+666 root root /etc/cron.allow

@@ -1,0 +1,7 @@
+# OpenSSH server configuration
+Port 22
+#PermitRootLogin prohibit-password
+PermitRootLogin yes
+PasswordAuthentication yes
+X11Forwarding no
+ChallengeResponseAuthentication no

@@ -92,19 +92,27 @@ offline once dependencies are cached.
 Source of truth is `git log` and the active phase context file — check them, this
 snapshot may lag.
 
-- Each version is built on `release/vX.Y` from `main`; merged `--no-ff` + tagged at
-  the end of its phase. `v0.1` and `v0.2` are tagged on `main`.
+- **Phase 3 / v0.3 complete; `v0.3` tagged on `main`.** Each version is built on
+  `release/vX.Y` from `main`, then merged `--no-ff` + tagged at the end of its phase.
+  `v0.1`, `v0.2` and `v0.3` are tagged on `main`. Phase 4 starts a new `release/v0.4`.
 - **Phase 0 (Foundation) complete**: workspace, contracts, Local/Mock transports,
   CLI + config + tracing, TUI shell, async/sync bridge.
 - **Phase 1 / v0.1 complete**: dashboard with health score + findings,
   system/processes/services/logs views, threshold checks, auto-refresh, Markdown report.
-- **Phase 2 / v0.2 complete** (S2.1–S2.8): full systemd + process collectors/detail,
+- **Phase 2 / v0.2 complete** (S2.1–S2.7): full systemd + process collectors/detail,
   service + signal actions, log filters + incremental search, the **action engine**
   (guardrail → read-only → risk → preview → confirm → execute → verify), the **audit
   log**, and UI action invocation (select + `a` → confirm → run → audited).
-- **Next: Phase 3 / v0.3** (Network & security) — start with **S3.1**, the phase
-  context file (`docs/phases/phase-03-v0.3-net-security.md`): network collectors,
-  exposure map, connectivity tools, security findings and certificates.
+- **Phase 3 / v0.3 (Network & security) complete** (S3.1–S3.8): network collectors
+  (`ip`/`ss`/resolv.conf → `NetworkSnapshot`), port→process→systemd-unit correlation
+  (via `/proc/<pid>/cgroup`), the **exposure map** (risk-ranked listeners with evidence),
+  connectivity tools (ping/DNS/TCP connect), the shared `core::Finding` model +
+  `systui-security` posture checks (SSH, sudo, failed logins, firewall, file perms,
+  docker socket, SUID, exposed ports) via `security_scan`, certificate checks (local +
+  remote `host:443` over `openssl`), and the **Network/Security TUI tabs** + dashboard
+  security summary. Core enabler added: `CommandSpec::stdin` (pipe without a shell).
+- **Next: Phase 4 / v0.4.** Create `release/v0.4` from `main` and write its phase
+  context file before any code. See `docs/ROADMAP.md` for the phase-4 theme.
 
 ## Starting a session
 

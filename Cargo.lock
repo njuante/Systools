@@ -992,6 +992,15 @@ dependencies = [
 [[package]]
 name = "systui-security"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "systui-collectors",
+ "systui-core",
+ "systui-transport",
+ "tokio",
+]
 
 [[package]]
 name = "systui-storage"
@@ -1025,6 +1034,7 @@ dependencies = [
  "systui-actions",
  "systui-collectors",
  "systui-core",
+ "systui-security",
  "systui-storage",
  "systui-transport",
  "tokio",

@@ -1,0 +1,22 @@
+[
+  {
+    "ifindex": 1,
+    "ifname": "lo",
+    "flags": ["LOOPBACK", "UP", "LOWER_UP"],
+    "operstate": "UNKNOWN",
+    "addr_info": [
+      { "family": "inet", "local": "127.0.0.1", "prefixlen": 8 },
+      { "family": "inet6", "local": "::1", "prefixlen": 128 }
+    ]
+  },
+  {
+    "ifindex": 2,
+    "ifname": "eth0",
+    "flags": ["BROADCAST", "MULTICAST", "UP", "LOWER_UP"],
+    "operstate": "UP",
+    "addr_info": [
+      { "family": "inet", "local": "192.168.1.10", "prefixlen": 24 },
+      { "family": "inet6", "local": "fe80::5054:ff:fe12:3456", "prefixlen": 64 }
+    ]
+  }
+]

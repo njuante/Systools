@@ -1,8 +1,11 @@
 //! Global application state for the TUI.
 
 use systui_actions::{ActionDecision, ServiceAction, ServiceOp, Signal, SignalAction};
-use systui_collectors::{HealthReport, LogEntry, LogQuery, Process, ServiceUnit, SystemSnapshot};
-use systui_core::{Action, ExecutionMode, ModuleId, Thresholds};
+use systui_collectors::{
+    ExposureEntry, HealthReport, LogEntry, LogQuery, NetworkSnapshot, Process, ServiceUnit,
+    SystemSnapshot,
+};
+use systui_core::{Action, ExecutionMode, Finding, ModuleId, Severity, Thresholds};
 
 use crate::theme::Theme;
 
@@ -201,6 +204,10 @@ pub struct App {
     pub processes: Vec<Process>,
     pub process_sort: ProcessSort,
     pub failed_units: Vec<ServiceUnit>,
+    pub network: Option<NetworkSnapshot>,
+    pub exposures: Vec<ExposureEntry>,
+    pub findings: Vec<Finding>,
+    pub cert_warning_days: u32,
     pub logs: Vec<LogEntry>,
     pub log_query: LogQuery,
     pub log_search: String,
@@ -232,6 +239,10 @@ impl App {
             processes: Vec::new(),
             process_sort: ProcessSort::Cpu,
             failed_units: Vec::new(),
+            network: None,
+            exposures: Vec::new(),
+            findings: Vec::new(),
+            cert_warning_days: 30,
             logs: Vec::new(),
             log_query: LogQuery::default(),
             log_search: String::new(),
@@ -360,6 +371,30 @@ impl App {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         procs
+    }
+
+    /// Count findings at each severity, as `[critical, high, medium, low, info]`.
+    pub fn finding_counts(&self) -> [usize; 5] {
+        let mut counts = [0usize; 5];
+        for finding in &self.findings {
+            let idx = match finding.severity {
+                Severity::Critical => 0,
+                Severity::High => 1,
+                Severity::Medium => 2,
+                Severity::Low => 3,
+                Severity::Info => 4,
+            };
+            counts[idx] += 1;
+        }
+        counts
+    }
+
+    /// Number of externally reachable, sensitive exposures (High/Critical).
+    pub fn risky_exposure_count(&self) -> usize {
+        self.exposures
+            .iter()
+            .filter(|e| e.severity >= Severity::High)
+            .count()
     }
 
     fn selection_len(&self) -> usize {

@@ -1,0 +1,6 @@
+/usr/bin/sudo
+/usr/bin/passwd
+/usr/bin/mount
+/usr/bin/umount
+/usr/local/bin/backup-helper
+/opt/app/runner

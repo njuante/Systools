@@ -39,6 +39,7 @@ pub fn run(
     let runtime = Runtime::new().map_err(CoreError::Io)?;
     let mut app = App::new(host_label, mode);
     app.thresholds = config.thresholds.clone();
+    app.cert_warning_days = config.security.cert_expiry_warning_days;
     let refresh_interval = Duration::from_secs(config.general.default_refresh_seconds);
 
     data::refresh_blocking(&runtime, transport.as_ref(), &mut app);

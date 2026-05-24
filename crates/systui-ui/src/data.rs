@@ -5,8 +5,9 @@
 //! foundation's single-collector wiring; phase 1 generalises it into a proper
 //! controller with background refresh.
 
-use systui_collectors::{LogsCollector, collect_host_report};
+use systui_collectors::{LogsCollector, NetworkCollector, collect_host_report, exposure_map};
 use systui_core::{Collector, CoreError, Transport};
+use systui_security::security_scan;
 use tokio::runtime::Runtime;
 
 use crate::app::{App, ViewState};
@@ -29,9 +30,32 @@ pub fn refresh_blocking(runtime: &Runtime, transport: &dyn Transport, app: &mut 
             app.logs = report.logs;
             app.health = Some(report.health);
             app.view_state = ViewState::Ready;
+            refresh_network_security(runtime, transport, app);
         }
         Err(err) => apply_error(app, err),
     }
+}
+
+/// Collect the network snapshot, exposure map and security findings. All are
+/// read-only and best-effort: missing tools or permissions yield partial data,
+/// never a failed refresh.
+fn refresh_network_security(runtime: &Runtime, transport: &dyn Transport, app: &mut App) {
+    let network = runtime
+        .block_on(NetworkCollector::new().collect(transport))
+        .ok();
+    let exposures = network
+        .as_ref()
+        .map(|net| exposure_map(&net.listeners))
+        .unwrap_or_default();
+    let findings = runtime.block_on(security_scan(
+        transport,
+        &exposures,
+        app.cert_warning_days,
+        &[],
+    ));
+    app.network = network;
+    app.exposures = exposures;
+    app.findings = findings;
 }
 
 /// Re-collect only the logs, using the current log query (best-effort).

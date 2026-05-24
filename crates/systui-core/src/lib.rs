@@ -17,7 +17,7 @@ pub mod transport;
 pub use action::{Action, ActionOutcome, ActionPreview};
 pub use collector::{Collector, ModuleId};
 pub use command::{CommandOutput, CommandSpec};
-pub use config::Config;
+pub use config::{Config, Thresholds};
 pub use error::{CoreError, Result};
 pub use mode::{ExecutionMode, RiskLevel};
 pub use model::{HostId, Severity};

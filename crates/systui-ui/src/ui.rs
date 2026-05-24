@@ -355,7 +355,57 @@ fn dashboard_text(app: &App, snap: &SystemSnapshot) -> Text<'static> {
         lines.push(disk_line(app, disk));
     }
 
+    if let Some(health) = &app.health {
+        // Health score line at the very top, colored by severity band.
+        let score_color = if health.score >= 80 {
+            app.theme.ok
+        } else if health.score >= 50 {
+            app.theme.warn
+        } else {
+            app.theme.danger
+        };
+        lines.insert(
+            0,
+            Line::from(vec![
+                Span::styled("Health ", accent),
+                Span::styled(
+                    format!("{}/100", health.score),
+                    Style::new().fg(score_color).add_modifier(Modifier::BOLD),
+                ),
+            ]),
+        );
+
+        // Prioritized findings at the bottom.
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("Findings", accent)));
+        if health.checks.is_empty() {
+            lines.push(Line::from(Span::styled("  none — healthy", dim)));
+        } else {
+            for check in health.checks.iter().take(8) {
+                lines.push(finding_line(app, check));
+            }
+        }
+    }
+
     Text::from(lines)
+}
+
+fn finding_line(app: &App, check: &systui_collectors::Check) -> Line<'static> {
+    use systui_core::Severity;
+    let color = match check.severity {
+        Severity::Critical | Severity::High => app.theme.danger,
+        Severity::Medium => app.theme.warn,
+        _ => app.theme.dim,
+    };
+    let label = format!("[{:?}]", check.severity).to_uppercase();
+    Line::from(vec![
+        Span::styled(
+            format!("  -{:<3}", check.points),
+            Style::new().fg(app.theme.dim),
+        ),
+        Span::styled(format!("{label:<10}"), Style::new().fg(color)),
+        Span::styled(check.message.clone(), Style::new().fg(app.theme.text)),
+    ])
 }
 
 /// The full system detail view.
@@ -811,6 +861,30 @@ mod tests {
 
         let out = render_to_string(&app, 100, 24);
         assert!(out.contains("No failed units"));
+    }
+
+    #[test]
+    fn dashboard_shows_health_score_and_findings() {
+        use systui_collectors::{Check, HealthReport};
+        use systui_core::Severity;
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.health = Some(HealthReport {
+            score: 72,
+            checks: vec![Check {
+                severity: Severity::Critical,
+                message: "/ at 95% (>= 90% critical)".to_owned(),
+                points: 15,
+            }],
+        });
+        app.view_state = ViewState::Ready;
+
+        let out = render_to_string(&app, 100, 30);
+        assert!(out.contains("Health"));
+        assert!(out.contains("72/100"));
+        assert!(out.contains("Findings"));
+        assert!(out.contains("CRITICAL"));
+        assert!(out.contains("95%"));
     }
 
     #[test]

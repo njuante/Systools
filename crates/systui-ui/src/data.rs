@@ -5,7 +5,9 @@
 //! foundation's single-collector wiring; phase 1 generalises it into a proper
 //! controller with background refresh.
 
-use systui_collectors::{FailedUnitsCollector, LogsCollector, ProcessCollector, SystemCollector};
+use systui_collectors::{
+    FailedUnitsCollector, LogsCollector, ProcessCollector, SystemCollector, evaluate_health,
+};
 use systui_core::{Collector, CoreError, Transport};
 use tokio::runtime::Runtime;
 
@@ -19,7 +21,6 @@ pub fn refresh_blocking(runtime: &Runtime, transport: &dyn Transport, app: &mut 
     app.view_state = ViewState::Loading;
     match runtime.block_on(SystemCollector::new().collect(transport)) {
         Ok(snapshot) => {
-            app.snapshot = Some(snapshot);
             app.processes = runtime
                 .block_on(ProcessCollector::new().collect(transport))
                 .unwrap_or_default();
@@ -29,6 +30,14 @@ pub fn refresh_blocking(runtime: &Runtime, transport: &dyn Transport, app: &mut 
             app.logs = runtime
                 .block_on(LogsCollector::new().collect(transport))
                 .unwrap_or_default();
+            let recent_errors = app.logs.iter().filter(|e| e.is_error()).count();
+            app.health = Some(evaluate_health(
+                &snapshot,
+                app.failed_units.len(),
+                recent_errors,
+                &app.thresholds,
+            ));
+            app.snapshot = Some(snapshot);
             app.view_state = ViewState::Ready;
         }
         Err(err) => apply_error(app, err),

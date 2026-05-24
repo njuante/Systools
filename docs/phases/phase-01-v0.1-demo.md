@@ -82,8 +82,10 @@ This builds directly on the phase-0 foundation: collectors run through a
   error-or-worse entries via `journalctl -o json`; Logs tab shows a TIME/PRIO/
   SOURCE/MESSAGE table (priority-colored) and the dashboard shows a recent-error
   count.
-- **S1.7 — Checks & refresh**: threshold checks feeding the dashboard; manual +
-  auto refresh wired to config.
+- **S1.7 — Checks & refresh** *(done)*: `evaluate_health` produces an explainable
+  score + prioritized findings from disk/RAM/swap/load thresholds, failed units and
+  recent errors; the dashboard shows the score (color-banded) and findings. The UI
+  now takes `Config`: auto-refresh every `default_refresh_seconds` plus manual `r`.
 - **S1.8 — Minimal Markdown report** + polish → **tag v0.1**.
 
 ## Definition of Done

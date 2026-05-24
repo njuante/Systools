@@ -83,8 +83,57 @@ fn render_content(frame: &mut Frame, app: &App, area: Rect) {
         }
         (ViewState::Ready, _, Tab::Processes) => render_processes(frame, app, inner),
         (ViewState::Ready, _, Tab::Services) => render_services(frame, app, inner),
+        (ViewState::Ready, _, Tab::Logs) => render_logs(frame, app, inner),
         _ => render_message(frame, app, tab, inner),
     }
+}
+
+fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
+    if app.logs.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No recent error logs.",
+                Style::new().fg(app.theme.ok),
+            ))
+            .alignment(Alignment::Center),
+            area,
+        );
+        return;
+    }
+
+    let priority_color = |entry: &systui_collectors::LogEntry| {
+        if entry.priority <= 3 {
+            app.theme.danger
+        } else if entry.priority == 4 {
+            app.theme.warn
+        } else {
+            app.theme.dim
+        }
+    };
+
+    let header = Row::new(["TIME", "PRIO", "SOURCE", "MESSAGE"])
+        .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
+    let body = app.logs.iter().map(|e| {
+        Row::new([
+            Cell::from(e.time.clone()),
+            Cell::from(Span::styled(
+                e.priority_label().to_owned(),
+                Style::new().fg(priority_color(e)),
+            )),
+            Cell::from(e.identifier.clone()),
+            Cell::from(e.message.clone()),
+        ])
+    });
+    let widths = [
+        Constraint::Length(9),
+        Constraint::Length(6),
+        Constraint::Length(18),
+        Constraint::Min(10),
+    ];
+    let table = Table::new(body, widths)
+        .header(header)
+        .style(Style::new().fg(app.theme.text));
+    frame.render_widget(table, area);
 }
 
 fn render_services(frame: &mut Frame, app: &App, area: Rect) {
@@ -262,20 +311,23 @@ fn dashboard_text(app: &App, snap: &SystemSnapshot) -> Text<'static> {
     ];
 
     let failed = app.failed_units.len();
+    let errors = app.logs.iter().filter(|e| e.is_error()).count();
+    let count_style = |n: usize| {
+        if n > 0 {
+            Style::new()
+                .fg(app.theme.danger)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(app.theme.ok)
+        }
+    };
     lines.insert(
         2,
         Line::from(vec![
             Span::styled("failed units: ", dim),
-            Span::styled(
-                failed.to_string(),
-                if failed > 0 {
-                    Style::new()
-                        .fg(app.theme.danger)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::new().fg(app.theme.ok)
-                },
-            ),
+            Span::styled(failed.to_string(), count_style(failed)),
+            Span::styled("   recent errors: ", dim),
+            Span::styled(errors.to_string(), count_style(errors)),
         ]),
     );
 
@@ -759,5 +811,26 @@ mod tests {
 
         let out = render_to_string(&app, 100, 24);
         assert!(out.contains("No failed units"));
+    }
+
+    #[test]
+    fn logs_tab_lists_recent_errors() {
+        use systui_collectors::LogEntry;
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.logs = vec![LogEntry {
+            time: "09:12:00".to_owned(),
+            priority: 3,
+            identifier: "nginx".to_owned(),
+            message: "upstream timed out".to_owned(),
+        }];
+        app.view_state = ViewState::Ready;
+        app.select_tab(4); // Logs
+
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("PRIO"));
+        assert!(out.contains("ERR"));
+        assert!(out.contains("nginx"));
+        assert!(out.contains("upstream timed out"));
     }
 }

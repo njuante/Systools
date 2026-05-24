@@ -78,7 +78,10 @@ This builds directly on the phase-0 foundation: collectors run through a
 - **S1.5 — Failed systemd units** *(done)*: `FailedUnitsCollector`
   (`systemctl --failed`) + Services tab listing failed units, plus a failed-unit
   count on the dashboard. Added severity colors (ok/warn/danger) to the theme.
-- **S1.6 — Basic journald logs**: recent critical/error lines + simple view.
+- **S1.6 — Basic journald logs** *(done)*: `LogsCollector` reads recent
+  error-or-worse entries via `journalctl -o json`; Logs tab shows a TIME/PRIO/
+  SOURCE/MESSAGE table (priority-colored) and the dashboard shows a recent-error
+  count.
 - **S1.7 — Checks & refresh**: threshold checks feeding the dashboard; manual +
   auto refresh wired to config.
 - **S1.8 — Minimal Markdown report** + polish → **tag v0.1**.

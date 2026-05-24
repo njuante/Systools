@@ -92,9 +92,9 @@ offline once dependencies are cached.
 Source of truth is `git log` and the active phase context file — check them, this
 snapshot may lag.
 
-- **`v0.4` complete and tagged on `main`.** Each version is built on
+- **`v0.5` complete and tagged on `main`.** Each version is built on
   `release/vX.Y` from `main`, then merged `--no-ff` + tagged at the end of its phase.
-  `v0.1`, `v0.2`, `v0.3` and `v0.4` are tagged on `main`.
+  `v0.1` through `v0.5` are tagged on `main`.
 - **Phase 0 (Foundation) complete**: workspace, contracts, Local/Mock transports,
   CLI + config + tracing, TUI shell, async/sync bridge.
 - **Phase 1 / v0.1 complete**: dashboard with health score + findings,
@@ -125,8 +125,21 @@ snapshot may lag.
   schedule/next-run + timers + warnings) with **dashboard Docker/Crons hooks**.
   Docker + cron findings are merged into the shared findings list; `a` on the Docker
   tab plans a state-aware lifecycle action through the engine.
-- **Next: Phase 5 / v0.5 — start with the phase context file** (`docs/phases/`)
-  before any code, per the methodology. Read `docs/ROADMAP.md` for the v0.5 scope.
+- **Phase 5 / v0.5 (Remote SSH) complete** (S5.1–S5.5): **`SshTransport`** over the
+  system OpenSSH client implementing the full `Transport` contract (key/agent auth,
+  custom port, timeouts, stdin forwarding) with a single fixture-tested POSIX
+  shell-quoting layer at the SSH boundary and error mapping mirroring
+  `LocalTransport`; `Config::resolve_target` (inventory id or `user@host`) wiring
+  `systui ssh <target>` to the same TUI as local, honouring per-host `read_only`;
+  **`HostCapabilities`/`probe_capabilities`** (root/sudo detection) that degrade
+  `Privileged → SafeActions` for a non-privileged user and label the title bar.
+  Parity audit confirmed every module runs over SSH unchanged (all host access is
+  via the `Transport`); the UI is identical local vs remote apart from the host
+  label. Note: v0.5 requires non-interactive auth (`BatchMode`); a native Rust SSH
+  backend remains deferred but enabled by the trait boundary.
+- **Next: Phase 6 / v0.6 — Reports.** Start with the phase context file
+  (`docs/phases/`) before any code, per the methodology. Read `docs/ROADMAP.md`
+  for the v0.6 scope.
 
 ## Starting a session
 

@@ -106,6 +106,16 @@ run the same `CommandSpec`s and read the same files we read locally.
 - **S5.5 — Local/remote parity** + polish: verify every module over SSH, fix any
   local-only assumptions, confirm the UI is identical → **tag v0.5** (final session:
   merge `--no-ff` into `main` + tag).
+  **Done.** Parity audit confirmed **no module touches the host outside the
+  `Transport`** (collectors, security, actions, UI and report contain no direct
+  `std::fs`/`std::process`/`LocalTransport` use; the only `std::env` is the local
+  operator name for the audit record), so every module works over `SshTransport`
+  with zero module changes — verified at the SSH boundary by a round-trip test of
+  the real collector commands (`ps`/`systemctl`/`ss`/`docker`/`journalctl`/`stat`).
+  Read-only is enforced by the action engine identically for any transport, and
+  permission limits already surface as partial data. Polish: an actionable SSH
+  connection-failure message (key/agent/known_hosts hint) and a "Connecting to …"
+  notice before the TUI takes the screen.
 
 ## Definition of Done
 

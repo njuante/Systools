@@ -143,10 +143,17 @@ impl SshTransport {
     /// SSH-level failure (code 255) becomes a [`CoreError::Transport`].
     fn ssh_failed(&self, output: &std::process::Output) -> Option<CoreError> {
         (output.status.code() == Some(SSH_FAILURE_CODE)).then(|| {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let detail = stderr.trim();
+            let detail = if detail.is_empty() {
+                "no output from ssh"
+            } else {
+                detail
+            };
             CoreError::Transport(format!(
-                "ssh connection to {} failed: {}",
-                self.label,
-                String::from_utf8_lossy(&output.stderr).trim()
+                "ssh connection to {} failed: {detail} \
+                 (SysTUI connects non-interactively — check your SSH key/agent and known_hosts)",
+                self.label
             ))
         })
     }
@@ -421,6 +428,51 @@ mod tests {
         assert_eq!(entries[0].file_type, FileType::Dir);
         assert_eq!(entries[1].file_type, FileType::File);
         assert_eq!(entries[2].file_type, FileType::Symlink);
+    }
+
+    #[test]
+    fn representative_collector_commands_round_trip() {
+        // Real commands issued by the collectors must survive the SSH boundary
+        // unchanged in meaning: safe tokens pass through, only those with shell
+        // metacharacters (spaces, braces) get quoted — preserving the argv.
+        let cases = [
+            (
+                CommandSpec::new("ps").args(["-eo", "pid,ppid,user,pcpu,pmem,comm"]),
+                "ps -eo pid,ppid,user,pcpu,pmem,comm",
+            ),
+            (
+                CommandSpec::new("systemctl").args([
+                    "list-units",
+                    "--type=service",
+                    "--all",
+                    "--no-legend",
+                    "--no-pager",
+                ]),
+                "systemctl list-units --type=service --all --no-legend --no-pager",
+            ),
+            (CommandSpec::new("ss").arg("-tulpn"), "ss -tulpn"),
+            (
+                CommandSpec::new("docker").args([
+                    "ps",
+                    "-a",
+                    "--no-trunc",
+                    "--format",
+                    "{{json .}}",
+                ]),
+                "docker ps -a --no-trunc --format '{{json .}}'",
+            ),
+            (
+                CommandSpec::new("journalctl").args(["-u", "ssh", "--no-pager", "-n", "2000"]),
+                "journalctl -u ssh --no-pager -n 2000",
+            ),
+            (
+                CommandSpec::new("stat").args(["-c", "%a %U %G %n", "/etc/passwd"]),
+                "stat -c '%a %U %G %n' /etc/passwd",
+            ),
+        ];
+        for (spec, expected) in cases {
+            assert_eq!(build_remote_command(&spec), expected);
+        }
     }
 
     #[test]

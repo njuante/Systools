@@ -106,6 +106,9 @@ fn run_ssh(target: &str, mode: ExecutionMode, config: &Config) -> anyhow::Result
         transport.label().to_owned()
     };
     tracing::info!(host = %label, %effective_mode, "connecting over ssh");
+    // The first refresh opens the SSH connection (up to the connect timeout)
+    // before the TUI takes the screen, so give immediate feedback.
+    eprintln!("Connecting to {label} …");
 
     systui_ui::run(Box::new(transport), label, effective_mode, config)?;
     Ok(())

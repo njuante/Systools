@@ -8,8 +8,8 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Tabs, Wrap};
 use regex::RegexBuilder;
 use systui_collectors::{
-    Container, CronEntry, Disk, ExposureEntry, LogEntry, NetworkSnapshot, SystemSnapshot,
-    parse_schedule,
+    BindScope, Container, CronEntry, DatabaseInstance, Disk, ExposureEntry, LogEntry,
+    NetworkSnapshot, SystemSnapshot, parse_schedule,
 };
 use systui_core::{Finding, ModuleId, Severity};
 
@@ -167,6 +167,7 @@ fn render_content(frame: &mut Frame, app: &App, area: Rect) {
         (ViewState::Ready, _, Tab::Network) => render_network(frame, app, inner),
         (ViewState::Ready, _, Tab::Docker) => render_docker(frame, app, inner),
         (ViewState::Ready, _, Tab::Crons) => render_crons(frame, app, inner),
+        (ViewState::Ready, _, Tab::Databases) => render_databases(frame, app, inner),
         (ViewState::Ready, _, Tab::Security) => render_security(frame, app, inner),
         _ => render_message(frame, app, tab, inner),
     }
@@ -821,6 +822,195 @@ fn render_cron_warnings(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
         area,
     );
+}
+
+fn render_databases(frame: &mut Frame, app: &App, area: Rect) {
+    if app.databases.instances.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No database services found.",
+                Style::new().fg(app.theme.dim),
+            ))
+            .alignment(Alignment::Center),
+            area,
+        );
+        return;
+    }
+
+    let rows =
+        Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)]).split(area);
+    render_database_table(frame, app, rows[0]);
+    render_database_detail(frame, app, rows[1]);
+}
+
+fn render_database_table(frame: &mut Frame, app: &App, area: Rect) {
+    let header = Row::new(["ENGINE", "SERVICE", "ENDPOINT", "EXPOSURE", "VERSION"])
+        .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
+    let body = app.databases.instances.iter().enumerate().map(|(i, db)| {
+        let exposure = database_exposure_label(db);
+        let exposure_color = match db.exposure {
+            Some(BindScope::External) => app.theme.danger,
+            Some(BindScope::Loopback) => app.theme.ok,
+            None => app.theme.dim,
+        };
+        let row = Row::new([
+            Cell::from(db.engine.label()),
+            Cell::from(
+                db.service
+                    .as_ref()
+                    .map(|s| s.unit.clone())
+                    .unwrap_or_else(|| "-".to_owned()),
+            ),
+            Cell::from(db.endpoint().unwrap_or_else(|| "-".to_owned())),
+            Cell::from(Span::styled(exposure, Style::new().fg(exposure_color))),
+            Cell::from(db.version.clone().unwrap_or_else(|| "-".to_owned())),
+        ]);
+        if i == app.databases_selected {
+            row.style(selected_style(app))
+        } else {
+            row
+        }
+    });
+    let widths = [
+        Constraint::Length(15),
+        Constraint::Length(28),
+        Constraint::Length(22),
+        Constraint::Length(10),
+        Constraint::Min(10),
+    ];
+    let table = Table::new(body, widths)
+        .header(header)
+        .style(Style::new().fg(app.theme.text));
+    frame.render_widget(table, area);
+}
+
+fn render_database_detail(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(db) = app.selected_database() else {
+        return;
+    };
+    let dim = Style::new().fg(app.theme.dim);
+    let accent = Style::new()
+        .fg(app.theme.accent)
+        .add_modifier(Modifier::BOLD);
+    let text_s = Style::new().fg(app.theme.text);
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled(db.engine.label(), accent),
+        Span::styled(
+            format!(
+                "  {}",
+                db.endpoint().unwrap_or_else(|| "no listener".to_owned())
+            ),
+            dim,
+        ),
+    ])];
+
+    if let Some(service) = &db.service {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  service {} active={} sub={}",
+                service.unit, service.active, service.sub
+            ),
+            text_s,
+        )));
+    }
+    if let Some(process) = db.process() {
+        lines.push(Line::from(Span::styled(
+            format!("  process {} pid {}", process.name, process.pid),
+            text_s,
+        )));
+    }
+
+    let op = &db.operational;
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Operational signals", accent)));
+    push_operational_line(
+        &mut lines,
+        "connections",
+        op.connection_summary.as_deref(),
+        dim,
+        text_s,
+    );
+    push_operational_line(&mut lines, "size", op.size_summary.as_deref(), dim, text_s);
+    push_operational_line(
+        &mut lines,
+        "replication",
+        op.replication_summary.as_deref(),
+        dim,
+        text_s,
+    );
+    push_operational_line(&mut lines, "locks", op.lock_summary.as_deref(), dim, text_s);
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("Recent errors ({})", op.recent_errors.len()),
+        accent,
+    )));
+    if op.recent_errors.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  none",
+            Style::new().fg(app.theme.ok),
+        )));
+    }
+    for entry in op.recent_errors.iter().take(4) {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {} ", entry.priority_label()),
+                Style::new().fg(app.theme.danger),
+            ),
+            Span::styled(format!("{} ", entry.time), dim),
+            Span::styled(entry.message.clone(), text_s),
+        ]));
+    }
+
+    let db_findings: Vec<&Finding> = app
+        .findings
+        .iter()
+        .filter(|f| f.module == ModuleId::Databases)
+        .collect();
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("Database findings ({})", db_findings.len()),
+        accent,
+    )));
+    if db_findings.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  none",
+            Style::new().fg(app.theme.ok),
+        )));
+    }
+    for finding in db_findings.iter().take(4) {
+        lines.push(finding_header(app, finding));
+    }
+    for note in op.notes.iter().take(3) {
+        lines.push(Line::from(Span::styled(format!("  note: {note}"), dim)));
+    }
+
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn database_exposure_label(db: &DatabaseInstance) -> String {
+    match db.exposure {
+        Some(BindScope::External) => "external".to_owned(),
+        Some(BindScope::Loopback) => "loopback".to_owned(),
+        None => "unknown".to_owned(),
+    }
+}
+
+fn push_operational_line(
+    lines: &mut Vec<Line<'static>>,
+    label: &str,
+    value: Option<&str>,
+    dim: Style,
+    text_s: Style,
+) {
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {label:<12}"), dim),
+        Span::styled(value.unwrap_or("unavailable").to_owned(), text_s),
+    ]));
 }
 
 fn render_security(frame: &mut Frame, app: &App, area: Rect) {
@@ -1713,7 +1903,7 @@ mod tests {
             ),
         ];
         app.view_state = ViewState::Ready;
-        app.select_tab(8); // Security
+        app.select_tab(9); // Security
 
         let out = render_to_string(&app, 100, 30);
         assert!(out.contains("SSH permits direct root login"));
@@ -1730,7 +1920,7 @@ mod tests {
         let mut app = App::new("local", ExecutionMode::ReadOnly);
         app.snapshot = Some(sample_snapshot());
         app.view_state = ViewState::Ready;
-        app.select_tab(8);
+        app.select_tab(9);
         let out = render_to_string(&app, 100, 24);
         assert!(out.contains("No findings"));
     }
@@ -1936,6 +2126,70 @@ mod tests {
         assert!(out.contains("logrotate.timer"));
         assert!(out.contains("Warnings"));
         assert!(out.contains("not captured"));
+    }
+
+    #[test]
+    fn databases_tab_lists_instances_and_operational_signals() {
+        use systui_collectors::{
+            BindScope, DatabaseEngine, DatabaseInstance, DatabaseOperational, DatabaseService,
+            DatabaseSnapshot, Listener, LogEntry, ProcessRef, Protocol,
+        };
+        use systui_core::{Finding, ModuleId, Severity};
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.databases = DatabaseSnapshot {
+            instances: vec![DatabaseInstance {
+                engine: DatabaseEngine::Redis,
+                service: Some(DatabaseService {
+                    unit: "redis-server.service".to_owned(),
+                    active: "active".to_owned(),
+                    sub: "running".to_owned(),
+                    description: "Redis".to_owned(),
+                }),
+                listener: Some(Listener {
+                    protocol: Protocol::Tcp,
+                    local_ip: "0.0.0.0".to_owned(),
+                    port: 6379,
+                    process: Some(ProcessRef {
+                        pid: 1500,
+                        name: "redis-server".to_owned(),
+                    }),
+                    unit: Some("redis-server.service".to_owned()),
+                }),
+                version: Some("Redis server v=7.0.15".to_owned()),
+                exposure: Some(BindScope::External),
+                operational: DatabaseOperational {
+                    connection_summary: Some("12 connected clients".to_owned()),
+                    size_summary: Some("10.40M memory, 1200 keys".to_owned()),
+                    replication_summary: Some("master with 2 replicas".to_owned()),
+                    lock_summary: Some("1 blocked clients".to_owned()),
+                    recent_errors: vec![LogEntry {
+                        time: "09:00:00".to_owned(),
+                        priority: 3,
+                        identifier: "redis-server".to_owned(),
+                        message: "background save failed".to_owned(),
+                    }],
+                    notes: Vec::new(),
+                },
+                detected_by: vec!["default port 6379".to_owned()],
+            }],
+        };
+        app.findings = vec![Finding::new(
+            "db.exposed.redis.6379",
+            Severity::Critical,
+            ModuleId::Databases,
+            "Redis is reachable on a non-loopback address",
+        )];
+        app.view_state = ViewState::Ready;
+        app.select_tab(8); // Databases
+
+        let out = render_to_string(&app, 120, 34);
+        assert!(out.contains("Redis"));
+        assert!(out.contains("0.0.0.0:6379"));
+        assert!(out.contains("external"));
+        assert!(out.contains("12 connected clients"));
+        assert!(out.contains("background save failed"));
+        assert!(out.contains("Database findings"));
     }
 
     #[test]

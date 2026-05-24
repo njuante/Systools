@@ -102,6 +102,7 @@ mod tests {
             }),
             version: None,
             exposure: Some(BindScope::External),
+            operational: Default::default(),
             detected_by: vec![format!("default port {port}")],
         }
     }

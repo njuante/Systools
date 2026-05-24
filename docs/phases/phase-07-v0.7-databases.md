@@ -82,6 +82,13 @@ operations, and producing recent errors, locally or over SSH.
 - **S7.3 - Operational panels**: add read-only operational probes for
   connections, sizes, recent errors and replication/lock indicators; render a
   Databases TUI tab with list/detail state.
+  **Done.** Database instances now carry best-effort `DatabaseOperational`
+  signals: TCP connection summaries from the network snapshot, recent error logs
+  from the owning systemd unit, and optional no-secret CLI enrichers for Redis
+  `INFO`, PostgreSQL `pg_stat_*`, MySQL/MariaDB status/table size and MongoDB
+  `serverStatus`. Missing CLIs, auth or listeners add partial-data notes instead
+  of failing collection. The TUI has a `Databases` tab with list/detail state,
+  operational signals, recent errors and database findings.
 - **S7.4 - DB checks + credentials handling**: add safe credential-source handling
   and engine-specific health checks, integrate database output into reports,
   polish, merge `--no-ff` into `main` and tag `v0.7`.

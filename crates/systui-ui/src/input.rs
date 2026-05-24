@@ -69,6 +69,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Tab | KeyCode::Right => app.next_tab(),
         KeyCode::BackTab | KeyCode::Left => app.prev_tab(),
         KeyCode::Char(c @ '1'..='9') => app.select_tab(c as usize - '1' as usize),
+        KeyCode::Char('0') => app.select_tab(9),
         _ => {}
     }
 }
@@ -113,6 +114,8 @@ mod tests {
         let mut app = App::new("local", ExecutionMode::ReadOnly);
         handle_key(&mut app, press(KeyCode::Char('4')));
         assert_eq!(app.current_tab(), crate::app::Tab::Services);
+        handle_key(&mut app, press(KeyCode::Char('0')));
+        assert_eq!(app.current_tab(), crate::app::Tab::Security);
     }
 
     #[test]

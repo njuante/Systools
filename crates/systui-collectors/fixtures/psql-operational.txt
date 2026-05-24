@@ -1,0 +1,4 @@
+connections=14
+locks_waiting=2
+replicas=1
+size=42 MB

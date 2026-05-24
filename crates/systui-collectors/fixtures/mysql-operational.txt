@@ -1,0 +1,5 @@
+Threads_connected	8
+Max_used_connections	24
+Database_size	128.0 MiB
+Replica_IO_Running	Yes
+Replica_SQL_Running	No

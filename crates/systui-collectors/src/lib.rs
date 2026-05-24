@@ -25,8 +25,8 @@ pub use cron::{
     parse_crontab, parse_schedule,
 };
 pub use database::{
-    DatabaseCollector, DatabaseEngine, DatabaseInstance, DatabaseService, DatabaseSnapshot,
-    detect_database_instances,
+    DatabaseCollector, DatabaseEngine, DatabaseInstance, DatabaseOperational, DatabaseService,
+    DatabaseSnapshot, detect_database_instances,
 };
 pub use docker::{
     Container, ContainerHealth, ContainerStats, DockerCollector, InspectSummary, Mount,

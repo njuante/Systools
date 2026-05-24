@@ -404,12 +404,13 @@ fn crons(out: &mut String, report: &Report) {
     } else {
         let _ = writeln!(
             out,
-            "<table><tr><th>Schedule</th><th>User</th><th>Command</th></tr>"
+            "<table><tr><th>State</th><th>Schedule</th><th>User</th><th>Command</th></tr>"
         );
         for entry in &report.crons {
             let _ = writeln!(
                 out,
-                "<tr><td><code>{}</code></td><td>{}</td><td>{}</td></tr>",
+                "<tr><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td></tr>",
+                if entry.enabled { "enabled" } else { "disabled" },
                 esc(&entry.schedule),
                 esc(entry.user.as_deref().unwrap_or("—")),
                 esc(&entry.command)

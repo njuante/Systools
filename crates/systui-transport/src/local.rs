@@ -145,10 +145,37 @@ mod tests {
         std::env::temp_dir().join(format!("systui-{}-{nanos}-{suffix}", std::process::id()))
     }
 
+    #[cfg(windows)]
+    fn echo_spec() -> CommandSpec {
+        CommandSpec::new("powershell")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg("[Console]::Out.Write('hello')")
+    }
+
+    #[cfg(not(windows))]
+    fn echo_spec() -> CommandSpec {
+        CommandSpec::new("echo").arg("hello")
+    }
+
+    #[cfg(windows)]
+    fn stdin_echo_spec(input: &str) -> CommandSpec {
+        CommandSpec::new("powershell")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg("$text = [Console]::In.ReadToEnd(); [Console]::Out.Write($text)")
+            .stdin(input)
+    }
+
+    #[cfg(not(windows))]
+    fn stdin_echo_spec(input: &str) -> CommandSpec {
+        CommandSpec::new("cat").stdin(input)
+    }
+
     #[tokio::test]
     async fn runs_echo() {
         let t = LocalTransport::new();
-        let out = t.run(&CommandSpec::new("echo").arg("hello")).await.unwrap();
+        let out = t.run(&echo_spec()).await.unwrap();
         assert!(out.success());
         assert_eq!(out.stdout.trim(), "hello");
     }
@@ -156,10 +183,7 @@ mod tests {
     #[tokio::test]
     async fn writes_stdin_to_the_process() {
         let t = LocalTransport::new();
-        let out = t
-            .run(&CommandSpec::new("cat").stdin("piped input"))
-            .await
-            .unwrap();
+        let out = t.run(&stdin_echo_spec("piped input")).await.unwrap();
         assert!(out.success());
         assert_eq!(out.stdout, "piped input");
     }

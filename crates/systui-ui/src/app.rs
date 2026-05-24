@@ -2,15 +2,17 @@
 
 use chrono::{Local, NaiveDateTime};
 use systui_actions::{
-    ActionDecision, DockerAction, DockerOp, ServiceAction, ServiceOp, Signal, SignalAction,
+    ActionDecision, CronAction, DockerAction, DockerOp, ServiceAction, ServiceOp, Signal,
+    SignalAction,
 };
 use systui_collectors::{
-    Container, ContainerStats, CronEntry, DatabaseSnapshot, ExposureEntry, HealthReport,
-    HostCapabilities, InspectSummary, LogEntry, LogQuery, NetworkSnapshot, Process, ServiceUnit,
-    SystemSnapshot, SystemdTimer,
+    Container, ContainerStats, CronEntry, CronSource, DatabaseSnapshot, ExposureEntry,
+    HealthReport, HostCapabilities, InspectSummary, LogEntry, LogQuery, NetworkSnapshot, Process,
+    ServiceUnit, SystemSnapshot, SystemdTimer, parse_schedule,
 };
 use systui_core::{Action, ExecutionMode, Finding, ModuleId, Severity, Thresholds};
 
+use crate::form::{Field, Form};
 use crate::theme::Theme;
 
 /// A concrete action queued for the engine. An enum (not a trait object) so
@@ -20,6 +22,7 @@ pub enum PendingAction {
     Service(ServiceAction),
     Signal(SignalAction),
     Docker(DockerAction),
+    Cron(CronAction),
 }
 
 impl PendingAction {
@@ -28,8 +31,26 @@ impl PendingAction {
             PendingAction::Service(a) => a,
             PendingAction::Signal(a) => a,
             PendingAction::Docker(a) => a,
+            PendingAction::Cron(a) => a,
         }
     }
+}
+
+/// Whether the cron form creates a new job or edits an existing user-crontab job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CronFormMode {
+    Add,
+    Edit {
+        original_schedule: String,
+        original_command: String,
+    },
+}
+
+/// Cron form overlay state.
+#[derive(Debug, Clone)]
+pub struct CronFormState {
+    pub mode: CronFormMode,
+    pub form: Form,
 }
 
 /// Stage of the action confirmation modal.
@@ -246,6 +267,7 @@ pub struct App {
     pub processes_selected: usize,
     pub action: Option<ActionModal>,
     pub pending: Option<PendingAction>,
+    pub cron_form: Option<CronFormState>,
     pub show_help: bool,
     pub should_quit: bool,
     pub refresh_requested: bool,
@@ -293,6 +315,7 @@ impl App {
             processes_selected: 0,
             action: None,
             pending: None,
+            cron_form: None,
             show_help: false,
             should_quit: false,
             refresh_requested: false,
@@ -477,6 +500,11 @@ impl App {
         self.databases.instances.get(self.databases_selected)
     }
 
+    /// The cron entry currently selected on the Crons tab, if any.
+    pub fn selected_cron(&self) -> Option<&CronEntry> {
+        self.crons.get(self.crons_selected)
+    }
+
     /// Move the selection down within the active list.
     pub fn select_down(&mut self) {
         let len = self.selection_len();
@@ -542,6 +570,141 @@ impl App {
         }
     }
 
+    /// Open a form for adding a user-crontab entry.
+    pub fn open_add_cron_form(&mut self) {
+        if self.mode == ExecutionMode::ReadOnly {
+            self.set_decision(ActionDecision::Rejected(
+                "cron management is disabled in read-only mode".to_owned(),
+            ));
+            return;
+        }
+        self.cron_form = Some(CronFormState {
+            mode: CronFormMode::Add,
+            form: cron_form("Add cron job", "", ""),
+        });
+    }
+
+    /// Open a form for editing the selected user-crontab entry.
+    pub fn open_edit_cron_form(&mut self) {
+        if self.mode == ExecutionMode::ReadOnly {
+            self.set_decision(ActionDecision::Rejected(
+                "cron management is disabled in read-only mode".to_owned(),
+            ));
+            return;
+        }
+        let Some(entry) = self.selected_user_cron().cloned() else {
+            self.set_decision(ActionDecision::Rejected(
+                "select a user crontab entry to edit".to_owned(),
+            ));
+            return;
+        };
+        self.cron_form = Some(CronFormState {
+            mode: CronFormMode::Edit {
+                original_schedule: entry.schedule.clone(),
+                original_command: entry.command.clone(),
+            },
+            form: cron_form("Edit cron job", &entry.schedule, &entry.command),
+        });
+    }
+
+    /// Delete the selected user-crontab entry through the action engine.
+    pub fn request_delete_cron(&mut self) {
+        if let Some(action) = self
+            .selected_user_cron()
+            .map(|entry| CronAction::delete(entry.schedule.clone(), entry.command.clone()))
+        {
+            self.pending = Some(PendingAction::Cron(action));
+            self.action_plan_requested = true;
+        } else {
+            self.set_decision(ActionDecision::Rejected(
+                "select a user crontab entry to delete".to_owned(),
+            ));
+        }
+    }
+
+    /// Toggle the selected user-crontab entry between active and commented out.
+    pub fn request_toggle_cron(&mut self) {
+        if let Some(action) = self.selected_user_cron().map(|entry| {
+            if entry.enabled {
+                CronAction::disable(entry.schedule.clone(), entry.command.clone())
+            } else {
+                CronAction::enable(entry.schedule.clone(), entry.command.clone())
+            }
+        }) {
+            self.pending = Some(PendingAction::Cron(action));
+            self.action_plan_requested = true;
+        } else {
+            self.set_decision(ActionDecision::Rejected(
+                "select a user crontab entry to toggle".to_owned(),
+            ));
+        }
+    }
+
+    /// Submit the open cron form and route the resulting mutation through the
+    /// action engine.
+    pub fn submit_cron_form(&mut self) {
+        let Some(mut state) = self.cron_form.take() else {
+            return;
+        };
+        let schedule = state.form.value("Schedule").to_owned();
+        let command = state.form.value("Command").to_owned();
+        if schedule.is_empty() || command.is_empty() {
+            state.form.error = Some("schedule and command are required".to_owned());
+            self.cron_form = Some(state);
+            return;
+        }
+        if let Err(err) = parse_schedule(&schedule) {
+            state.form.error = Some(format!("invalid schedule: {err}"));
+            self.cron_form = Some(state);
+            return;
+        }
+
+        let action = match state.mode {
+            CronFormMode::Add => CronAction::add(schedule, command),
+            CronFormMode::Edit {
+                original_schedule,
+                original_command,
+            } => CronAction::edit(original_schedule, original_command, schedule, command),
+        };
+        self.pending = Some(PendingAction::Cron(action));
+        self.action_plan_requested = true;
+    }
+
+    pub fn close_cron_form(&mut self) {
+        self.cron_form = None;
+    }
+
+    pub fn cron_form_focus_next(&mut self) {
+        if let Some(state) = &mut self.cron_form {
+            state.form.focus_next();
+        }
+    }
+
+    pub fn cron_form_focus_prev(&mut self) {
+        if let Some(state) = &mut self.cron_form {
+            state.form.focus_prev();
+        }
+    }
+
+    pub fn cron_form_push_char(&mut self, c: char) {
+        if let Some(state) = &mut self.cron_form {
+            state.form.error = None;
+            state.form.push_char(c);
+        }
+    }
+
+    pub fn cron_form_pop_char(&mut self) {
+        if let Some(state) = &mut self.cron_form {
+            state.form.error = None;
+            state.form.pop_char();
+        }
+    }
+
+    fn selected_user_cron(&self) -> Option<&CronEntry> {
+        self.selected_cron()
+            .filter(|entry| entry.source == CronSource::User)
+    }
+
     /// Apply the engine's planning decision to the modal.
     pub fn set_decision(&mut self, decision: ActionDecision) {
         self.action = Some(ActionModal::from_decision(decision));
@@ -594,6 +757,16 @@ impl App {
     pub fn quit(&mut self) {
         self.should_quit = true;
     }
+}
+
+fn cron_form(title: &str, schedule: &str, command: &str) -> Form {
+    Form::new(
+        title,
+        vec![
+            Field::text("Schedule", schedule).with_hint("five fields or @daily"),
+            Field::text("Command", command),
+        ],
+    )
 }
 
 #[cfg(test)]

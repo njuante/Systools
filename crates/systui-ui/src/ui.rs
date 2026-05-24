@@ -8,12 +8,13 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Tabs, Wrap};
 use regex::RegexBuilder;
 use systui_collectors::{
-    BindScope, Container, CronEntry, DatabaseInstance, Disk, ExposureEntry, LogEntry,
+    BindScope, Container, CronEntry, CronSource, DatabaseInstance, Disk, ExposureEntry, LogEntry,
     NetworkSnapshot, SystemSnapshot, parse_schedule,
 };
 use systui_core::{Finding, ModuleId, Severity};
 
 use crate::app::{ActionStage, App, InputMode, Tab, ViewState};
+use crate::form::render_form;
 
 /// Draw the whole UI for the current state.
 pub fn render(frame: &mut Frame, app: &App) {
@@ -35,6 +36,9 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
     if app.action.is_some() {
         render_action_modal(frame, app);
+    }
+    if let Some(state) = &app.cron_form {
+        render_form(frame, &state.form, &app.theme);
     }
 }
 
@@ -339,6 +343,7 @@ fn render_processes(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled("(s to toggle)", Style::new().fg(app.theme.dim)),
     ]);
     frame.render_widget(Paragraph::new(hint), rows[0]);
+    let area = rows[1];
 
     if app.processes.is_empty() {
         frame.render_widget(
@@ -346,7 +351,7 @@ fn render_processes(frame: &mut Frame, app: &App, area: Rect) {
                 "No process data.",
                 Style::new().fg(app.theme.dim),
             )),
-            rows[1],
+            area,
         );
         return;
     }
@@ -397,13 +402,14 @@ fn severity_badge(severity: Severity) -> String {
 }
 
 fn render_network(frame: &mut Frame, app: &App, area: Rect) {
+    let rows = [area, area];
     let Some(net) = &app.network else {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 "No network data — `ip`/`ss` unavailable.",
                 Style::new().fg(app.theme.dim),
             )),
-            area,
+            rows[1],
         );
         return;
     };
@@ -704,21 +710,49 @@ fn render_crons(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_cron_jobs(frame: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    let user_jobs = app
+        .crons
+        .iter()
+        .filter(|entry| entry.source == CronSource::User)
+        .count();
+    let hint = if app.mode == systui_core::ExecutionMode::ReadOnly {
+        "read-only mode"
+    } else {
+        "a add  e edit  d delete  x enable/disable user crontab"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("Jobs {}  user {}", app.crons.len(), user_jobs),
+                Style::new().fg(app.theme.text),
+            ),
+            Span::styled(format!("  |  {hint}"), Style::new().fg(app.theme.dim)),
+        ])),
+        rows[0],
+    );
     if app.crons.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
                 "No cron jobs found.",
                 Style::new().fg(app.theme.dim),
             )),
-            area,
+            rows[1],
         );
         return;
     }
-    let header = Row::new(["SCHEDULE", "NEXT RUN", "USER", "COMMAND"])
+    let header = Row::new(["STATE", "SCHEDULE", "NEXT RUN", "USER", "COMMAND"])
         .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
     let body = app.crons.iter().enumerate().map(|(i, e)| {
         let (schedule, next) = cron_schedule_cells(app, e);
+        let state = if e.enabled { "enabled" } else { "disabled" };
+        let state_color = if e.enabled {
+            app.theme.ok
+        } else {
+            app.theme.dim
+        };
         let row = Row::new([
+            Cell::from(Span::styled(state, Style::new().fg(state_color))),
             Cell::from(schedule),
             Cell::from(next),
             Cell::from(e.user.clone().unwrap_or_else(|| "—".to_owned())),
@@ -731,6 +765,7 @@ fn render_cron_jobs(frame: &mut Frame, app: &App, area: Rect) {
         }
     });
     let widths = [
+        Constraint::Length(9),
         Constraint::Length(20),
         Constraint::Length(17),
         Constraint::Length(10),
@@ -739,7 +774,7 @@ fn render_cron_jobs(frame: &mut Frame, app: &App, area: Rect) {
     let table = Table::new(body, widths)
         .header(header)
         .style(Style::new().fg(app.theme.text));
-    frame.render_widget(table, area);
+    frame.render_widget(table, rows[1]);
 }
 
 /// The natural-language schedule and next-run cells for a cron entry. An invalid
@@ -1506,7 +1541,11 @@ fn human_uptime(secs: u64) -> String {
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let hint = " r refresh | / search | a actions | ? help | q quit ";
+    let hint = if app.current_tab() == Tab::Crons {
+        " r refresh | a add | e edit | d delete | x toggle | ? help | q quit "
+    } else {
+        " r refresh | / search | a actions | ? help | q quit "
+    };
     frame.render_widget(
         Paragraph::new(Line::from(hint)).style(Style::new().fg(app.theme.dim)),
         area,
@@ -1527,7 +1566,8 @@ fn render_help(frame: &mut Frame, app: &App) {
         ("Shift+Tab / ←", "previous tab"),
         ("1–9", "jump to tab"),
         ("↑ / ↓", "move selection (services/processes/docker/crons)"),
-        ("a", "act on selection (restart / signal / container)"),
+        ("a", "act on selection; add cron job on Crons"),
+        ("e / d / x", "edit, delete or toggle a user crontab entry"),
         ("r", "refresh"),
         ("s", "sort processes by CPU/memory"),
         ("/", "search logs (Esc to clear)"),
@@ -2116,6 +2156,7 @@ mod tests {
             command: "/opt/backup.sh".to_owned(),
             source: CronSource::System,
             origin: "/etc/crontab".to_owned(),
+            enabled: true,
         }];
         app.timers = vec![SystemdTimer {
             unit: "logrotate.timer".to_owned(),

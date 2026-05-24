@@ -27,6 +27,7 @@ substrate for `v0.1` and is built on the `release/v0.1` branch as the first sess
 | 6     | v0.6    | Reports                       | `release/v0.6`   |
 | 7     | v0.7    | Databases                     | `release/v0.7`   |
 | 8     | v0.8    | Fleet                         | `release/v0.8`   |
+| 8.5   | v0.8.1  | In-TUI management & UX polish | `release/v0.8.1` |
 | 9     | v0.9    | Policies & expected state     | `release/v0.9`   |
 | 10    | v1.0    | Stabilization & release       | `release/v1.0`   |
 
@@ -198,6 +199,37 @@ Sessions:
 - **S8.5 — Global reports** + polish → **tag v0.8** (inspection & reporting only, no mass destructive ops).
 
 **DoD:** see the state of 10–50 servers without entering each one.
+
+---
+
+## Phase 8.5 — v0.8.1 In-TUI management & UX polish
+
+**Goal:** make the inventory and the user crontab **manageable from inside the TUI**
+(not just viewable), and give the interface a layout polish. An intermediate phase
+inserted between Fleet (v0.8) and Policies (v0.9). Detailed scope in
+[`phases/phase-08-1-v0.8.1-management-ux.md`](phases/phase-08-1-v0.8.1-management-ux.md).
+
+Sessions:
+- **S8b.1 — Context**: `phase-08-1-v0.8.1-management-ux.md` + this insert.
+- **S8b.2 — Config persistence**: write `[hosts.<id>]` back to `config.toml` via
+  `toml_edit` (surgical, comment-preserving) + `systui-core` upsert/remove helpers.
+- **S8b.3 — Host management in the fleet TUI**: reusable form modal; add/edit/delete
+  inventory hosts; persist + re-gather; read-only guard.
+- **S8b.4 — Cron actions**: `CronAction` add/edit/delete/toggle on the **user
+  crontab** via the action engine (validate → preview → confirm → backup → audit),
+  built on `CommandSpec::stdin`.
+- **S8b.5 — Cron management in the Crons tab**: wire the form + `CronAction` into the
+  Crons tab.
+- **S8b.6 — Layout polish + close**: header/status bar, borders/spacing, severity
+  badges, readable tables, loading/empty/error states → **tag v0.8.1**.
+
+**DoD:** add/edit/delete SSH hosts (saved to `config.toml`) and add/edit/delete/
+toggle user-crontab entries (engine-mediated, validated, backed up, audited) from the
+TUI; system cron + timers stay read-only; mutations respect read-only mode; the TUI
+layout is visibly cleaner with render tests still passing.
+
+> System-wide cron (`/etc/cron.d`, timers), config sections other than `[hosts.*]`,
+> command palette and theme switching are **out of scope** (deferred).
 
 ---
 

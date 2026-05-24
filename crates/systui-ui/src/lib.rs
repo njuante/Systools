@@ -6,6 +6,7 @@
 pub mod app;
 pub mod data;
 pub mod fleet;
+pub mod form;
 pub mod input;
 pub mod theme;
 pub mod ui;

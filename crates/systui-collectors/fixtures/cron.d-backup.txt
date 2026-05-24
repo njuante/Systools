@@ -1,0 +1,2 @@
+# nightly backup job installed by the deploy role
+30 3 * * * deploy /opt/scripts/nightly.sh >> /var/log/nightly.log 2>&1

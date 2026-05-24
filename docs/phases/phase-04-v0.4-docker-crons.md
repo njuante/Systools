@@ -117,6 +117,12 @@ checks produce shared `Finding`s. Crons are **read-only/detection** this phase.
   unhealthy + restart loop ≥5 (Medium), `latest` tag + no memory limit (Low).
   Pure, worst-first, fixture-tested.
 - **S4.5 — Cron sources**: user crontab, `/etc/crontab`, `/etc/cron.d`, `cron.*`.
+  **Done.** `systui-collectors::cron`: `parse_crontab` (pure; handles the user field
+  for system crontabs, `@macro` schedules, and skips comments/blank/`NAME=value`
+  env lines) + `collect_cron_entries` gathering `crontab -l`, `/etc/crontab`,
+  `/etc/cron.d/*` and the `/etc/cron.{hourly,daily,weekly,monthly}` run-parts dirs
+  (run-parts ignore rules applied). `CronEntry { schedule, user, command, source,
+  origin }`. Best-effort/degrading, fixture-tested.
 - **S4.6 — Timers & validation**: systemd timers, cron expression validation,
   next-run preview.
 - **S4.7 — Cron checks** (missing script, no exec perms, no logging, duplicate,

@@ -117,12 +117,13 @@ snapshot may lag.
   via the action engine + `container_logs` reader); **S4.4** Docker risk checks
   (`docker_findings` over `InspectSummary`: privileged, docker.sock/dangerous mounts,
   sensitive published ports via reused `exposure_map`, unhealthy, restart loops,
-  `latest`, no mem limit).
-- **Next: S4.5 — Cron sources**: parse per-user `crontab -l`, `/etc/crontab`,
-  `/etc/cron.d/*` and `/etc/cron.{hourly,daily,weekly,monthly}` into cron entries
-  in `systui-collectors::cron`, fixture-tested. Then S4.6 timers + validation +
-  next-run, S4.7 cron checks + Docker/Crons tabs → tag `v0.4`. Read
-  `docs/phases/phase-04-v0.4-docker-crons.md` first.
+  `latest`, no mem limit); **S4.5** cron sources (`cron.rs`: `parse_crontab` +
+  `collect_cron_entries` over user/system/cron.d/periodic sources).
+- **Next: S4.6 — Timers & validation**: parse systemd timers (`systemctl
+  list-timers`), validate the cron expression (5 fields/`@macro`), render a
+  natural-language schedule and compute the next run(s). Decide the cron/next-run
+  crate vs `chrono` here. Then S4.7 cron checks + Docker/Crons tabs → tag `v0.4`.
+  Read `docs/phases/phase-04-v0.4-docker-crons.md` first.
 
 ## Starting a session
 

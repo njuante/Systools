@@ -92,9 +92,9 @@ offline once dependencies are cached.
 Source of truth is `git log` and the active phase context file — check them, this
 snapshot may lag.
 
-- **Current branch: `release/v0.3`** (Phase 3 in progress). Each version is built on
+- **Phase 3 / v0.3 complete; `v0.3` tagged on `main`.** Each version is built on
   `release/vX.Y` from `main`, then merged `--no-ff` + tagged at the end of its phase.
-  `v0.1` and `v0.2` are tagged on `main`.
+  `v0.1`, `v0.2` and `v0.3` are tagged on `main`. Phase 4 starts a new `release/v0.4`.
 - **Phase 0 (Foundation) complete**: workspace, contracts, Local/Mock transports,
   CLI + config + tracing, TUI shell, async/sync bridge.
 - **Phase 1 / v0.1 complete**: dashboard with health score + findings,
@@ -103,18 +103,16 @@ snapshot may lag.
   service + signal actions, log filters + incremental search, the **action engine**
   (guardrail → read-only → risk → preview → confirm → execute → verify), the **audit
   log**, and UI action invocation (select + `a` → confirm → run → audited).
-- **Phase 3 / v0.3 (Network & security) — in progress.** Done: **S3.1** context;
-  **S3.2** network collectors (`ip`/`ss`/resolv.conf → `NetworkSnapshot`); **S3.3**
-  port→process→systemd-unit correlation (via `/proc/<pid>/cgroup`); **S3.4** exposure
-  map (`exposure_map`, risk-ranked listeners with evidence); **S3.5** connectivity
-  tools (ping/DNS lookup/TCP connect); **S3.6** `core::Finding` model + `systui-security`
-  posture checks (SSH, sudo, failed logins, firewall, file perms, docker socket, SUID,
-  exposed ports) with `security_scan`; **S3.7** certificates (local + remote `host:443`
-  via `openssl`, expiry/self-signed). A core enabler `CommandSpec::stdin` was added in
-  S3.7 to pipe without a shell.
-- **Next: S3.8 — Security tab + polish**: Network/Security tabs render exposure +
-  findings, dashboard shows a findings/exposure summary → **tag `v0.3`**. This is the
-  final session of the phase. Read `docs/phases/phase-03-v0.3-net-security.md` first.
+- **Phase 3 / v0.3 (Network & security) complete** (S3.1–S3.8): network collectors
+  (`ip`/`ss`/resolv.conf → `NetworkSnapshot`), port→process→systemd-unit correlation
+  (via `/proc/<pid>/cgroup`), the **exposure map** (risk-ranked listeners with evidence),
+  connectivity tools (ping/DNS/TCP connect), the shared `core::Finding` model +
+  `systui-security` posture checks (SSH, sudo, failed logins, firewall, file perms,
+  docker socket, SUID, exposed ports) via `security_scan`, certificate checks (local +
+  remote `host:443` over `openssl`), and the **Network/Security TUI tabs** + dashboard
+  security summary. Core enabler added: `CommandSpec::stdin` (pipe without a shell).
+- **Next: Phase 4 / v0.4.** Create `release/v0.4` from `main` and write its phase
+  context file before any code. See `docs/ROADMAP.md` for the phase-4 theme.
 
 ## Starting a session
 

@@ -111,7 +111,14 @@ actions are out of scope (the action engine exists, but v0.3 only inspects).
   `cert_warning_days` + `cert_hosts`. **Core change:** added `CommandSpec::stdin`
   (+ LocalTransport support) to enable piping without a shell.
 - **S3.8 — Security tab + polish**: Network/Security tabs render exposure + findings;
-  dashboard shows a findings/exposure summary → **tag v0.3**.
+  dashboard shows a findings/exposure summary → **tag v0.3**. **Done.** `App` gained
+  `network`/`exposures`/`findings`/`cert_warning_days`; `refresh_blocking` collects the
+  network snapshot, exposure map and `security_scan` (best-effort, read-only). The
+  Network tab renders interfaces, gateway/DNS, connection-state counts and the ranked
+  exposure map; the Security tab renders a prioritized findings list with evidence and
+  recommendations; the dashboard shows an exposed-ports + finding-severity summary.
+  Headless `TestBackend` tests cover all three. v0.3 merged `--no-ff` into `main` and
+  tagged.
 
 ## Definition of Done
 

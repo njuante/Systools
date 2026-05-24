@@ -14,6 +14,7 @@ workspace = true
 systui-core.workspace = true
 systui-collectors.workspace = true
 systui-actions.workspace = true
+systui-security.workspace = true
 systui-storage.workspace = true
 ratatui.workspace = true
 tokio.workspace = true

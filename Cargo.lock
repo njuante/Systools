@@ -1034,6 +1034,7 @@ dependencies = [
  "systui-actions",
  "systui-collectors",
  "systui-core",
+ "systui-security",
  "systui-storage",
  "systui-transport",
  "tokio",

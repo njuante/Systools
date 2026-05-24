@@ -7,7 +7,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Tabs, Wrap};
 use regex::RegexBuilder;
-use systui_collectors::{Disk, LogEntry, SystemSnapshot};
+use systui_collectors::{Disk, ExposureEntry, LogEntry, NetworkSnapshot, SystemSnapshot};
+use systui_core::{Finding, Severity};
 
 use crate::app::{ActionStage, App, InputMode, Tab, ViewState};
 
@@ -156,6 +157,8 @@ fn render_content(frame: &mut Frame, app: &App, area: Rect) {
         (ViewState::Ready, _, Tab::Processes) => render_processes(frame, app, inner),
         (ViewState::Ready, _, Tab::Services) => render_services(frame, app, inner),
         (ViewState::Ready, _, Tab::Logs) => render_logs(frame, app, inner),
+        (ViewState::Ready, _, Tab::Network) => render_network(frame, app, inner),
+        (ViewState::Ready, _, Tab::Security) => render_security(frame, app, inner),
         _ => render_message(frame, app, tab, inner),
     }
 }
@@ -368,6 +371,216 @@ fn render_processes(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(table, rows[1]);
 }
 
+/// Color for a finding/exposure severity.
+fn severity_color(app: &App, severity: Severity) -> ratatui::style::Color {
+    match severity {
+        Severity::Critical | Severity::High => app.theme.danger,
+        Severity::Medium => app.theme.warn,
+        Severity::Low => app.theme.accent,
+        Severity::Info => app.theme.dim,
+    }
+}
+
+/// A fixed-width severity badge, e.g. `[CRITICAL]`.
+fn severity_badge(severity: Severity) -> String {
+    format!("[{}]", severity.to_string().to_uppercase())
+}
+
+fn render_network(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(net) = &app.network else {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No network data — `ip`/`ss` unavailable.",
+                Style::new().fg(app.theme.dim),
+            )),
+            area,
+        );
+        return;
+    };
+    frame.render_widget(
+        Paragraph::new(network_text(app, net)).wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+/// Interfaces, routing, DNS, connection states and the ranked exposure map.
+fn network_text(app: &App, net: &NetworkSnapshot) -> Text<'static> {
+    let dim = Style::new().fg(app.theme.dim);
+    let text_s = Style::new().fg(app.theme.text);
+    let accent = Style::new()
+        .fg(app.theme.accent)
+        .add_modifier(Modifier::BOLD);
+
+    let mut lines = vec![Line::from(Span::styled("Interfaces", accent))];
+    if net.interfaces.is_empty() {
+        lines.push(Line::from(Span::styled("  none", dim)));
+    }
+    for iface in &net.interfaces {
+        let addrs = iface
+            .addrs
+            .iter()
+            .map(|a| format!("{}/{}", a.ip, a.prefix_len))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:<10} ", iface.name), text_s),
+            Span::styled(format!("{:<8} ", iface.state), dim),
+            Span::styled(addrs, text_s),
+        ]));
+    }
+
+    let gateways: Vec<String> = net
+        .routes
+        .iter()
+        .filter(|r| r.dst == "default")
+        .filter_map(|r| r.gateway.clone().map(|g| format!("{g} via {}", r.dev)))
+        .collect();
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("Gateway  ", accent),
+        Span::styled(
+            if gateways.is_empty() {
+                "none".to_owned()
+            } else {
+                gateways.join(", ")
+            },
+            text_s,
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("DNS      ", accent),
+        Span::styled(
+            if net.dns.nameservers.is_empty() {
+                "none".to_owned()
+            } else {
+                net.dns.nameservers.join(", ")
+            },
+            text_s,
+        ),
+    ]));
+
+    let counts = net.connection_state_counts();
+    if !counts.is_empty() {
+        let summary = counts
+            .iter()
+            .map(|(state, n)| format!("{state} {n}"))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        lines.push(Line::from(vec![
+            Span::styled("Conns    ", accent),
+            Span::styled(summary, dim),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("Exposure map ", accent),
+        Span::styled("(worst first)", dim),
+    ]));
+    if app.exposures.is_empty() {
+        lines.push(Line::from(Span::styled("  no listening sockets", dim)));
+    }
+    for entry in app.exposures.iter().take(12) {
+        lines.push(exposure_line(app, entry));
+    }
+
+    Text::from(lines)
+}
+
+fn exposure_line(app: &App, entry: &ExposureEntry) -> Line<'static> {
+    let proto = format!("{:?}", entry.listener.protocol).to_lowercase();
+    let owner = match (&entry.listener.process, &entry.listener.unit) {
+        (Some(p), Some(unit)) => format!("{} ({unit})", p.name),
+        (Some(p), None) => p.name.clone(),
+        (None, _) => "—".to_owned(),
+    };
+    Line::from(vec![
+        Span::styled(
+            format!("  {:<10}", severity_badge(entry.severity)),
+            Style::new().fg(severity_color(app, entry.severity)),
+        ),
+        Span::styled(
+            format!(
+                "{proto} {}:{}",
+                entry.listener.local_ip, entry.listener.port
+            ),
+            Style::new().fg(app.theme.text),
+        ),
+        Span::styled(format!("  {owner}"), Style::new().fg(app.theme.dim)),
+    ])
+}
+
+fn render_security(frame: &mut Frame, app: &App, area: Rect) {
+    if app.findings.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No findings — nothing flagged.",
+                Style::new().fg(app.theme.ok),
+            ))
+            .alignment(Alignment::Center),
+            area,
+        );
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(security_text(app)).wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+/// The prioritized, evidence-based findings list (worst first).
+fn security_text(app: &App) -> Text<'static> {
+    let dim = Style::new().fg(app.theme.dim);
+    let text_s = Style::new().fg(app.theme.text);
+
+    let [crit, high, med, low, info] = app.finding_counts();
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("critical ", dim),
+            Span::styled(crit.to_string(), Style::new().fg(app.theme.danger)),
+            Span::styled("  high ", dim),
+            Span::styled(high.to_string(), Style::new().fg(app.theme.danger)),
+            Span::styled("  medium ", dim),
+            Span::styled(med.to_string(), Style::new().fg(app.theme.warn)),
+            Span::styled("  low ", dim),
+            Span::styled(low.to_string(), Style::new().fg(app.theme.accent)),
+            Span::styled("  info ", dim),
+            Span::styled(info.to_string(), text_s),
+        ]),
+        Line::from(""),
+    ];
+
+    for finding in app.findings.iter().take(14) {
+        lines.push(finding_header(app, finding));
+        if let Some(evidence) = finding.evidence.first() {
+            lines.push(Line::from(Span::styled(format!("      {evidence}"), dim)));
+        }
+        if !finding.recommendation.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("      → {}", finding.recommendation),
+                Style::new().fg(app.theme.ok),
+            )));
+        }
+    }
+
+    Text::from(lines)
+}
+
+fn finding_header(app: &App, finding: &Finding) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("  {:<10}", severity_badge(finding.severity)),
+            Style::new()
+                .fg(severity_color(app, finding.severity))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            finding.title.clone(),
+            Style::new().fg(app.theme.text).add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
 fn render_message(frame: &mut Frame, app: &App, tab: Tab, area: Rect) {
     let (heading, body) = content_message(app, tab);
     let text = Text::from(vec![
@@ -522,6 +735,30 @@ fn dashboard_text(app: &App, snap: &SystemSnapshot) -> Text<'static> {
             }
         }
     }
+
+    // Security posture: network exposure and the worst security findings.
+    let [crit, high, med, ..] = app.finding_counts();
+    let risky = app.risky_exposure_count();
+    let count_span = |n: usize, color| {
+        let style = if n > 0 {
+            Style::new().fg(color).add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(app.theme.ok)
+        };
+        Span::styled(n.to_string(), style)
+    };
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Security", accent)));
+    lines.push(Line::from(vec![
+        Span::styled("  exposed ports: ", dim),
+        count_span(risky, app.theme.danger),
+        Span::styled("   critical: ", dim),
+        count_span(crit, app.theme.danger),
+        Span::styled("   high: ", dim),
+        count_span(high, app.theme.danger),
+        Span::styled("   medium: ", dim),
+        count_span(med, app.theme.warn),
+    ]));
 
     Text::from(lines)
 }
@@ -1027,6 +1264,135 @@ mod tests {
         assert!(out.contains("Findings"));
         assert!(out.contains("CRITICAL"));
         assert!(out.contains("95%"));
+    }
+
+    fn sample_network() -> systui_collectors::NetworkSnapshot {
+        use systui_collectors::{
+            AddrFamily, Connection, DnsConfig, InterfaceAddr, Listener, NetInterface,
+            NetworkSnapshot, ProcessRef, Protocol, Route,
+        };
+        NetworkSnapshot {
+            interfaces: vec![NetInterface {
+                name: "eth0".to_owned(),
+                state: "UP".to_owned(),
+                addrs: vec![InterfaceAddr {
+                    ip: "192.168.1.10".to_owned(),
+                    prefix_len: 24,
+                    family: AddrFamily::V4,
+                }],
+            }],
+            routes: vec![Route {
+                dst: "default".to_owned(),
+                gateway: Some("192.168.1.1".to_owned()),
+                dev: "eth0".to_owned(),
+                prefsrc: None,
+            }],
+            dns: DnsConfig {
+                nameservers: vec!["1.1.1.1".to_owned()],
+                search: Vec::new(),
+            },
+            listeners: vec![Listener {
+                protocol: Protocol::Tcp,
+                local_ip: "0.0.0.0".to_owned(),
+                port: 6379,
+                process: Some(ProcessRef {
+                    pid: 1500,
+                    name: "redis-server".to_owned(),
+                }),
+                unit: Some("redis.service".to_owned()),
+            }],
+            connections: vec![Connection {
+                state: "ESTAB".to_owned(),
+                local_ip: "192.168.1.10".to_owned(),
+                local_port: 22,
+                peer_ip: "10.0.0.2".to_owned(),
+                peer_port: 51000,
+            }],
+        }
+    }
+
+    #[test]
+    fn network_tab_shows_interfaces_and_exposure() {
+        use systui_collectors::exposure_map;
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        let net = sample_network();
+        app.exposures = exposure_map(&net.listeners);
+        app.network = Some(net);
+        app.view_state = ViewState::Ready;
+        app.select_tab(5); // Network
+
+        let out = render_to_string(&app, 100, 30);
+        assert!(out.contains("Interfaces"));
+        assert!(out.contains("eth0"));
+        assert!(out.contains("192.168.1.1")); // gateway
+        assert!(out.contains("Exposure map"));
+        assert!(out.contains("CRITICAL")); // redis on 0.0.0.0:6379
+        assert!(out.contains("6379"));
+        assert!(out.contains("redis.service"));
+    }
+
+    #[test]
+    fn security_tab_lists_findings_worst_first() {
+        use systui_core::{Finding, ModuleId, Severity};
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.findings = vec![
+            Finding::new(
+                "ssh.root-login",
+                Severity::High,
+                ModuleId::Security,
+                "SSH permits direct root login",
+            )
+            .with_evidence("/etc/ssh/sshd_config: PermitRootLogin yes")
+            .recommendation("Set PermitRootLogin to no."),
+            Finding::new(
+                "firewall.absent",
+                Severity::Medium,
+                ModuleId::Firewall,
+                "No active firewall detected",
+            ),
+        ];
+        app.view_state = ViewState::Ready;
+        app.select_tab(7); // Security
+
+        let out = render_to_string(&app, 100, 30);
+        assert!(out.contains("SSH permits direct root login"));
+        assert!(out.contains("PermitRootLogin yes"));
+        assert!(out.contains("No active firewall detected"));
+        // High appears before Medium.
+        let high_at = out.find("HIGH").unwrap();
+        let med_at = out.find("MEDIUM").unwrap();
+        assert!(high_at < med_at);
+    }
+
+    #[test]
+    fn security_tab_reports_clean() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.view_state = ViewState::Ready;
+        app.select_tab(7);
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("No findings"));
+    }
+
+    #[test]
+    fn dashboard_shows_security_summary() {
+        use systui_core::{Finding, ModuleId, Severity};
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.findings = vec![Finding::new(
+            "net.sensitive-port.6379",
+            Severity::Critical,
+            ModuleId::Network,
+            "Sensitive service exposed",
+        )];
+        app.view_state = ViewState::Ready;
+
+        let out = render_to_string(&app, 100, 40);
+        assert!(out.contains("Security"));
+        assert!(out.contains("exposed ports:"));
+        assert!(out.contains("critical:"));
     }
 
     #[test]

@@ -32,6 +32,23 @@ pub enum FleetOutcome {
     Failed { error: String },
 }
 
+/// A compact, human one-line summary of finding counts
+/// `[critical, high, medium, low, info]`, e.g. `2 crit, 1 high` or `OK`.
+/// Low/info are omitted to keep overview rows tight.
+pub fn findings_summary(counts: &[usize; 5]) -> String {
+    let mut parts = Vec::new();
+    for (count, label) in [(counts[0], "crit"), (counts[1], "high"), (counts[2], "med")] {
+        if count > 0 {
+            parts.push(format!("{count} {label}"));
+        }
+    }
+    if parts.is_empty() {
+        "OK".to_owned()
+    } else {
+        parts.join(", ")
+    }
+}
+
 /// One host's row in the fleet overview.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FleetHostSummary {

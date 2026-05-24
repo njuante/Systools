@@ -126,9 +126,16 @@ collectors.
   (`FLEET_HOST_TIMEOUT = 30s`) via a `JoinSet` — with full **per-host error
   isolation** (unreachable/auth/timeout → an `ERR` row, never an aborted run),
   honouring per-host `read_only`, and prints the worst-first table. Verified against
-  unreachable hosts (isolated `ERR` rows, run completes). **Remaining for S8.3:** the
-  interactive **TUI fleet view + drill-in** to a host (the CLI overview already
-  satisfies the core "see N servers without entering each" DoD).
+  unreachable hosts (isolated `ERR` rows, run completes).
+  **TUI fleet view + drill-in done.** `systui-ui::fleet` adds a self-contained,
+  read-only fleet screen (`run_fleet` → `FleetExit::{Quit,Refresh,Enter(id)}`,
+  separate from the per-host `App`): a worst-first, selectable host table
+  (↑/↓/j/k, health-coloured, favorite marker, `r` refresh, `q`/Esc quit) with a
+  pure `render_fleet` tested via `TestBackend`. `systui fleet` now opens this TUI on
+  a terminal and **drills into** the selected host (`Enter`) by launching the
+  existing per-host TUI over `SshTransport` (honouring `read_only`), re-gathering the
+  overview on return; when piped/redirected it prints the table once
+  (`std::io::IsTerminal`), keeping the command scriptable. S8.3 complete.
 - **S8.4 — Global search + host comparison + basic drift**: search a service/port
   across the fleet; side-by-side host comparison; host-vs-host / host-vs-snapshot
   drift deltas.

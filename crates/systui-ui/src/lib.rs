@@ -5,11 +5,13 @@
 
 pub mod app;
 pub mod data;
+pub mod fleet;
 pub mod input;
 pub mod theme;
 pub mod ui;
 
 pub use app::{App, Tab, ViewState};
+pub use fleet::{FleetExit, run_fleet};
 pub use theme::Theme;
 
 use std::time::{Duration, Instant};

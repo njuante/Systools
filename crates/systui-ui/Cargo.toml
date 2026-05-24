@@ -16,6 +16,7 @@ systui-collectors.workspace = true
 systui-actions.workspace = true
 systui-security.workspace = true
 systui-storage.workspace = true
+systui-report.workspace = true
 ratatui.workspace = true
 tokio.workspace = true
 regex.workspace = true

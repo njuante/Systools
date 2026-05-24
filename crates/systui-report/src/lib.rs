@@ -10,7 +10,7 @@ pub mod markdown;
 pub mod model;
 pub mod util;
 
-pub use fleet::{FleetHostSummary, FleetOutcome, FleetOverview};
+pub use fleet::{FleetHostSummary, FleetOutcome, FleetOverview, findings_summary};
 pub use gather::gather_report;
 pub use html::to_html;
 pub use json::to_json;

@@ -6,6 +6,7 @@
 
 mod cli;
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -131,13 +132,16 @@ const FLEET_CONCURRENCY: usize = 8;
 /// of stalling the whole fleet.
 const FLEET_HOST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Review a fleet of inventory hosts and print a worst-first overview.
+/// Review a fleet of inventory hosts and show a worst-first overview.
 ///
 /// Hosts are selected from the inventory by the tag/favorites filter, then their
 /// state is gathered **concurrently** over SSH (bounded by [`FLEET_CONCURRENCY`],
 /// each capped by [`FLEET_HOST_TIMEOUT`]). Every host is isolated: an unreachable
 /// host, an auth failure or a timeout becomes a "failed" row and never aborts the
 /// run. Fleet mode is inspection-only — no actions are taken.
+///
+/// On a terminal this opens the interactive fleet TUI (with drill-in to a host);
+/// when piped/redirected it prints the overview once, so the command is scriptable.
 fn run_fleet(
     tags: Vec<String>,
     favorites: bool,
@@ -160,11 +164,54 @@ fn run_fleet(
     }
 
     let runtime = tokio::runtime::Runtime::new().context("failed to start async runtime")?;
-    let generated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     eprintln!("Reviewing {} host(s)…", selected.len());
+    let gather = |runtime: &tokio::runtime::Runtime| {
+        let generated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        runtime.block_on(gather_fleet(selected.clone(), mode, config, generated_at))
+    };
 
-    let overview = runtime.block_on(gather_fleet(selected, mode, config, generated_at));
-    print_fleet_overview(&overview);
+    let mut overview = gather(&runtime);
+
+    // Non-interactive (piped/redirected): print once and exit.
+    if !std::io::stdout().is_terminal() {
+        print_fleet_overview(&overview);
+        return Ok(());
+    }
+
+    // Interactive: the fleet TUI, re-gathering on refresh and after drill-in.
+    loop {
+        match systui_ui::run_fleet(&overview)? {
+            systui_ui::FleetExit::Quit => break,
+            systui_ui::FleetExit::Refresh => overview = gather(&runtime),
+            systui_ui::FleetExit::Enter(id) => {
+                if let Some(host) = selected.iter().find(|h| h.id == id) {
+                    drill_in_host(host, mode, config)?;
+                }
+                overview = gather(&runtime);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Drill from the fleet overview into a single host: launch the per-host TUI over
+/// SSH, honouring the host's `read_only` profile. Returns when the operator exits
+/// that host, so the caller can re-show the fleet overview.
+fn drill_in_host(
+    host: &systui_core::FleetHost,
+    mode: ExecutionMode,
+    config: &Config,
+) -> anyhow::Result<()> {
+    let mut transport = systui_transport::SshTransport::new(host.host.clone()).port(host.port);
+    if let Some(user) = &host.user {
+        transport = transport.user(user.clone());
+    }
+    let effective_mode = if host.read_only {
+        ExecutionMode::ReadOnly
+    } else {
+        mode
+    };
+    systui_ui::run(Box::new(transport), host.id.clone(), effective_mode, config)?;
     Ok(())
 }
 
@@ -268,25 +315,13 @@ fn print_fleet_overview(overview: &systui_report::FleetOverview) {
                 health,
                 finding_counts,
                 ..
-            } => format!("{health:>3}/100  {}", findings_summary(finding_counts)),
+            } => format!(
+                "{health:>3}/100  {}",
+                systui_report::findings_summary(finding_counts)
+            ),
             FleetOutcome::Failed { error } => format!("  ERR  {error}"),
         };
         println!("{marker} {:<16} {:<16} {status}", host.id, tags);
-    }
-}
-
-/// A one-line findings summary from `[critical, high, medium, low, info]`.
-fn findings_summary(counts: &[usize; 5]) -> String {
-    let mut parts = Vec::new();
-    for (count, label) in [(counts[0], "crit"), (counts[1], "high"), (counts[2], "med")] {
-        if count > 0 {
-            parts.push(format!("{count} {label}"));
-        }
-    }
-    if parts.is_empty() {
-        "OK".to_owned()
-    } else {
-        parts.join(", ")
     }
 }
 

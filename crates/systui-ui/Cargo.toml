@@ -21,6 +21,7 @@ ratatui.workspace = true
 tokio.workspace = true
 regex.workspace = true
 chrono.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 systui-transport.workspace = true

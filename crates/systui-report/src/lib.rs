@@ -2,6 +2,7 @@
 //! `Transport`) is rendered to JSON (the full structured model), Markdown or HTML.
 //! Gathering does the I/O; the renderers are pure functions of [`Report`].
 
+pub mod collect;
 pub mod fleet;
 pub mod fleet_report;
 pub mod gather;

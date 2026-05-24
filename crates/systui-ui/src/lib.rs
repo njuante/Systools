@@ -15,6 +15,8 @@ pub use app::{App, Tab, ViewState};
 pub use fleet::{FleetExit, run_fleet};
 pub use theme::Theme;
 
+use std::sync::Arc;
+use std::sync::mpsc::{self, Sender};
 use std::time::{Duration, Instant};
 
 use ratatui::DefaultTerminal;
@@ -23,6 +25,8 @@ use systui_actions::ActionEngine;
 use systui_core::{AuditContext, Config, CoreError, ExecutionMode, Result, Transport};
 use systui_storage::AuditLog;
 use tokio::runtime::Runtime;
+
+use crate::data::RefreshOutcome;
 
 /// How often the event loop wakes to poll for input and check the refresh timer.
 const TICK: Duration = Duration::from_millis(250);
@@ -40,6 +44,9 @@ pub fn run(
     config: &Config,
 ) -> Result<()> {
     let runtime = Runtime::new().map_err(CoreError::Io)?;
+    // Shared, `Send + Sync` transport so the background gather task can own a
+    // clone while the main thread keeps one for synchronous action calls.
+    let transport: Arc<dyn Transport> = Arc::from(transport);
     let mut app = App::new(host_label, mode);
     app.thresholds = config.thresholds.clone();
     app.cert_warning_days = config.security.cert_expiry_warning_days;
@@ -51,31 +58,77 @@ pub fn run(
     let capabilities = runtime.block_on(systui_collectors::probe_capabilities(transport.as_ref()));
     app.mode = capabilities.effective_mode(app.mode);
     app.capabilities = Some(capabilities);
-
-    data::refresh_blocking(&runtime, transport.as_ref(), &mut app);
+    app.view_state = ViewState::Loading;
 
     let mut terminal = ratatui::try_init()?;
     let result = event_loop(
         &mut terminal,
         &mut app,
         &runtime,
-        transport.as_ref(),
+        &transport,
         refresh_interval,
     );
     let _ = ratatui::try_restore();
     result
 }
 
+/// Spawn a background gather on the shared runtime, posting its result to `tx`.
+/// No-op if a gather is already in flight, so refresh requests coalesce and at
+/// most one gather runs at a time. Returns whether a gather was started.
+fn spawn_refresh(
+    runtime: &Runtime,
+    transport: &Arc<dyn Transport>,
+    app: &mut App,
+    tx: &Sender<RefreshOutcome>,
+) -> bool {
+    if app.refreshing {
+        return false;
+    }
+    app.refreshing = true;
+    let transport = transport.clone();
+    let tx = tx.clone();
+    let thresholds = app.thresholds.clone();
+    let log_query = app.log_query.clone();
+    let cert_warning_days = app.cert_warning_days;
+    // Reuse the slow-changing tiers already on screen so this gather skips
+    // re-reading them (tiered refresh); `None` on the first gather reads fresh.
+    let (host_statics, net_statics) = data::cached_statics(app);
+    runtime.spawn(async move {
+        let outcome = data::gather(
+            transport.as_ref(),
+            &thresholds,
+            &log_query,
+            cert_warning_days,
+            host_statics,
+            net_statics,
+        )
+        .await;
+        // The receiver is dropped only when the loop exits; ignore send errors.
+        let _ = tx.send(outcome);
+    });
+    true
+}
+
 fn event_loop(
     terminal: &mut DefaultTerminal,
     app: &mut App,
     runtime: &Runtime,
-    transport: &dyn Transport,
+    transport: &Arc<dyn Transport>,
     refresh_interval: Duration,
 ) -> Result<()> {
+    let (tx, rx) = mpsc::channel::<RefreshOutcome>();
+    // Kick off the first gather in the background; the loop draws a "refreshing"
+    // frame until it lands rather than freezing on startup.
+    spawn_refresh(runtime, transport, app, &tx);
     let mut last_refresh = Instant::now();
 
     while !app.should_quit {
+        // Fold in any finished background gathers (non-blocking).
+        while let Ok(outcome) = rx.try_recv() {
+            data::apply_refresh(app, outcome);
+            app.clamp_selections();
+        }
+
         terminal.draw(|frame| ui::render(frame, app))?;
 
         if event::poll(TICK)? {
@@ -88,22 +141,21 @@ fn event_loop(
 
         if app.action_plan_requested {
             app.action_plan_requested = false;
-            plan_action(runtime, transport, app);
+            plan_action(runtime, transport.as_ref(), app);
         } else if app.action_exec_requested {
             app.action_exec_requested = false;
-            execute_action(runtime, transport, app);
+            execute_action(runtime, transport.as_ref(), app);
         }
 
         let auto_due = !refresh_interval.is_zero() && last_refresh.elapsed() >= refresh_interval;
         if app.refresh_requested || auto_due {
             app.refresh_requested = false;
-            data::refresh_blocking(runtime, transport, app);
-            app.clamp_selections();
             last_refresh = Instant::now();
+            spawn_refresh(runtime, transport, app, &tx);
         } else if app.logs_reload_requested {
             // A log filter changed: re-collect only the logs.
             app.logs_reload_requested = false;
-            data::reload_logs_blocking(runtime, transport, app);
+            data::reload_logs_blocking(runtime, transport.as_ref(), app);
         }
     }
     Ok(())

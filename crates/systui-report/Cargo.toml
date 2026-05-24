@@ -16,7 +16,8 @@ systui-collectors.workspace = true
 systui-security.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 systui-transport.workspace = true
-tokio.workspace = true

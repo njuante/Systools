@@ -20,6 +20,36 @@ document; everything else is English).
 3. [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) — how we work (branches, sessions, gates).
 4. [`docs/phases/`](docs/phases/) — the context file for the **active** phase, first.
 
+## ▶ Active phase: v0.8.3 — Optimization (pure performance)
+
+You are picking this up in a fresh chat. **Branch: `release/v0.8.3`** (off `main` at
+tag `v0.8.2`). Authoritative scope:
+[`docs/phases/phase-08-3-v0.8.3-optimization.md`](docs/phases/phase-08-3-v0.8.3-optimization.md)
+— read it end to end before coding.
+
+**Goal:** make the TUI fast and **never freeze**, locally and over SSH. No new
+features, no visual changes — performance only. Behaviour, screens, keymaps and the
+safety model stay identical; render stays a pure function of `App`.
+
+**The problems (measured in v0.8.2):**
+1. **Refresh is synchronous on the UI thread.** `crates/systui-ui/src/lib.rs`
+   `event_loop` calls `data::refresh_blocking` (`crates/systui-ui/src/data.rs`)
+   inline (`runtime.block_on(...)`), so the UI freezes for the whole gather; the
+   auto-refresh timer makes it freeze periodically. → Move the gather to a worker +
+   channel; keep the loop drawing/handling input with a "refreshing…" indicator.
+2. **Collectors run sequentially** (system → network+security → docker+crons). → Run
+   independent ones concurrently, preserving real dependencies and deterministic,
+   worst-first findings.
+3. **Every tick re-collects everything**, including slow-changing data (OS/kernel/
+   capabilities/interfaces). → Tiered refresh + caching.
+4. Plus: command batching (fewer round-trips), cancellation/timeouts (partial data,
+   never a stall), and release-profile tuning. **Already done in v0.8.2:** SSH
+   connection multiplexing in `crates/systui-transport/src/ssh.rs` (don't redo).
+
+**First step (S8d.1):** add a timing harness (refresh + per-collector cost, behind
+`SYSTUI_LOG`/a flag), capture local + SSH baselines into the phase notes, then do
+background refresh (S8d.2). Sessions S8d.1–S8d.6 are listed in the phase file.
+
 ## Non-negotiable rules
 
 - **Commits never mention Claude, AI, or any assistant.** No co-author trailers.

@@ -95,16 +95,45 @@ pub struct LoggedUser {
     pub login_time: String,
 }
 
+/// Slow-changing host identity: hostname, OS and kernel. Read once and cached so
+/// later refreshes skip the `uname` calls and the `/etc/os-release` read (three
+/// round-trips that effectively never change within a session). See [`tiering`].
+///
+/// [`tiering`]: SystemCollector::with_statics
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostStatics {
+    pub hostname: String,
+    pub os: Option<String>,
+    pub kernel: String,
+}
+
+impl HostStatics {
+    /// Extract the cacheable identity from an already-collected snapshot.
+    pub fn from_snapshot(snapshot: &SystemSnapshot) -> Self {
+        Self {
+            hostname: snapshot.hostname.clone(),
+            os: snapshot.os.clone(),
+            kernel: snapshot.kernel.clone(),
+        }
+    }
+}
+
 /// Collects a [`SystemSnapshot`]. CPU usage is sampled twice over a short delay.
-#[derive(Debug, Clone, Copy)]
+///
+/// If constructed with [`SystemCollector::with_statics`], the slow-changing
+/// identity ([`HostStatics`]) is reused instead of re-read, so a refresh skips
+/// `uname -n`, `uname -r` and the `/etc/os-release` read.
+#[derive(Debug, Clone)]
 pub struct SystemCollector {
     cpu_sample_delay: Duration,
+    statics: Option<HostStatics>,
 }
 
 impl Default for SystemCollector {
     fn default() -> Self {
         Self {
             cpu_sample_delay: Duration::from_millis(200),
+            statics: None,
         }
     }
 }
@@ -112,6 +141,15 @@ impl Default for SystemCollector {
 impl SystemCollector {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Reuse cached slow-changing identity when present (tiered refresh); pass
+    /// `None` to read it fresh.
+    pub fn with_statics(statics: Option<HostStatics>) -> Self {
+        Self {
+            statics,
+            ..Self::default()
+        }
     }
 }
 
@@ -124,24 +162,48 @@ impl Collector for SystemCollector {
     }
 
     async fn collect(&self, transport: &dyn Transport) -> Result<SystemSnapshot> {
-        // Core metrics: failures here fail the snapshot.
-        let hostname = run_trimmed(transport, "uname", &["-n"]).await?;
-        let kernel = run_trimmed(transport, "uname", &["-r"]).await?;
-        let uptime_secs = parse_uptime(&read_text(transport, "/proc/uptime").await?)?;
-        let load = parse_loadavg(&read_text(transport, "/proc/loadavg").await?)?;
-        let (memory, swap) = parse_meminfo(&read_text(transport, "/proc/meminfo").await?)?;
+        // Slow-changing identity: reuse the cache when tiered, else read it.
+        // `hostname`/`kernel` are required (their read failing fails the snapshot);
+        // `os` is best-effort.
+        let (hostname, kernel, os) = match &self.statics {
+            Some(s) => (s.hostname.clone(), s.kernel.clone(), s.os.clone()),
+            None => {
+                let hostname = run_trimmed(transport, "uname", &["-n"]).await?;
+                let kernel = run_trimmed(transport, "uname", &["-r"]).await?;
+                let os = read_text(transport, "/etc/os-release")
+                    .await
+                    .ok()
+                    .and_then(|s| parse_os_release(&s));
+                (hostname, kernel, os)
+            }
+        };
 
-        // CPU: two samples of /proc/stat with a short delay between them.
-        let first = parse_proc_stat(&read_text(transport, "/proc/stat").await?)?;
+        // Live metrics: failures here fail the snapshot. The four /proc files are
+        // read in a single `tail -v` command (one round-trip instead of four,
+        // which compounds with SSH multiplexing); falls back to per-file reads if
+        // the batch command is unavailable.
+        let (uptime_txt, loadavg_txt, meminfo_txt, stat_txt) =
+            match read_proc_batch(transport).await {
+                Some(batch) => (batch.uptime, batch.loadavg, batch.meminfo, batch.stat),
+                None => (
+                    read_text(transport, "/proc/uptime").await?,
+                    read_text(transport, "/proc/loadavg").await?,
+                    read_text(transport, "/proc/meminfo").await?,
+                    read_text(transport, "/proc/stat").await?,
+                ),
+            };
+        let uptime_secs = parse_uptime(&uptime_txt)?;
+        let load = parse_loadavg(&loadavg_txt)?;
+        let (memory, swap) = parse_meminfo(&meminfo_txt)?;
+
+        // CPU: two samples of /proc/stat with a short delay between them. The
+        // second sample must follow the delay, so it stays a separate read.
+        let first = parse_proc_stat(&stat_txt)?;
         tokio::time::sleep(self.cpu_sample_delay).await;
         let second = parse_proc_stat(&read_text(transport, "/proc/stat").await?)?;
         let cpu = cpu_usage(first, second);
 
         // Best-effort metrics: degrade to defaults rather than failing.
-        let os = read_text(transport, "/etc/os-release")
-            .await
-            .ok()
-            .and_then(|s| parse_os_release(&s));
         let disks = match transport.run(&CommandSpec::new("df").arg("-P")).await {
             Ok(out) if out.success() => parse_df(&out.stdout),
             _ => Vec::new(),
@@ -183,6 +245,68 @@ async fn run_trimmed(transport: &dyn Transport, program: &str, args: &[&str]) ->
     let spec = CommandSpec::new(program).args(args.iter().copied());
     let output = transport.run(&spec).await?.into_result(program)?;
     Ok(output.stdout.trim().to_owned())
+}
+
+/// The four live `/proc` files read in one shot.
+struct ProcBatch {
+    uptime: String,
+    loadavg: String,
+    meminfo: String,
+    stat: String,
+}
+
+/// The `/proc` files read by [`ProcBatch`], in `tail` argument order.
+const PROC_BATCH_FILES: [&str; 4] = [
+    "/proc/uptime",
+    "/proc/loadavg",
+    "/proc/meminfo",
+    "/proc/stat",
+];
+
+/// Read the four live `/proc` files in a single `tail -n +1 -v` round-trip.
+/// Returns `None` (so the caller falls back to per-file reads) if the command is
+/// unavailable, fails, or its output can't be split back into all four files.
+async fn read_proc_batch(transport: &dyn Transport) -> Option<ProcBatch> {
+    let mut args = vec!["-n", "+1", "-v"];
+    args.extend_from_slice(&PROC_BATCH_FILES);
+    let spec = CommandSpec::new("tail").args(args);
+    let out = transport.run(&spec).await.ok()?;
+    if !out.success() {
+        return None;
+    }
+    parse_proc_batch(&out.stdout)
+}
+
+/// Split `tail -v` output into its per-file sections, keyed by the `==> path <==`
+/// headers it prints before each file. Returns `None` if any expected file is
+/// missing from the output.
+fn parse_proc_batch(s: &str) -> Option<ProcBatch> {
+    let mut sections: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+    let mut current: Option<&str> = None;
+    let mut buf = String::new();
+    for line in s.lines() {
+        if let Some(path) = line
+            .strip_prefix("==> ")
+            .and_then(|rest| rest.strip_suffix(" <=="))
+        {
+            if let Some(prev) = current.take() {
+                sections.insert(prev, std::mem::take(&mut buf));
+            }
+            current = Some(path);
+        } else {
+            buf.push_str(line);
+            buf.push('\n');
+        }
+    }
+    if let Some(prev) = current.take() {
+        sections.insert(prev, buf);
+    }
+    Some(ProcBatch {
+        uptime: sections.remove("/proc/uptime")?,
+        loadavg: sections.remove("/proc/loadavg")?,
+        meminfo: sections.remove("/proc/meminfo")?,
+        stat: sections.remove("/proc/stat")?,
+    })
 }
 
 /// Cumulative CPU times read from the aggregate `/proc/stat` line.
@@ -483,6 +607,7 @@ mod tests {
 
         let collector = SystemCollector {
             cpu_sample_delay: Duration::ZERO,
+            statics: None,
         };
         let snap = collector.collect(&transport).await.unwrap();
 
@@ -524,6 +649,7 @@ mod tests {
 
         let collector = SystemCollector {
             cpu_sample_delay: Duration::ZERO,
+            statics: None,
         };
         let snap = collector.collect(&transport).await.unwrap();
 
@@ -531,5 +657,106 @@ mod tests {
         assert!(snap.disks.is_empty());
         assert!(snap.users.is_empty());
         assert_eq!(snap.cpu.cores, 1);
+    }
+
+    #[tokio::test]
+    async fn cached_statics_skip_identity_reads() {
+        use systui_transport::MockTransport;
+
+        // Only the live /proc data is configured — no `uname` and no
+        // `/etc/os-release`. A fresh collect would fail on the missing `uname -n`;
+        // with cached statics the identity is reused and those reads are skipped.
+        let transport = MockTransport::new()
+            .with_file("/proc/uptime", "10.0 5.0\n".as_bytes().to_vec())
+            .with_file("/proc/loadavg", "0 0 0 1/1 1\n".as_bytes().to_vec())
+            .with_file(
+                "/proc/meminfo",
+                "MemTotal: 100 kB\nMemAvailable: 50 kB\n"
+                    .as_bytes()
+                    .to_vec(),
+            )
+            .with_file(
+                "/proc/stat",
+                "cpu  1 0 1 8 0 0 0 0 0 0\n".as_bytes().to_vec(),
+            );
+
+        let statics = HostStatics {
+            hostname: "cached-host".to_owned(),
+            os: Some("Cached OS 1.0".to_owned()),
+            kernel: "9.9.9".to_owned(),
+        };
+        let collector = SystemCollector {
+            cpu_sample_delay: Duration::ZERO,
+            statics: Some(statics),
+        };
+        let snap = collector.collect(&transport).await.unwrap();
+
+        assert_eq!(snap.hostname, "cached-host");
+        assert_eq!(snap.kernel, "9.9.9");
+        assert_eq!(snap.os.as_deref(), Some("Cached OS 1.0"));
+        // Live data was still collected fresh.
+        assert_eq!(snap.uptime_secs, 10);
+        assert_eq!(snap.memory.total_kb, 100);
+    }
+
+    #[tokio::test]
+    async fn reads_proc_in_one_batched_command() {
+        use systui_transport::MockTransport;
+
+        // The four live /proc files arrive in one `tail -v` response; none of them
+        // is configured as an individual file, so a successful parse proves the
+        // batch path supplied them. Only the post-delay /proc/stat re-read is a
+        // separate file read.
+        let batched = "==> /proc/uptime <==\n\
+             123456.78 654321.00\n\
+             \n\
+             ==> /proc/loadavg <==\n\
+             0.52 0.58 0.59 2/1234 56789\n\
+             \n\
+             ==> /proc/meminfo <==\n\
+             MemTotal:       16327680 kB\n\
+             MemAvailable:    8000000 kB\n\
+             \n\
+             ==> /proc/stat <==\n\
+             cpu  1 0 1 8 0 0 0 0 0 0\n\
+             cpu0 1 0 1 8 0 0 0 0 0 0\n";
+        let transport = MockTransport::new()
+            .with_stdout("uname -n", "prod-01\n")
+            .with_stdout("uname -r", "6.1.0\n")
+            .with_stdout(
+                "tail -n +1 -v /proc/uptime /proc/loadavg /proc/meminfo /proc/stat",
+                batched,
+            )
+            .with_file(
+                "/proc/stat",
+                "cpu  1 0 1 8 0 0 0 0 0 0\ncpu0 1 0 1 8 0 0 0 0 0 0\n"
+                    .as_bytes()
+                    .to_vec(),
+            );
+
+        let collector = SystemCollector {
+            cpu_sample_delay: Duration::ZERO,
+            statics: None,
+        };
+        let snap = collector.collect(&transport).await.unwrap();
+
+        assert_eq!(snap.hostname, "prod-01");
+        assert_eq!(snap.uptime_secs, 123_456);
+        assert_eq!(snap.load.one, 0.52);
+        assert_eq!(snap.memory.total_kb, 16_327_680);
+        assert_eq!(snap.cpu.cores, 1);
+    }
+
+    #[test]
+    fn parse_proc_batch_splits_on_headers() {
+        let out = "==> /proc/uptime <==\n1.0 2.0\n==> /proc/loadavg <==\n0 0 0 1/1 1\n\
+             ==> /proc/meminfo <==\nMemTotal: 1 kB\n==> /proc/stat <==\ncpu 1 2 3\n";
+        let batch = parse_proc_batch(out).expect("all four sections present");
+        assert_eq!(batch.uptime.trim(), "1.0 2.0");
+        assert_eq!(batch.loadavg.trim(), "0 0 0 1/1 1");
+        assert_eq!(batch.meminfo.trim(), "MemTotal: 1 kB");
+        assert_eq!(batch.stat.trim(), "cpu 1 2 3");
+        // A response missing a file degrades to None (caller falls back).
+        assert!(parse_proc_batch("==> /proc/uptime <==\n1.0 2.0\n").is_none());
     }
 }

@@ -71,5 +71,5 @@ all = { level = "warn", priority = -1 }
 
 [profile.release]
 strip = true
-lto = "thin"
+lto = true
 codegen-units = 1

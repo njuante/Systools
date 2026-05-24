@@ -29,6 +29,7 @@ substrate for `v0.1` and is built on the `release/v0.1` branch as the first sess
 | 8     | v0.8    | Fleet                         | `release/v0.8`   |
 | 8.5   | v0.8.1  | In-TUI management & UX polish | `release/v0.8.1` |
 | 8.6   | v0.8.2  | UI redesign (approved design) | `release/v0.8.2` |
+| 8.7   | v0.8.3  | Optimization (performance)    | `release/v0.8.3` |
 | 9     | v0.9    | Policies & expected state     | `release/v0.9`   |
 | 10    | v1.0    | Stabilization & release       | `release/v1.0`   |
 
@@ -266,6 +267,43 @@ function of `App` with `TestBackend` tests passing.
 
 > Command palette / fuzzy search, mouse hit-testing, theme switching and any new
 > collectors are **out of scope** (deferred).
+
+---
+
+## Phase 8.7 — v0.8.3 Optimization
+
+**Goal:** make SysTUI **fast and fluid**, locally and especially over SSH — a **pure
+performance** phase, no new features or visual changes. The v0.8.2 redesign exposed
+real performance problems in remote use: the refresh is synchronous on the UI thread
+(so the TUI freezes for the gather's duration), collectors run sequentially, and
+every tick re-collects everything. SSH connection multiplexing (landed in v0.8.2)
+removed the per-command handshake; this phase removes the remaining stalls above it.
+Detailed scope in
+[`phases/phase-08-3-v0.8.3-optimization.md`](phases/phase-08-3-v0.8.3-optimization.md).
+
+Sessions:
+- **S8d.1 — Context + measurement**: `phase-08-3-v0.8.3-optimization.md` + this insert;
+  a timing harness (refresh + per-collector cost) and captured local/SSH baselines.
+- **S8d.2 — Background refresh**: move the gather off the UI thread (worker + channel);
+  the loop stays responsive with a refresh indicator; manual + auto refresh through it.
+- **S8d.3 — Concurrent collectors**: gather independent collectors concurrently,
+  preserving real dependencies and deterministic output.
+- **S8d.4 — Tiered refresh + caching**: split slow-changing vs live data; collect the
+  slow set rarely; less work per tick.
+- **S8d.5 — Command batching + cancellation/timeouts**: cut round-trips; cancellable
+  in-flight refresh with per-collector timeouts → partial data, never a stall.
+- **S8d.6 — Build profile + close**: release-profile tuning, final before/after
+  numbers → **tag v0.8.3**.
+
+**DoD:** the TUI never freezes on refresh (local or SSH) — input/redraw stay live with
+a refresh indicator; independent collectors run concurrently; slow-changing data is
+not re-collected every tick; a slow/unreachable host degrades to partial data on
+timeout without stalling; before/after measurements recorded; behaviour, screens,
+keymaps and the safety model unchanged; render stays a pure function of `App`; gates
+green.
+
+> No UI/visual change beyond a refresh indicator, no new collectors/actions/data, and
+> no SSH-library rewrite — those are **out of scope**.
 
 ---
 

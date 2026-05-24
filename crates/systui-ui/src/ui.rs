@@ -470,8 +470,8 @@ fn render_services(frame: &mut Frame, app: &App, area: Rect) {
     if app.failed_units.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
-                "No failed units — all good.",
-                Style::new().fg(app.theme.ok),
+                "✓ no failed units — all healthy",
+                Style::new().fg(app.theme.accent),
             ))
             .alignment(Alignment::Center),
             area,
@@ -479,34 +479,89 @@ fn render_services(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let header = Row::new(["UNIT", "ACTIVE", "SUB", "DESCRIPTION"])
-        .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
+    let cols =
+        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).split(area);
+    render_service_list(frame, app, cols[0]);
+    render_service_detail(frame, app, cols[1]);
+}
+
+fn render_service_list(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, &format!("systemd · {} failed", app.failed_units.len()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let header = Row::new(["", "UNIT", "ACTIVE", "SUB"])
+        .style(Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD));
     let body = app.failed_units.iter().enumerate().map(|(i, u)| {
         let row = Row::new([
-            Cell::from(Span::styled(
-                u.name.clone(),
-                Style::new().fg(app.theme.danger),
-            )),
-            Cell::from(u.active.clone()),
-            Cell::from(u.sub.clone()),
-            Cell::from(u.description.clone()),
+            Cell::from(Span::styled("●", Style::new().fg(t.critical))),
+            Cell::from(Span::styled(u.name.clone(), Style::new().fg(t.fg_strong))),
+            Cell::from(Span::styled(u.active.clone(), Style::new().fg(t.critical))),
+            Cell::from(Span::styled(u.sub.clone(), Style::new().fg(t.fg_muted))),
         ]);
         if i == app.services_selected {
-            row.style(selected_style(app))
+            row.style(Style::new().bg(t.bg_sel).add_modifier(Modifier::BOLD))
         } else {
             row
         }
     });
     let widths = [
-        Constraint::Length(28),
+        Constraint::Length(1),
+        Constraint::Min(16),
         Constraint::Length(8),
         Constraint::Length(10),
-        Constraint::Min(10),
     ];
-    let table = Table::new(body, widths)
-        .header(header)
-        .style(Style::new().fg(app.theme.text));
-    frame.render_widget(table, area);
+    frame.render_widget(
+        Table::new(body, widths)
+            .header(header)
+            .style(Style::new().fg(t.fg)),
+        inner,
+    );
+}
+
+fn render_service_detail(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let Some(u) = app.failed_units.get(app.services_selected) else {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no unit selected", Style::new().fg(t.fg_dim)))
+                .block(panel_block(&t, "Unit")),
+            area,
+        );
+        return;
+    };
+
+    let block = panel_block(&t, &u.name);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let field = |key: &str, value: String, color| {
+        Line::from(vec![
+            Span::styled(format!("{key:<8} "), Style::new().fg(t.fg_dim)),
+            Span::styled(value, Style::new().fg(color)),
+        ])
+    };
+    let mut lines = vec![
+        Line::from(Span::styled(
+            u.description.clone(),
+            Style::new().fg(t.fg_muted),
+        )),
+        Line::from(""),
+        field("load", u.load.clone(), t.fg),
+        field("active", u.active.clone(), t.critical),
+        field("sub", u.sub.clone(), t.high),
+        Line::from(""),
+    ];
+    let hint = if app.mode == systui_core::ExecutionMode::ReadOnly {
+        Span::styled("read-only — actions disabled", Style::new().fg(t.fg_dim))
+    } else {
+        Span::styled(
+            "press a to act on this unit (restart / stop / …)",
+            Style::new().fg(t.fg_muted),
+        )
+    };
+    lines.push(Line::from(hint));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 fn render_processes(frame: &mut Frame, app: &App, area: Rect) {
@@ -731,63 +786,163 @@ fn render_docker(frame: &mut Frame, app: &App, area: Rect) {
     let rows =
         Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
     render_container_table(frame, app, rows[0]);
-    render_container_detail(frame, app, rows[1]);
+    let bottom =
+        Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)]).split(rows[1]);
+    render_docker_risks(frame, app, bottom[0]);
+    render_container_detail(frame, app, bottom[1]);
 }
 
 fn render_container_table(frame: &mut Frame, app: &App, area: Rect) {
-    let header = Row::new(["NAME", "IMAGE", "STATE", "HEALTH", "PORTS"])
-        .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
+    let t = app.theme;
+    let block = panel_block(
+        &t,
+        &format!("docker ps · {} containers", app.containers.len()),
+    );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let header = Row::new([
+        "",
+        "CONTAINER",
+        "IMAGE",
+        "STATE",
+        "HEALTH",
+        "CPU%",
+        "MEM%",
+        "",
+    ])
+    .style(Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD));
     let body = app.containers.iter().enumerate().map(|(i, c)| {
-        let state_color = if c.is_running() {
-            app.theme.ok
+        let dot_color = if c.is_running() {
+            t.accent
         } else if c.state == "restarting" {
-            app.theme.warn
+            t.high
         } else {
-            app.theme.dim
+            t.fg_dim
         };
         let (health, health_color) = container_health(app, c);
+        let stats = app
+            .container_stats
+            .iter()
+            .find(|s| s.id == c.id || s.name == c.name);
+        let cpu = stats
+            .map(|s| format!("{:.1}", s.cpu_percent))
+            .unwrap_or_default();
+        let mem = stats
+            .map(|s| format!("{:.1}", s.mem_percent))
+            .unwrap_or_default();
+        let risk = container_risk(app, c);
+        let risk_cell = match risk {
+            Some(sev) => Span::styled(
+                " RISK ",
+                Style::new()
+                    .fg(t.bg)
+                    .bg(t.severity(sev))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            None => Span::styled("ok", Style::new().fg(t.fg_dim)),
+        };
         let row = Row::new([
-            Cell::from(c.name.clone()),
-            Cell::from(c.image.clone()),
-            Cell::from(Span::styled(c.state.clone(), Style::new().fg(state_color))),
+            Cell::from(Span::styled("●", Style::new().fg(dot_color))),
+            Cell::from(Span::styled(c.name.clone(), Style::new().fg(t.fg_strong))),
+            Cell::from(Span::styled(c.image.clone(), Style::new().fg(t.fg_muted))),
+            Cell::from(Span::styled(c.state.clone(), Style::new().fg(dot_color))),
             Cell::from(Span::styled(health, Style::new().fg(health_color))),
-            Cell::from(c.ports.clone()),
+            Cell::from(Span::styled(cpu, Style::new().fg(t.fg))),
+            Cell::from(Span::styled(mem, Style::new().fg(t.fg))),
+            Cell::from(risk_cell),
         ]);
         if i == app.containers_selected {
-            row.style(selected_style(app))
+            row.style(Style::new().bg(t.bg_sel).add_modifier(Modifier::BOLD))
         } else {
             row
         }
     });
     let widths = [
-        Constraint::Length(18),
-        Constraint::Length(22),
+        Constraint::Length(1),
+        Constraint::Min(14),
+        Constraint::Length(24),
         Constraint::Length(11),
         Constraint::Length(9),
-        Constraint::Min(10),
+        Constraint::Length(5),
+        Constraint::Length(5),
+        Constraint::Length(6),
     ];
-    let table = Table::new(body, widths)
-        .header(header)
-        .style(Style::new().fg(app.theme.text));
-    frame.render_widget(table, area);
+    frame.render_widget(
+        Table::new(body, widths)
+            .header(header)
+            .style(Style::new().fg(t.fg)),
+        inner,
+    );
+}
+
+/// The worst severity among the selected container's inspect-based risk checks.
+fn container_risk(app: &App, c: &Container) -> Option<Severity> {
+    let inspect = app.container_inspects.iter().find(|i| i.id == c.id)?;
+    systui_security::check_container(inspect)
+        .into_iter()
+        .map(|f| f.severity)
+        .max()
+}
+
+/// Risk-check side panel: the worst Docker findings across all containers.
+fn render_docker_risks(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Risk checks");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let risks: Vec<&Finding> = app
+        .findings
+        .iter()
+        .filter(|f| f.module == ModuleId::Docker)
+        .collect();
+    if risks.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no risks", Style::new().fg(t.accent))),
+            inner,
+        );
+        return;
+    }
+
+    let max = (inner.height as usize).max(1);
+    let mut lines: Vec<Line> = Vec::new();
+    for f in risks.iter().take(max) {
+        let color = t.severity(f.severity);
+        let sev = f.severity.to_string().to_uppercase();
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{sev:<5} "),
+                Style::new().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(f.title.clone(), Style::new().fg(t.fg_strong)),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn container_health(app: &App, c: &Container) -> (String, ratatui::style::Color) {
     use systui_collectors::ContainerHealth;
     match c.health {
-        Some(ContainerHealth::Healthy) => ("healthy".to_owned(), app.theme.ok),
-        Some(ContainerHealth::Unhealthy) => ("unhealthy".to_owned(), app.theme.danger),
-        Some(ContainerHealth::Starting) => ("starting".to_owned(), app.theme.warn),
-        None => ("-".to_owned(), app.theme.dim),
+        Some(ContainerHealth::Healthy) => ("healthy".to_owned(), app.theme.accent),
+        Some(ContainerHealth::Unhealthy) => ("unhealthy".to_owned(), app.theme.critical),
+        Some(ContainerHealth::Starting) => ("starting".to_owned(), app.theme.high),
+        None => ("-".to_owned(), app.theme.fg_dim),
     }
 }
 
 fn render_container_detail(frame: &mut Frame, app: &App, area: Rect) {
-    let dim = Style::new().fg(app.theme.dim);
-    let accent = Style::new()
-        .fg(app.theme.accent)
-        .add_modifier(Modifier::BOLD);
-    let text_s = Style::new().fg(app.theme.text);
+    let t = app.theme;
+    let dim = Style::new().fg(t.fg_muted);
+    let text_s = Style::new().fg(t.fg);
+
+    let title = app
+        .selected_container()
+        .map(|c| c.name.clone())
+        .unwrap_or_else(|| "Container".to_owned());
+    let block = panel_block(&t, &title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
     let Some(inspect) = app.selected_inspect() else {
         let name = app
@@ -795,33 +950,43 @@ fn render_container_detail(frame: &mut Frame, app: &App, area: Rect) {
             .map(|c| c.name.as_str())
             .unwrap_or("container");
         frame.render_widget(
-            Paragraph::new(Span::styled(format!("No inspect data for {name}."), dim)),
-            area,
+            Paragraph::new(Span::styled(
+                format!("no inspect data for {name}"),
+                Style::new().fg(t.fg_dim),
+            )),
+            inner,
         );
         return;
     };
 
-    let mut lines = vec![Line::from(vec![
-        Span::styled(format!("{} ", inspect.name), accent),
-        Span::styled(inspect.image.clone(), dim),
-    ])];
+    let mut lines = vec![Line::from(Span::styled(inspect.image.clone(), dim))];
 
     let mem = if inspect.memory_limit_bytes == 0 {
         "unlimited".to_owned()
     } else {
         human_kb(inspect.memory_limit_bytes / 1024)
     };
-    lines.push(Line::from(Span::styled(
-        format!(
-            "  privileged {} · restart {} ({}) · mem {} · net {}",
-            inspect.privileged,
-            inspect.restart_policy,
-            inspect.restart_count,
-            mem,
-            inspect.networks.join(",")
+    let priv_color = if inspect.privileged { t.critical } else { t.fg };
+    lines.push(Line::from(vec![
+        Span::styled("privileged ", dim),
+        Span::styled(
+            format!("{}", inspect.privileged),
+            Style::new().fg(priv_color),
         ),
-        text_s,
-    )));
+        Span::styled(
+            format!(
+                "  ·  restart {} ({})  ·  mem {}",
+                inspect.restart_policy, inspect.restart_count, mem
+            ),
+            text_s,
+        ),
+    ]));
+    if !inspect.networks.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("net {}", inspect.networks.join(", ")),
+            dim,
+        )));
+    }
 
     if let Some(stats) = app
         .container_stats
@@ -830,7 +995,7 @@ fn render_container_detail(frame: &mut Frame, app: &App, area: Rect) {
     {
         lines.push(Line::from(Span::styled(
             format!(
-                "  cpu {:.1}% · mem {:.1}% ({})",
+                "cpu {:.1}% · mem {:.1}% ({})",
                 stats.cpu_percent, stats.mem_percent, stats.mem_usage
             ),
             text_s,
@@ -838,39 +1003,23 @@ fn render_container_detail(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     if !inspect.mounts.is_empty() {
-        lines.push(Line::from(Span::styled("  mounts", dim)));
+        lines.push(Line::from(Span::styled("mounts", dim)));
         for m in &inspect.mounts {
             lines.push(Line::from(Span::styled(
                 format!(
-                    "    {} -> {} ({})",
+                    "  {} -> {} ({})",
                     m.source,
                     m.destination,
                     if m.rw { "rw" } else { "ro" }
                 ),
-                dim,
+                Style::new().fg(t.fg_dim),
             )));
         }
     }
 
-    let risks = systui_security::check_container(inspect);
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        format!("Risks ({})", risks.len()),
-        accent,
-    )));
-    if risks.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  none",
-            Style::new().fg(app.theme.ok),
-        )));
-    }
-    for finding in risks.iter().take(6) {
-        lines.push(finding_header(app, finding));
-    }
-
     frame.render_widget(
         Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
-        area,
+        inner,
     );
 }
 
@@ -2174,7 +2323,7 @@ mod tests {
         app.select_tab(3); // Services
 
         let out = render_to_string(&app, 100, 24);
-        assert!(out.contains("No failed units"));
+        assert!(out.contains("no failed units"));
     }
 
     #[test]
@@ -2458,9 +2607,10 @@ mod tests {
         assert!(out.contains("redis"));
         assert!(out.contains("redis:latest"));
         assert!(out.contains("unhealthy"));
-        assert!(out.contains("Risks"));
-        // The privileged + docker.sock risks surface in the detail panel.
-        assert!(out.contains("privileged") || out.contains("Docker socket"));
+        assert!(out.contains("Risk checks"));
+        // The privileged container surfaces in the detail panel and as a RISK badge.
+        assert!(out.contains("privileged"));
+        assert!(out.contains("RISK"));
     }
 
     #[test]

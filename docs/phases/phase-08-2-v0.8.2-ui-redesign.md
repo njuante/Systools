@@ -93,6 +93,18 @@ The design intent is captured by the prototype:
   findings + at-a-glance), with CPU/RAM history for the sparklines.
 - **S8c.2 — Services & Docker**: unit/container tables with severity dots + detail
   panes and the risk-check side panel (§14 Services/Docker recipe).
+  **Done.** Services is now a two-column screen: a panelled failed-unit table
+  (severity dot + unit/active/sub, subtle row selection) beside a detail pane
+  (description, load/active/sub fields, and a read-only-aware "press a to act"
+  hint) — bounded by the real data, which is **failed units only** (no full unit
+  list is collected, so the prototype's ALL/RUNNING filters are intentionally
+  omitted). Docker gains an enriched, panelled `docker ps` table (status dot,
+  container/image, state, health, CPU%/MEM% from stats, and a per-container
+  **RISK** badge derived from `check_container` on the inspect), with a bottom
+  split of a **Risk checks** panel (Docker-module findings, worst first) and the
+  selected-container detail pane (image, privileged, restart, mem, networks,
+  stats, mounts). Compose-projects and image-hygiene panels from the prototype are
+  **omitted** (not collected — no mocked data). Render tests updated.
 - **S8c.3 — Logs**: live-tail widget with level badges, the error-fingerprint side
   panel and the follow/pause indicator.
 - **S8c.4 — Network & Crons**: exposure table (address colour-coding), interfaces /

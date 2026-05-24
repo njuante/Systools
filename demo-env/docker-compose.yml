@@ -1,0 +1,58 @@
+# SysTUI demo environment — containers that light up the Docker, Network and
+# (partly) Databases screens, including several deliberate risk findings.
+#
+#   docker compose -f demo-env/docker-compose.yml up -d
+#   cargo run --release -p systui-cli         # open the TUI, tab 8 (Docker)
+#   docker compose -f demo-env/docker-compose.yml down
+#
+# Ports are bound to 127.0.0.1 so nothing is exposed off-box. To also see the
+# exposure map flag a "risky" 0.0.0.0 listener, change a mapping to "6379:6379".
+
+services:
+  web:
+    image: nginx:1.27-alpine
+    container_name: demo-web
+    ports: ["127.0.0.1:8080:80"]
+    mem_limit: 128m
+    restart: unless-stopped
+
+  cache:
+    # Redis — detected by the Databases screen; a sensitive service on the net map.
+    image: redis:7.2
+    container_name: demo-cache
+    ports: ["127.0.0.1:6379:6379"]
+    mem_limit: 128m
+    restart: unless-stopped
+
+  db:
+    # Postgres — detected by the Databases screen.
+    image: postgres:16
+    container_name: demo-db
+    environment:
+      POSTGRES_PASSWORD: demo
+    ports: ["127.0.0.1:5432:5432"]
+    mem_limit: 256m
+    restart: unless-stopped
+
+  risky:
+    # Triggers several Docker risk checks at once: privileged, the docker socket
+    # mounted read-write, a `:latest` tag and no memory limit.
+    image: alpine:latest
+    container_name: demo-risky
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: ["sh", "-c", "sleep infinity"]
+    restart: unless-stopped
+
+  unhealthy:
+    # Reports an unhealthy healthcheck — shows up red in the container table.
+    image: busybox:latest
+    container_name: demo-unhealthy
+    command: ["sh", "-c", "sleep infinity"]
+    healthcheck:
+      test: ["CMD-SHELL", "exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 2
+    restart: unless-stopped

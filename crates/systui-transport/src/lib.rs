@@ -3,12 +3,13 @@
 //! remote hosts are interchangeable.
 //!
 //! - [`LocalTransport`] runs against the current machine.
+//! - [`SshTransport`] runs against a remote host via the system OpenSSH client.
 //! - [`MockTransport`] returns pre-programmed responses for tests.
-//!
-//! The SSH transport arrives in phase 5 (v0.5).
 
 pub mod local;
 pub mod mock;
+pub mod ssh;
 
 pub use local::LocalTransport;
 pub use mock::MockTransport;
+pub use ssh::{SshTransport, build_remote_command};

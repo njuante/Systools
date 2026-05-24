@@ -149,14 +149,21 @@ The design intent is captured by the prototype:
   the rounded top-bar chrome and a key-hint status bar consistent with the main UI.
 - **S8c.6 — Polish & close**: spacing/alignment pass, help overlay, render-test
   refresh; final gates; merge `--no-ff` into `main` + tag `v0.8.2`.
-  **In progress.** Made the **Hosts grid the home screen**: `systui` with no
-  subcommand now opens the fleet/Hosts grid, which always includes a synthetic
-  **`local`** card (reached via `LocalTransport`) alongside the SSH inventory.
-  Drill-in routes local → local TUI and remote → SSH. Removed the
-  empty-inventory early-exit (the grid always has `local`) and added a
-  **loading frame** before the first blocking gather so it no longer looks hung.
-  `systui local` / `ssh` / `report` are unchanged. Remaining: final visual polish,
-  help overlay, then merge + tag.
+  **Done.** Made the **Hosts grid the home screen**: `systui` with no subcommand
+  now opens the fleet/Hosts grid, which always includes a synthetic **`local`**
+  card (reached via `LocalTransport`) alongside the SSH inventory. Drill-in routes
+  local → local TUI and remote → SSH. Removed the empty-inventory early-exit (the
+  grid always has `local`) and added a **loading frame** before the first blocking
+  gather so it no longer looks hung. `systui local` / `ssh` / `report` are
+  unchanged. Also fixed the headline remote-performance problem: the SSH transport
+  now uses **connection multiplexing** (`ControlMaster`/`ControlPersist`), so a
+  full remote refresh drops from many seconds to ~1s instead of re-handshaking per
+  command. Closed with merge `--no-ff` into `main` + tag `v0.8.2`.
+
+  > **Deferred to v0.8.3 (phase 8.7, pure optimization):** the refresh is still
+  > synchronous on the UI thread (so it blocks ~1s per refresh) and collectors run
+  > sequentially. Making refresh asynchronous/background and parallelising
+  > collectors is the next phase, not this reskin.
 
 ## Definition of Done
 

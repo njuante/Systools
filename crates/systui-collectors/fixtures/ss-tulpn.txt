@@ -1,0 +1,7 @@
+Netid State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
+tcp   LISTEN 0      128    0.0.0.0:22          0.0.0.0:*         users:(("sshd",pid=842,fd=3))
+tcp   LISTEN 0      128    127.0.0.1:5432      0.0.0.0:*         users:(("postgres",pid=1001,fd=5))
+tcp   LISTEN 0      511    [::]:443            [::]:*            users:(("nginx",pid=1132,fd=8),("nginx",pid=1133,fd=8))
+tcp   LISTEN 0      128    0.0.0.0:6379        0.0.0.0:*         users:(("redis-server",pid=1500,fd=6))
+udp   UNCONN 0      0      0.0.0.0:68          0.0.0.0:*         users:(("dhclient",pid=512,fd=6))
+tcp   LISTEN 0      128    0.0.0.0:111         0.0.0.0:*

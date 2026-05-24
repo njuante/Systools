@@ -70,9 +70,13 @@ actions are out of scope (the action engine exists, but v0.3 only inspects).
 
 ## Sessions
 
-- **S3.1 — Context** *(this file)*.
+- **S3.1 — Context** *(this file)*. **Done.**
 - **S3.2 — Network collectors**: interfaces/IPs/routes/DNS, listening ports and
-  active connections with owning process, fixture-tested.
+  active connections with owning process, fixture-tested. **Done.** `NetworkCollector`
+  in `systui-collectors` produces a `NetworkSnapshot { interfaces, routes, dns,
+  listeners, connections }` via `ip -j addr|route` (JSON, with a text fallback),
+  `/etc/resolv.conf` and `ss -tulpn`/`ss -tan`; each source degrades to empty
+  independently. Listeners carry the owning `ProcessRef` from `ss -p`.
 - **S3.3 — Correlation**: port → process → systemd unit (via `/proc/<pid>/cgroup`).
 - **S3.4 — Exposure map**: classify listeners (scope + sensitivity) into risk-ranked
   exposure entries with evidence.

@@ -92,6 +92,14 @@ operations, and producing recent errors, locally or over SSH.
 - **S7.4 - DB checks + credentials handling**: add safe credential-source handling
   and engine-specific health checks, integrate database output into reports,
   polish, merge `--no-ff` into `main` and tag `v0.7`.
+  **Done.** Database instances now record safe credential-source labels only
+  (`LocalSocket`, `.pgpass`, `mysql_config_editor`, redacted environment
+  presence) and never persist secret values. Database findings now include
+  blocked work, unhealthy replication and recent database errors in addition to
+  exposure and Redis auth risk; Redis auth risk is suppressed when a credential
+  source is detected. Markdown and HTML reports include a Databases section
+  (also in `--security`) with service/endpoint/exposure, operational signals,
+  credential sources and recent errors.
 
 ## Definition of Done
 

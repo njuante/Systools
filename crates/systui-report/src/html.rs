@@ -5,6 +5,7 @@
 
 use std::fmt::Write as _;
 
+use systui_collectors::{BindScope, DatabaseInstance};
 use systui_core::Severity;
 
 use crate::model::{Report, ReportScope};
@@ -81,6 +82,7 @@ pub fn to_html(report: &Report, scope: ReportScope) -> String {
     security_findings(&mut out, report);
     open_ports(&mut out, report);
     docker(&mut out, report);
+    databases(&mut out, report);
     if full {
         failed_services(&mut out, report);
         crons(&mut out, report);
@@ -133,6 +135,11 @@ fn executive_summary(out: &mut String, report: &Report) {
         "<li><b>Cron jobs:</b> {} · <b>timers:</b> {}</li>",
         report.crons.len(),
         report.timers.len()
+    );
+    let _ = writeln!(
+        out,
+        "<li><b>Databases:</b> {} detected</li>",
+        report.databases.instances.len()
     );
     let _ = writeln!(out, "</ul>");
 }
@@ -289,6 +296,88 @@ fn docker(out: &mut String, report: &Report) {
     let _ = writeln!(out, "</table>");
 }
 
+fn databases(out: &mut String, report: &Report) {
+    let instances = &report.databases.instances;
+    let _ = writeln!(out, "<h2>Databases ({})</h2>", instances.len());
+    if instances.is_empty() {
+        let _ = writeln!(out, "<p class=\"muted\">No database services detected.</p>");
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "<table><tr><th>Engine</th><th>Service</th><th>Endpoint</th><th>Exposure</th><th>Connections</th><th>Size</th><th>Replication</th><th>Locks</th></tr>"
+    );
+    for db in instances {
+        let op = &db.operational;
+        let _ = writeln!(
+            out,
+            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            esc(db.engine.label()),
+            esc(db.service.as_ref().map(|s| s.unit.as_str()).unwrap_or("-")),
+            esc(&db.endpoint().unwrap_or_else(|| "-".to_owned())),
+            database_exposure_label(db),
+            esc(op.connection_summary.as_deref().unwrap_or("-")),
+            esc(op.size_summary.as_deref().unwrap_or("-")),
+            esc(op.replication_summary.as_deref().unwrap_or("-")),
+            esc(op.lock_summary.as_deref().unwrap_or("-")),
+        );
+    }
+    let _ = writeln!(out, "</table>");
+
+    let credential_lines = instances
+        .iter()
+        .filter(|db| !db.credential_sources.is_empty())
+        .map(|db| {
+            let labels = db
+                .credential_sources
+                .iter()
+                .map(|s| s.label.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            (db.engine.label(), labels)
+        })
+        .collect::<Vec<_>>();
+    if !credential_lines.is_empty() {
+        let _ = writeln!(out, "<h3>Credential sources</h3><ul>");
+        for (engine, labels) in credential_lines {
+            let _ = writeln!(out, "<li><b>{}</b>: {}</li>", esc(engine), esc(&labels));
+        }
+        let _ = writeln!(out, "</ul>");
+    }
+
+    let errors: Vec<(&DatabaseInstance, _)> = instances
+        .iter()
+        .flat_map(|db| {
+            db.operational
+                .recent_errors
+                .iter()
+                .map(move |entry| (db, entry))
+        })
+        .collect();
+    if !errors.is_empty() {
+        let _ = writeln!(out, "<h3>Recent database errors</h3><ul>");
+        for (db, entry) in errors.iter().take(10) {
+            let _ = writeln!(
+                out,
+                "<li><b>{} [{}]</b> {} {}</li>",
+                esc(db.engine.label()),
+                entry.priority_label(),
+                esc(&entry.time),
+                esc(&entry.message)
+            );
+        }
+        let _ = writeln!(out, "</ul>");
+    }
+}
+
+fn database_exposure_label(db: &DatabaseInstance) -> &'static str {
+    match db.exposure {
+        Some(BindScope::External) => "external",
+        Some(BindScope::Loopback) => "loopback",
+        None => "unknown",
+    }
+}
+
 fn failed_services(out: &mut String, report: &Report) {
     let units = &report.host.failed_units;
     let _ = writeln!(out, "<h2>Failed services ({})</h2>", units.len());
@@ -409,8 +498,9 @@ mod tests {
     use super::*;
     use crate::model::ReportMeta;
     use systui_collectors::{
-        Container, ContainerHealth, CpuUsage, HealthReport, HostReport, LoadAverage, Memory, Swap,
-        SystemSnapshot,
+        Container, ContainerHealth, CpuUsage, DatabaseCredentialKind, DatabaseCredentialSource,
+        DatabaseEngine, DatabaseInstance, DatabaseOperational, DatabaseSnapshot, HealthReport,
+        HostReport, LoadAverage, LogEntry, Memory, Swap, SystemSnapshot,
     };
     use systui_core::{ExecutionMode, Finding, ModuleId};
 
@@ -463,7 +553,30 @@ mod tests {
             containers,
             container_inspects: Vec::new(),
             container_stats: Vec::new(),
-            databases: Default::default(),
+            databases: DatabaseSnapshot {
+                instances: vec![DatabaseInstance {
+                    engine: DatabaseEngine::Redis,
+                    service: None,
+                    listener: None,
+                    version: Some("Redis server v=7.0.15".to_owned()),
+                    exposure: None,
+                    credential_sources: vec![DatabaseCredentialSource {
+                        kind: DatabaseCredentialKind::Environment,
+                        label: "REDISCLI_AUTH environment variable (value redacted)".to_owned(),
+                    }],
+                    operational: DatabaseOperational {
+                        connection_summary: Some("12 connected clients".to_owned()),
+                        recent_errors: vec![LogEntry {
+                            time: "09:00:00".to_owned(),
+                            priority: 3,
+                            identifier: "redis-server".to_owned(),
+                            message: "background save failed <unsafe>".to_owned(),
+                        }],
+                        ..Default::default()
+                    },
+                    detected_by: Vec::new(),
+                }],
+            },
             crons: Vec::new(),
             timers: Vec::new(),
             notes: Vec::new(),
@@ -490,6 +603,9 @@ mod tests {
         assert!(html.contains("<title>SysTUI Report — prod-01</title>"));
         assert!(html.contains("class=\"sev sev-high\">HIGH<"));
         assert!(html.contains("SSH permits direct root login"));
+        assert!(html.contains("<h2>Databases (1)</h2>"));
+        assert!(html.contains("12 connected clients"));
+        assert!(html.contains("REDISCLI_AUTH environment variable"));
         assert!(html.contains("Set PermitRootLogin to no."));
         assert!(html.trim_end().ends_with("</html>"));
         // No external resources.
@@ -523,7 +639,9 @@ mod tests {
         let html = to_html(&report, ReportScope::Full);
         // Raw metacharacters from host data never reach the output unescaped.
         assert!(!html.contains("<script>"));
+        assert!(!html.contains("<unsafe>"));
         assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(html.contains("background save failed &lt;unsafe&gt;"));
         assert!(html.contains("Container &lt;evil&gt; flagged"));
         assert!(html.contains("a&amp;b"));
         assert!(html.contains("img&lt;tag&gt;"));

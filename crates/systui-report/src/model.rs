@@ -15,7 +15,8 @@ pub enum ReportScope {
     /// Every section.
     Full,
     /// A security-focused report: summary, findings, exposed ports, containers,
-    /// recommendations and notes — skipping health, services, crons and inventory.
+    /// databases, recommendations and notes — skipping health, services, crons
+    /// and inventory.
     Security,
 }
 

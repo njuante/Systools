@@ -920,6 +920,18 @@ fn render_database_detail(frame: &mut Frame, app: &App, area: Rect) {
             text_s,
         )));
     }
+    if !db.credential_sources.is_empty() {
+        let labels = db
+            .credential_sources
+            .iter()
+            .map(|source| source.label.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(Line::from(Span::styled(
+            format!("  credentials {labels}"),
+            dim,
+        )));
+    }
 
     let op = &db.operational;
     lines.push(Line::from(""));
@@ -2158,6 +2170,7 @@ mod tests {
                 }),
                 version: Some("Redis server v=7.0.15".to_owned()),
                 exposure: Some(BindScope::External),
+                credential_sources: Vec::new(),
                 operational: DatabaseOperational {
                     connection_summary: Some("12 connected clients".to_owned()),
                     size_summary: Some("10.40M memory, 1200 keys".to_owned()),

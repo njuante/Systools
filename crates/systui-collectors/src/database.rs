@@ -102,6 +102,7 @@ pub struct DatabaseInstance {
     pub listener: Option<Listener>,
     pub version: Option<String>,
     pub exposure: Option<BindScope>,
+    pub credential_sources: Vec<DatabaseCredentialSource>,
     pub operational: DatabaseOperational,
     pub detected_by: Vec<String>,
 }
@@ -120,6 +121,24 @@ impl DatabaseInstance {
     pub fn is_externally_reachable(&self) -> bool {
         self.exposure == Some(BindScope::External)
     }
+}
+
+/// A credential source detected on the host without storing or rendering the
+/// secret value. These are labels for safe enrichment paths, not credentials.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DatabaseCredentialSource {
+    pub kind: DatabaseCredentialKind,
+    pub label: String,
+}
+
+/// Safe credential-source categories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DatabaseCredentialKind {
+    LocalSocket,
+    PassFile,
+    LoginPath,
+    Environment,
 }
 
 /// Best-effort operational signals for one database instance. Every field is
@@ -176,6 +195,7 @@ impl Collector for DatabaseCollector {
             .collect::<BTreeSet<_>>();
         let versions = collect_versions(transport, &engines).await;
         apply_versions(&mut snapshot, &versions);
+        detect_credential_sources(transport, &mut snapshot).await;
         enrich_operational(transport, &mut snapshot, network.as_ref()).await;
         Ok(snapshot)
     }
@@ -221,6 +241,7 @@ pub fn detect_database_instances(
             listener: Some(listener.clone()),
             version: versions.get(&engine).cloned(),
             exposure: Some(bind_scope(&listener.local_ip)),
+            credential_sources: Vec::new(),
             operational: DatabaseOperational::default(),
             detected_by,
         });
@@ -237,6 +258,7 @@ pub fn detect_database_instances(
                 listener: None,
                 version: versions.get(&engine).cloned(),
                 exposure: None,
+                credential_sources: Vec::new(),
                 operational: DatabaseOperational::default(),
                 detected_by: vec![format!("systemd unit {}", unit.name)],
             });
@@ -375,6 +397,135 @@ fn apply_versions(snapshot: &mut DatabaseSnapshot, versions: &BTreeMap<DatabaseE
     for instance in &mut snapshot.instances {
         instance.version = versions.get(&instance.engine).cloned();
     }
+}
+
+async fn detect_credential_sources(transport: &dyn Transport, snapshot: &mut DatabaseSnapshot) {
+    let engines = snapshot
+        .instances
+        .iter()
+        .map(|i| i.engine)
+        .collect::<BTreeSet<_>>();
+    let mut sources = BTreeMap::new();
+    for engine in engines {
+        sources.insert(
+            engine,
+            credential_sources_for_engine(transport, engine).await,
+        );
+    }
+    for instance in &mut snapshot.instances {
+        instance.credential_sources = sources.get(&instance.engine).cloned().unwrap_or_default();
+    }
+}
+
+async fn credential_sources_for_engine(
+    transport: &dyn Transport,
+    engine: DatabaseEngine,
+) -> Vec<DatabaseCredentialSource> {
+    let mut sources = Vec::new();
+    match engine {
+        DatabaseEngine::PostgreSql => {
+            if transport
+                .file_exists("/var/run/postgresql")
+                .await
+                .unwrap_or(false)
+            {
+                sources.push(credential_source(
+                    DatabaseCredentialKind::LocalSocket,
+                    "PostgreSQL local socket directory",
+                ));
+            }
+            if transport
+                .file_exists("/root/.pgpass")
+                .await
+                .unwrap_or(false)
+            {
+                sources.push(credential_source(
+                    DatabaseCredentialKind::PassFile,
+                    "root .pgpass file",
+                ));
+            }
+            if env_is_set(transport, "PGPASSWORD").await {
+                sources.push(credential_source(
+                    DatabaseCredentialKind::Environment,
+                    "PGPASSWORD environment variable (value redacted)",
+                ));
+            }
+            if env_is_set(transport, "PGPASSFILE").await {
+                sources.push(credential_source(
+                    DatabaseCredentialKind::Environment,
+                    "PGPASSFILE environment variable",
+                ));
+            }
+        }
+        DatabaseEngine::MySql => {
+            if mysql_login_path_available(transport).await {
+                sources.push(credential_source(
+                    DatabaseCredentialKind::LoginPath,
+                    "mysql_config_editor login path",
+                ));
+            }
+            if transport
+                .file_exists("/var/run/mysqld")
+                .await
+                .unwrap_or(false)
+            {
+                sources.push(credential_source(
+                    DatabaseCredentialKind::LocalSocket,
+                    "MySQL local socket directory",
+                ));
+            }
+            if env_is_set(transport, "MYSQL_PWD").await {
+                sources.push(credential_source(
+                    DatabaseCredentialKind::Environment,
+                    "MYSQL_PWD environment variable (value redacted)",
+                ));
+            }
+        }
+        DatabaseEngine::Redis => {
+            if env_is_set(transport, "REDISCLI_AUTH").await {
+                sources.push(credential_source(
+                    DatabaseCredentialKind::Environment,
+                    "REDISCLI_AUTH environment variable (value redacted)",
+                ));
+            }
+        }
+        DatabaseEngine::MongoDb => {
+            if env_is_set(transport, "MONGODB_URI").await {
+                sources.push(credential_source(
+                    DatabaseCredentialKind::Environment,
+                    "MONGODB_URI environment variable (value redacted)",
+                ));
+            }
+        }
+    }
+    sources
+}
+
+fn credential_source(
+    kind: DatabaseCredentialKind,
+    label: impl Into<String>,
+) -> DatabaseCredentialSource {
+    DatabaseCredentialSource {
+        kind,
+        label: label.into(),
+    }
+}
+
+async fn env_is_set(transport: &dyn Transport, name: &str) -> bool {
+    let spec = CommandSpec::new("printenv")
+        .arg(name)
+        .timeout(Duration::from_secs(2));
+    transport
+        .run(&spec)
+        .await
+        .is_ok_and(|out| out.success() && !out.stdout.trim().is_empty())
+}
+
+async fn mysql_login_path_available(transport: &dyn Transport) -> bool {
+    let spec = CommandSpec::new("mysql_config_editor")
+        .args(["print", "--all"])
+        .timeout(Duration::from_secs(3));
+    transport.run(&spec).await.is_ok_and(|out| out.success())
 }
 
 fn normalize_version(stdout: &str) -> Option<String> {
@@ -934,6 +1085,70 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn detects_credential_sources_without_values() {
+        let mut snapshot = DatabaseSnapshot {
+            instances: vec![
+                empty_instance(DatabaseEngine::PostgreSql),
+                empty_instance(DatabaseEngine::Redis),
+                empty_instance(DatabaseEngine::MySql),
+            ],
+        };
+        let transport = MockTransport::new()
+            .with_file("/var/run/postgresql", Vec::new())
+            .with_file("/root/.pgpass", Vec::new())
+            .with_file("/var/run/mysqld", Vec::new())
+            .with_stdout("printenv PGPASSWORD", "super-secret\n")
+            .with_stdout("printenv REDISCLI_AUTH", "redis-secret\n")
+            .with_stdout(
+                "mysql_config_editor print --all",
+                "[client]\npassword = *****\n",
+            );
+
+        detect_credential_sources(&transport, &mut snapshot).await;
+
+        let pg = snapshot
+            .instances
+            .iter()
+            .find(|i| i.engine == DatabaseEngine::PostgreSql)
+            .unwrap();
+        assert_eq!(pg.credential_sources.len(), 3);
+        assert!(
+            pg.credential_sources
+                .iter()
+                .any(|s| s.kind == DatabaseCredentialKind::LocalSocket)
+        );
+        assert!(
+            !pg.credential_sources
+                .iter()
+                .any(|s| s.label.contains("super-secret"))
+        );
+
+        let redis = snapshot
+            .instances
+            .iter()
+            .find(|i| i.engine == DatabaseEngine::Redis)
+            .unwrap();
+        assert!(
+            redis
+                .credential_sources
+                .iter()
+                .any(|s| s.label.contains("REDISCLI_AUTH"))
+        );
+
+        let mysql = snapshot
+            .instances
+            .iter()
+            .find(|i| i.engine == DatabaseEngine::MySql)
+            .unwrap();
+        assert!(
+            mysql
+                .credential_sources
+                .iter()
+                .any(|s| s.kind == DatabaseCredentialKind::LoginPath)
+        );
+    }
+
     fn empty_instance(engine: DatabaseEngine) -> DatabaseInstance {
         DatabaseInstance {
             engine,
@@ -941,6 +1156,7 @@ mod tests {
             listener: None,
             version: None,
             exposure: None,
+            credential_sources: Vec::new(),
             operational: DatabaseOperational::default(),
             detected_by: Vec::new(),
         }

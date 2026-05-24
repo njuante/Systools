@@ -10,7 +10,7 @@
 //! Port -> process -> systemd unit *correlation* and the exposure-map
 //! *classification* are built on top of this snapshot in later v0.3 sessions.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -83,6 +83,10 @@ pub struct Listener {
     pub port: u16,
     /// `None` when `ss` could not attribute the socket (busybox, no privilege).
     pub process: Option<ProcessRef>,
+    /// The systemd unit owning the process, derived from `/proc/<pid>/cgroup`.
+    /// `None` when there is no owning process, the cgroup is unreadable, or the
+    /// process is not under a systemd unit.
+    pub unit: Option<String>,
 }
 
 impl Listener {
@@ -195,10 +199,12 @@ async fn collect_dns(transport: &dyn Transport) -> DnsConfig {
 }
 
 async fn collect_listeners(transport: &dyn Transport) -> Vec<Listener> {
-    match run_stdout(transport, "ss", &["-tulpn"]).await {
+    let mut listeners = match run_stdout(transport, "ss", &["-tulpn"]).await {
         Some(out) => parse_ss_listeners(&out),
         None => Vec::new(),
-    }
+    };
+    correlate_units(transport, &mut listeners).await;
+    listeners
 }
 
 async fn collect_connections(transport: &dyn Transport) -> Vec<Connection> {
@@ -425,7 +431,55 @@ fn parse_ss_listener_line(line: &str) -> Option<Listener> {
         local_ip,
         port,
         process,
+        unit: None,
     })
+}
+
+// --- port -> process -> unit correlation -----------------------------------
+
+/// Fill in each listener's owning systemd unit by reading the cgroup of its
+/// process. PIDs are read at most once. Missing/unreadable cgroups leave the
+/// unit as `None` (partial data, never a failure).
+pub async fn correlate_units(transport: &dyn Transport, listeners: &mut [Listener]) {
+    let mut cache: HashMap<u32, Option<String>> = HashMap::new();
+    for listener in listeners.iter_mut() {
+        let Some(process) = &listener.process else {
+            continue;
+        };
+        let unit = match cache.get(&process.pid) {
+            Some(unit) => unit.clone(),
+            None => {
+                let unit = unit_for_pid(transport, process.pid).await;
+                cache.insert(process.pid, unit.clone());
+                unit
+            }
+        };
+        listener.unit = unit;
+    }
+}
+
+async fn unit_for_pid(transport: &dyn Transport, pid: u32) -> Option<String> {
+    let bytes = transport
+        .read_file(&format!("/proc/{pid}/cgroup"))
+        .await
+        .ok()?;
+    unit_from_cgroup(&String::from_utf8_lossy(&bytes))
+}
+
+/// Extract the leaf-most systemd unit from `/proc/<pid>/cgroup`, handling both
+/// cgroup v2 (`0::/system.slice/nginx.service`) and v1 (multiple
+/// `hierarchy:controller:path` lines). The first `.service`/`.scope` segment
+/// found walking each path from the leaf wins; pure slices yield `None`.
+fn unit_from_cgroup(content: &str) -> Option<String> {
+    for line in content.lines() {
+        let path = line.rsplit_once(':').map_or(line, |(_, path)| path);
+        for segment in path.rsplit('/') {
+            if segment.ends_with(".service") || segment.ends_with(".scope") {
+                return Some(segment.to_owned());
+            }
+        }
+    }
+    None
 }
 
 fn parse_ss_connections(s: &str) -> Vec<Connection> {
@@ -583,6 +637,52 @@ mod tests {
         assert_eq!(counts["TIME-WAIT"], 2);
         assert_eq!(counts["SYN-RECV"], 1);
         assert_eq!(counts["LISTEN"], 1);
+    }
+
+    #[test]
+    fn unit_from_cgroup_handles_v2_v1_and_scopes() {
+        assert_eq!(
+            unit_from_cgroup(include_str!("../fixtures/cgroup-v2-service.txt")).as_deref(),
+            Some("nginx.service")
+        );
+        assert_eq!(
+            unit_from_cgroup(include_str!("../fixtures/cgroup-v1-service.txt")).as_deref(),
+            Some("sshd.service")
+        );
+        // A login session resolves to its leaf scope, not the user manager.
+        assert_eq!(
+            unit_from_cgroup(include_str!("../fixtures/cgroup-user-scope.txt")).as_deref(),
+            Some("session-3.scope")
+        );
+        // A bare slice carries no unit.
+        assert_eq!(unit_from_cgroup("0::/system.slice"), None);
+        assert_eq!(unit_from_cgroup("0::/"), None);
+    }
+
+    #[tokio::test]
+    async fn correlate_units_maps_listeners_to_units() {
+        let mut listeners = parse_ss_listeners(include_str!("../fixtures/ss-tulpn.txt"));
+        let transport = MockTransport::new()
+            .with_file(
+                "/proc/842/cgroup",
+                include_bytes!("../fixtures/cgroup-v1-service.txt").to_vec(),
+            )
+            .with_file(
+                "/proc/1132/cgroup",
+                include_bytes!("../fixtures/cgroup-v2-service.txt").to_vec(),
+            );
+        correlate_units(&transport, &mut listeners).await;
+
+        let ssh = listeners.iter().find(|l| l.port == 22).unwrap();
+        assert_eq!(ssh.unit.as_deref(), Some("sshd.service"));
+        let nginx = listeners.iter().find(|l| l.port == 443).unwrap();
+        assert_eq!(nginx.unit.as_deref(), Some("nginx.service"));
+        // postgres pid has no cgroup fixture -> degrades to no unit.
+        let pg = listeners.iter().find(|l| l.port == 5432).unwrap();
+        assert_eq!(pg.unit, None);
+        // The processless rpcbind listener stays unattributed.
+        let rpc = listeners.iter().find(|l| l.port == 111).unwrap();
+        assert_eq!(rpc.unit, None);
     }
 
     #[tokio::test]

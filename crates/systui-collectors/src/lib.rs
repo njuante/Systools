@@ -17,7 +17,7 @@ pub use host_report::{HostReport, collect_host_report};
 pub use logs::{LogEntry, LogQuery, LogsCollector};
 pub use network::{
     AddrFamily, Connection, DnsConfig, InterfaceAddr, Listener, NetInterface, NetworkCollector,
-    NetworkSnapshot, ProcessRef, Protocol, Route,
+    NetworkSnapshot, ProcessRef, Protocol, Route, correlate_units,
 };
 pub use process::{
     Process, ProcessCollector, ProcessDetail, TreeRow, build_process_tree, process_detail,

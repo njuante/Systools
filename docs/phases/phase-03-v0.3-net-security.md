@@ -78,6 +78,9 @@ actions are out of scope (the action engine exists, but v0.3 only inspects).
   `/etc/resolv.conf` and `ss -tulpn`/`ss -tan`; each source degrades to empty
   independently. Listeners carry the owning `ProcessRef` from `ss -p`.
 - **S3.3 — Correlation**: port → process → systemd unit (via `/proc/<pid>/cgroup`).
+  **Done.** `correlate_units` fills each `Listener.unit` from the leaf-most
+  `.service`/`.scope` segment of the owning pid's cgroup (v1 + v2); PIDs read once,
+  unreadable cgroups degrade to `None`. `NetworkCollector` runs it automatically.
 - **S3.4 — Exposure map**: classify listeners (scope + sensitivity) into risk-ranked
   exposure entries with evidence.
 - **S3.5 — Connectivity tools**: ping, DNS lookup, TCP connect test.

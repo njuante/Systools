@@ -985,8 +985,13 @@ dependencies = [
 name = "systui-report"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "systui-collectors",
  "systui-core",
+ "systui-security",
+ "systui-transport",
+ "tokio",
 ]
 
 [[package]]

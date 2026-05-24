@@ -7,10 +7,11 @@
 //! requested `Privileged` mode to `SafeActions`. Missing `id`/`sudo` binaries
 //! degrade to "unknown / non-privileged" rather than crashing.
 
+use serde::{Deserialize, Serialize};
 use systui_core::{CommandSpec, ExecutionMode, Transport};
 
 /// What the connected user is able to do on the target host.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostCapabilities {
     /// Login name, e.g. `admin`; `"unknown"` if `id` could not be read.
     pub user: String,

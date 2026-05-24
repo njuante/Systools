@@ -39,14 +39,23 @@ pub enum Command {
         tag: Option<String>,
     },
 
-    /// Generate a report (implemented in phase 6).
+    /// Generate a report of a host's state (local, or remote with `--host`).
     Report {
-        /// Host id to report on.
+        /// Host to report on: an inventory id or `user@host`. Omit for local.
         #[arg(long)]
         host: Option<String>,
-        /// Output format.
+        /// Output format: `markdown`, `json` or `html`.
         #[arg(long, default_value = "markdown")]
         format: String,
+        /// Produce a security-focused report (affects markdown/html).
+        #[arg(long)]
+        security: bool,
+        /// Write the report to a file instead of stdout.
+        #[arg(long, short = 'o', value_name = "FILE")]
+        output: Option<PathBuf>,
+        /// Add a review note to the report (may be repeated).
+        #[arg(long, value_name = "TEXT")]
+        note: Vec<String>,
     },
 }
 
@@ -81,9 +90,15 @@ mod tests {
     fn report_format_defaults_to_markdown() {
         let cli = Cli::try_parse_from(["systui", "report", "--host", "db-01"]).unwrap();
         match cli.command {
-            Some(Command::Report { host, format }) => {
+            Some(Command::Report {
+                host,
+                format,
+                security,
+                ..
+            }) => {
                 assert_eq!(host.as_deref(), Some("db-01"));
                 assert_eq!(format, "markdown");
+                assert!(!security);
             }
             other => panic!("expected report command, got {other:?}"),
         }

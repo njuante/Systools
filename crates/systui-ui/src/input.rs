@@ -2,7 +2,7 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{ActionStage, App, InputMode};
+use crate::app::{ActionStage, App, InputMode, Tab};
 
 /// Apply a key press to the application state.
 pub fn handle_key(app: &mut App, key: KeyEvent) {
@@ -28,6 +28,20 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
                 KeyCode::Char(c) => app.push_action_char(c),
                 _ => {}
             },
+        }
+        return;
+    }
+
+    // Form overlays capture input while open.
+    if app.cron_form.is_some() {
+        match key.code {
+            KeyCode::Esc => app.close_cron_form(),
+            KeyCode::Enter => app.submit_cron_form(),
+            KeyCode::Tab | KeyCode::Down => app.cron_form_focus_next(),
+            KeyCode::BackTab | KeyCode::Up => app.cron_form_focus_prev(),
+            KeyCode::Backspace => app.cron_form_pop_char(),
+            KeyCode::Char(c) => app.cron_form_push_char(c),
+            _ => {}
         }
         return;
     }
@@ -63,7 +77,16 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('/') => app.enter_search(),
         KeyCode::Char('l') => app.cycle_log_level(),
         KeyCode::Char('t') => app.cycle_log_window(),
-        KeyCode::Char('a') => app.request_action(),
+        KeyCode::Char('a') => {
+            if app.current_tab() == Tab::Crons {
+                app.open_add_cron_form();
+            } else {
+                app.request_action();
+            }
+        }
+        KeyCode::Char('e') if app.current_tab() == Tab::Crons => app.open_edit_cron_form(),
+        KeyCode::Char('d') if app.current_tab() == Tab::Crons => app.request_delete_cron(),
+        KeyCode::Char('x') if app.current_tab() == Tab::Crons => app.request_toggle_cron(),
         KeyCode::Up => app.select_up(),
         KeyCode::Down => app.select_down(),
         KeyCode::Tab | KeyCode::Right => app.next_tab(),

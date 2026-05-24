@@ -172,9 +172,9 @@ snapshot may lag.
   [-o FILE]`) — JSON is the full model, MD/HTML a digest, escaped and self-contained.
   Inspection & reporting only — no mass destructive actions. (Host-vs-snapshot drift
   deferred to phase 9.)
-- **Phase 8.5 / v0.8.1 (In-TUI management & UX polish) — IN PROGRESS** on
+- **Phase 8.5 / v0.8.1 (In-TUI management & UX polish) complete** on
   `release/v0.8.1` (an intermediate phase before Policies; see
-  `docs/phases/phase-08-1-v0.8.1-management-ux.md`). Done so far:
+  `docs/phases/phase-08-1-v0.8.1-management-ux.md`). Complete:
   - **S8b.2** — config persistence: `systui-storage::save_host[_to]` /
     `remove_host[_from]` edit only the `[hosts.<id>]` table via `toml_edit`
     (preserving comments/other tables, atomic temp+rename); `Config::upsert_host` /
@@ -187,13 +187,14 @@ snapshot may lag.
     the **user crontab**) through the engine: schedule validated in `preview`, prior
     crontab backed up to `/tmp/systui-crontab.bak` via `tee`, installed via
     `crontab -` piping content through `CommandSpec::stdin`. Pure transforms tested.
-  - **TODO — S8b.5**: wire the form + `CronAction` into the **Crons tab** TUI (`a`
-    add, `e` edit, `d` delete, toggle enable/disable) through the engine
-    (preview/confirm/audit), refresh after. The cron *actions* exist; the **TUI
-    wiring in the Crons tab is not done yet**.
-  - **TODO — S8b.6**: TUI **layout polish** (header/status bar, borders/spacing,
-    severity badges, readable tables, loading/empty/error states) → then merge
-    `--no-ff` into `main` + tag `v0.8.1`.
+  - **S8b.5** — cron management in the Crons tab: `a` add, `e` edit, `d` delete,
+    `x` enable/disable for **user crontab** entries only, all routed through the
+    action engine (preview/confirm/audit) with refresh after execution. Disabled
+    user-crontab lines are collected as disabled entries so they can be re-enabled.
+  - **S8b.6** — TUI layout polish: clearer Crons-tab action/status hints,
+    enabled/disabled state badges, updated help/footer text, disabled-entry report
+    rendering, and the existing shared header/status, bordered content, severity
+    badges and loading/empty/error states kept centralised.
 - **Next: Phase 9 / v0.9 — Policies & expected state** (after v0.8.1 is tagged).
   Start with the phase context file (`docs/phases/`) before any code, per the
   methodology. Read `docs/ROADMAP.md` for the v0.9 scope.

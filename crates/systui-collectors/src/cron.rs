@@ -38,6 +38,9 @@ pub struct CronEntry {
     pub source: CronSource,
     /// The originating path or command, e.g. `/etc/cron.d/backup` or `crontab -l`.
     pub origin: String,
+    /// Whether the entry is active. User-crontab entries commented out with `#`
+    /// are surfaced as disabled so they can be re-enabled from the TUI.
+    pub enabled: bool,
 }
 
 /// Parse crontab-format text. `has_user_field` is true for system crontabs
@@ -52,24 +55,34 @@ pub fn parse_crontab(
 ) -> Vec<CronEntry> {
     text.lines()
         .filter_map(|line| parse_line(line, has_user_field))
-        .map(|(schedule, user, command)| CronEntry {
-            schedule,
-            user,
-            command,
-            source,
-            origin: origin.to_owned(),
+        .filter_map(|(schedule, user, command, enabled)| {
+            (enabled || source == CronSource::User).then_some(CronEntry {
+                schedule,
+                user,
+                command,
+                source,
+                origin: origin.to_owned(),
+                enabled,
+            })
         })
         .collect()
 }
 
-fn parse_line(line: &str, has_user_field: bool) -> Option<(String, Option<String>, String)> {
+fn parse_line(line: &str, has_user_field: bool) -> Option<(String, Option<String>, String, bool)> {
     let line = line.trim();
-    if line.is_empty() || line.starts_with('#') || is_env_assignment(line) {
+    let (line, enabled) = match line.strip_prefix('#') {
+        Some(disabled) => (disabled.trim_start(), false),
+        None => (line, true),
+    };
+    if line.is_empty() || is_env_assignment(line) {
         return None;
     }
 
     let tokens: Vec<&str> = line.split_whitespace().collect();
     let first = *tokens.first()?;
+    if !enabled && !looks_like_cron_schedule(&tokens) {
+        return None;
+    }
 
     // `@macro` schedules are a single token; otherwise the first five fields.
     let (schedule, mut idx) = if first.starts_with('@') {
@@ -92,7 +105,28 @@ fn parse_line(line: &str, has_user_field: bool) -> Option<(String, Option<String
     if idx >= tokens.len() {
         return None;
     }
-    Some((schedule, user, tokens[idx..].join(" ")))
+    Some((schedule, user, tokens[idx..].join(" "), enabled))
+}
+
+fn looks_like_cron_schedule(tokens: &[&str]) -> bool {
+    let Some(first) = tokens.first() else {
+        return false;
+    };
+    if first.starts_with('@') {
+        return tokens.len() >= 2;
+    }
+    tokens.len() >= 6
+        && tokens[0]
+            .chars()
+            .any(|c| c.is_ascii_digit() || matches!(c, '*' | '/' | ','))
+        && tokens
+            .iter()
+            .take(5)
+            .all(|token| token.chars().all(is_cron_field_char))
+}
+
+fn is_cron_field_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '*' | '/' | ',' | '-' | '?' | 'L' | 'W' | '#')
 }
 
 /// A `NAME=value` (or `NAME = value`) environment line, not a job.
@@ -150,6 +184,7 @@ pub async fn collect_cron_entries(transport: &dyn Transport) -> Vec<CronEntry> {
                         command: format!("{dir}/{}", entry.name),
                         source: CronSource::Periodic,
                         origin: (*dir).to_owned(),
+                        enabled: true,
                     });
                 }
             }
@@ -563,6 +598,16 @@ mod tests {
         assert_eq!(entries[1].schedule, "*/5 * * * *");
         let daily = entries.iter().find(|e| e.schedule == "@daily").unwrap();
         assert_eq!(daily.command, "/opt/cleanup.sh");
+    }
+
+    #[test]
+    fn parses_disabled_user_crontab_entries() {
+        let text = "# regular operator note with enough words\n#*/5 * * * * /opt/poll.sh\n";
+        let entries = parse_crontab(text, false, CronSource::User, "crontab -l");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].schedule, "*/5 * * * *");
+        assert_eq!(entries[0].command, "/opt/poll.sh");
+        assert!(!entries[0].enabled);
     }
 
     #[test]

@@ -271,6 +271,9 @@ fn parse_job_line(line: &str) -> Option<(String, String)> {
 
 /// Whether an active (uncommented) line is the job `(schedule, command)`.
 fn is_active_match(line: &str, schedule: &str, command: &str) -> bool {
+    if line.trim_start().starts_with('#') {
+        return false;
+    }
     parse_job_line(line).is_some_and(|(s, c)| s == schedule && c == command)
 }
 
@@ -339,6 +342,9 @@ fn replace_job(
             if !replaced && is_active_match(line, old_schedule, old_command) {
                 replaced = true;
                 format!("{new_schedule} {new_command}")
+            } else if !replaced && is_disabled_match(line, old_schedule, old_command) {
+                replaced = true;
+                format!("#{new_schedule} {new_command}")
             } else {
                 line.to_owned()
             }
@@ -445,6 +451,19 @@ mod tests {
         .unwrap();
         assert!(out.contains("0 4 * * * /backup2.sh"));
         assert!(!out.contains("/backup.sh"));
+    }
+
+    #[test]
+    fn replace_keeps_disabled_jobs_disabled() {
+        let out = replace_job(
+            "#0 3 * * * /backup.sh\n",
+            "0 3 * * *",
+            "/backup.sh",
+            "0 4 * * *",
+            "/backup2.sh",
+        )
+        .unwrap();
+        assert_eq!(out, "#0 4 * * * /backup2.sh\n");
     }
 
     #[test]

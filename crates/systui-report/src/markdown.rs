@@ -359,12 +359,13 @@ fn crons(out: &mut String, report: &Report) {
     if report.crons.is_empty() {
         let _ = writeln!(out, "No cron jobs.");
     } else {
-        let _ = writeln!(out, "| Schedule | User | Command |");
-        let _ = writeln!(out, "| --- | --- | --- |");
+        let _ = writeln!(out, "| State | Schedule | User | Command |");
+        let _ = writeln!(out, "| --- | --- | --- | --- |");
         for entry in &report.crons {
             let _ = writeln!(
                 out,
-                "| `{}` | {} | {} |",
+                "| {} | `{}` | {} | {} |",
+                if entry.enabled { "enabled" } else { "disabled" },
                 entry.schedule,
                 entry.user.as_deref().unwrap_or("—"),
                 entry.command,

@@ -46,6 +46,7 @@ pub fn script_path(command: &str) -> Option<&str> {
 fn script_paths(entries: &[CronEntry]) -> Vec<String> {
     let mut paths: Vec<String> = entries
         .iter()
+        .filter(|e| e.enabled)
         .filter_map(|e| script_path(&e.command).map(str::to_owned))
         .collect();
     paths.sort_unstable();
@@ -87,6 +88,9 @@ pub fn check_crons(entries: &[CronEntry], scripts: &HashMap<String, StatInfo>) -
 /// Risk findings for a single cron entry (duplicates are handled across the set).
 fn check_entry(entry: &CronEntry, scripts: &HashMap<String, StatInfo>) -> Vec<Finding> {
     let mut out = Vec::new();
+    if !entry.enabled {
+        return out;
+    }
     let is_root = entry.user.as_deref() == Some("root");
 
     match parse_schedule(&entry.schedule) {
@@ -227,6 +231,9 @@ fn high_frequency(entry: &CronEntry, schedule: &CronSchedule) -> Option<Finding>
 fn duplicate_findings(entries: &[CronEntry]) -> Vec<Finding> {
     let mut counts: HashMap<(&str, &str), usize> = HashMap::new();
     for entry in entries {
+        if !entry.enabled {
+            continue;
+        }
         *counts
             .entry((entry.schedule.as_str(), entry.command.as_str()))
             .or_default() += 1;
@@ -275,6 +282,7 @@ mod tests {
             command: command.to_owned(),
             source,
             origin: "/etc/crontab".to_owned(),
+            enabled: true,
         }
     }
 

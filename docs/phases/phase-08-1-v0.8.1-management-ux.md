@@ -138,9 +138,21 @@ writing, and an audit record for every change.
   failure, invalid-schedule rejection) are unit-tested with `MockTransport`.
 - **S8b.5 — Cron management in the Crons tab**: wire the form + `CronAction` through
   the engine (preview/confirm/audit) into the Crons tab; refresh after.
+  **Done.** The Crons tab now manages **user crontab** entries only: `a` opens an
+  add form, `e` edits the selected user entry, `d` plans a delete, and `x`
+  toggles enable/disable. Each path creates a `CronAction`, goes through the same
+  engine preview/confirmation/audit modal as services/processes/docker, and
+  requests a refresh after execution. System cron sources and systemd timers stay
+  read-only. Disabled user-crontab lines are collected as disabled entries so they
+  can be re-enabled from the TUI; cron risk checks ignore disabled entries.
 - **S8b.6 — TUI layout polish + close**: header/status bar, borders/spacing,
   severity badges, readable tables, loading/empty/error states across tabs; final
   gates; merge `--no-ff` into `main` + tag `v0.8.1`.
+  **Done.** The per-host TUI now has clearer Crons-tab action/status hints,
+  enabled/disabled state badges, disabled-entry rendering in reports, and updated
+  help/footer text for the management workflow. Existing header/status, bordered
+  content, severity badges and render-state messages remain centralised in the
+  shared renderer.
 
 ## Definition of Done
 

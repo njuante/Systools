@@ -5,8 +5,10 @@
 //! v0.2 introduces the concrete actions (service operations); the engine that
 //! drives them through the full safety pipeline arrives in session S2.5.
 
+pub mod engine;
 pub mod process;
 pub mod service;
 
+pub use engine::{ActionDecision, ActionEngine};
 pub use process::{Signal, SignalAction};
 pub use service::{ServiceAction, ServiceOp};

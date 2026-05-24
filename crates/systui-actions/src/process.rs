@@ -71,17 +71,6 @@ impl SignalAction {
         }
     }
 
-    /// A reason the action is hard-blocked, if any.
-    pub fn guardrail(&self) -> Option<String> {
-        if self.pid == 1 {
-            Some("PID 1 (init) is protected and cannot be signaled".to_owned())
-        } else if self.pid == std::process::id() {
-            Some("refusing to signal the SysTUI process itself".to_owned())
-        } else {
-            None
-        }
-    }
-
     fn command(&self) -> CommandSpec {
         CommandSpec::new("kill")
             .arg("-s")
@@ -104,6 +93,16 @@ impl Action for SignalAction {
         // Signaling your own processes needs no privilege; signaling others fails
         // with a permission error, which is surfaced as-is.
         false
+    }
+
+    fn guardrail(&self) -> Option<String> {
+        if self.pid == 1 {
+            Some("PID 1 (init) is protected and cannot be signaled".to_owned())
+        } else if self.pid == std::process::id() {
+            Some("refusing to signal the SysTUI process itself".to_owned())
+        } else {
+            None
+        }
     }
 
     async fn preview(&self, _transport: &dyn Transport) -> Result<ActionPreview> {

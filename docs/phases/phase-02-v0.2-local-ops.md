@@ -86,8 +86,11 @@ Everything still goes through the `Transport`/`CommandSpec` contracts; the UI on
   time window (re-collect), `/` enters incremental case-insensitive regex search
   (client-side) with a filter bar. Unit filter is collector-ready; its UI picker is
   deferred to a later session.
-- **S2.5 — Action engine**: `systui-actions` pipeline (permission → read-only → risk
-  → preview → confirm → backup → execute → verify → audit), transport-agnostic.
+- **S2.5 — Action engine** *(done)*: `ActionEngine` drives the pipeline —
+  guardrail → read-only/permission → risk → preview → confirmation → (backup) →
+  execute → verify. `plan` returns Rejected / NeedsConfirmation / Ready; `execute`
+  re-checks and verifies the typed phrase. Transport-agnostic. Audit persistence
+  is wired in S2.6; UI invocation in S2.7.
 - **S2.6 — Read-only mode + audit log**: enforce read-only at the engine; append
   audit records via `systui-storage`.
 - **S2.7 — Contextual confirmations + guardrails** + polish → **tag v0.2**.

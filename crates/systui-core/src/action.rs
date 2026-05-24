@@ -51,6 +51,12 @@ pub trait Action: Send + Sync {
     /// Whether elevated privileges are required.
     fn requires_privilege(&self) -> bool;
 
+    /// A reason this action is hard-blocked (e.g. a protected target), if any.
+    /// The engine rejects blocked actions before preview/execution.
+    fn guardrail(&self) -> Option<String> {
+        None
+    }
+
     /// Describe the action for the confirmation/preview step. Read-only.
     async fn preview(&self, transport: &dyn Transport) -> Result<ActionPreview>;
 

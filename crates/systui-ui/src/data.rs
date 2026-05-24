@@ -5,11 +5,13 @@
 //! foundation's single-collector wiring; phase 1 generalises it into a proper
 //! controller with background refresh.
 
+use std::time::Instant;
+
 use chrono::Local;
 use systui_collectors::{
     DatabaseCollector, DockerCollector, InspectSummary, LogsCollector, NetworkCollector,
     collect_cron_entries, collect_host_report, collect_timers, container_stats, exposure_map,
-    inspect_container,
+    inspect_container, timing,
 };
 use systui_core::{Collector, CoreError, Transport};
 use systui_security::{cron_findings, database_findings, docker_findings, security_scan};
@@ -22,11 +24,11 @@ use crate::app::{App, ViewState};
 /// The system snapshot is the core view: if it fails, the whole refresh fails.
 /// Other collectors are best-effort and degrade to empty.
 pub fn refresh_blocking(runtime: &Runtime, transport: &dyn Transport, app: &mut App) {
+    let started = Instant::now();
     app.view_state = ViewState::Loading;
-    match runtime.block_on(collect_host_report(
-        transport,
-        &app.thresholds,
-        &app.log_query,
+    match runtime.block_on(timing::timed(
+        "host_report",
+        collect_host_report(transport, &app.thresholds, &app.log_query),
     )) {
         Ok(report) => {
             app.push_history(
@@ -44,6 +46,11 @@ pub fn refresh_blocking(runtime: &Runtime, transport: &dyn Transport, app: &mut 
         }
         Err(err) => apply_error(app, err),
     }
+    tracing::info!(
+        target: timing::PERF_TARGET,
+        collector = "refresh_total",
+        elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+    );
 }
 
 /// Collect the network snapshot, exposure map and security findings. All are
@@ -51,23 +58,27 @@ pub fn refresh_blocking(runtime: &Runtime, transport: &dyn Transport, app: &mut 
 /// never a failed refresh.
 fn refresh_network_security(runtime: &Runtime, transport: &dyn Transport, app: &mut App) {
     let network = runtime
-        .block_on(NetworkCollector::new().collect(transport))
+        .block_on(timing::timed(
+            "network",
+            NetworkCollector::new().collect(transport),
+        ))
         .ok();
     let exposures = network
         .as_ref()
         .map(|net| exposure_map(&net.listeners))
         .unwrap_or_default();
-    let findings = runtime.block_on(security_scan(
-        transport,
-        &exposures,
-        app.cert_warning_days,
-        &[],
+    let findings = runtime.block_on(timing::timed(
+        "security_scan",
+        security_scan(transport, &exposures, app.cert_warning_days, &[]),
     ));
     app.network = network;
     app.exposures = exposures;
     app.findings = findings;
     app.databases = runtime
-        .block_on(DatabaseCollector::new().collect(transport))
+        .block_on(timing::timed(
+            "databases",
+            DatabaseCollector::new().collect(transport),
+        ))
         .unwrap_or_default();
     app.findings.extend(database_findings(&app.databases));
 }
@@ -78,8 +89,12 @@ fn refresh_network_security(runtime: &Runtime, transport: &dyn Transport, app: &
 /// to empty rather than failing the refresh. Must run after
 /// [`refresh_network_security`], whose findings it appends to.
 fn refresh_docker_crons(runtime: &Runtime, transport: &dyn Transport, app: &mut App) {
-    match runtime.block_on(DockerCollector::new().collect(transport)) {
+    match runtime.block_on(timing::timed(
+        "docker",
+        DockerCollector::new().collect(transport),
+    )) {
         Ok(containers) => {
+            let inspect_start = Instant::now();
             let inspects: Vec<InspectSummary> = containers
                 .iter()
                 .filter_map(|c| {
@@ -89,9 +104,14 @@ fn refresh_docker_crons(runtime: &Runtime, transport: &dyn Transport, app: &mut 
                         .flatten()
                 })
                 .collect();
+            tracing::info!(
+                target: timing::PERF_TARGET,
+                collector = "docker_inspects",
+                elapsed_ms = inspect_start.elapsed().as_secs_f64() * 1000.0,
+            );
             app.findings.extend(docker_findings(&inspects));
             app.container_stats = runtime
-                .block_on(container_stats(transport))
+                .block_on(timing::timed("container_stats", container_stats(transport)))
                 .unwrap_or_default();
             app.container_inspects = inspects;
             app.containers = containers;
@@ -105,11 +125,13 @@ fn refresh_docker_crons(runtime: &Runtime, transport: &dyn Transport, app: &mut 
         }
     }
 
-    let crons = runtime.block_on(collect_cron_entries(transport));
-    app.findings
-        .extend(runtime.block_on(cron_findings(transport, &crons)));
+    let crons = runtime.block_on(timing::timed("crons", collect_cron_entries(transport)));
+    app.findings.extend(runtime.block_on(timing::timed(
+        "cron_findings",
+        cron_findings(transport, &crons),
+    )));
     app.crons = crons;
-    app.timers = runtime.block_on(collect_timers(transport));
+    app.timers = runtime.block_on(timing::timed("timers", collect_timers(transport)));
     app.now = Local::now().naive_local();
 
     // Merged findings (security + docker + cron) re-sorted worst-first.

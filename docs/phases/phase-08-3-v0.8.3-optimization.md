@@ -133,3 +133,50 @@ tests and the action-engine contract must keep passing.
   behaviour; measure the binary-size/startup win before committing to it.
 - **Don't micro-optimize the renderer**: ratatui re-renders the whole frame cheaply;
   the wins are in scheduling and I/O, not in the draw path.
+
+## Progress
+
+### S8d.1 — Context + measurement harness ✅
+
+- Context file (this) + ROADMAP insert: done.
+- **Measurement harness**: every collector and the overall gather are wrapped in
+  `systui_collectors::timing::timed`, which emits how long the work took as a
+  `tracing` event under the `systui::perf` target. Wired into both refresh paths —
+  the TUI refresh (`systui-ui::data`, `refresh_total`) and the headless gather
+  (`systui-report::gather`, `gather_total`, the non-TUI equivalent of the dashboard
+  refresh). Dormant unless enabled. Capture with:
+
+  ```sh
+  SYSTUI_LOG=systui::perf=info systui report -o /dev/null            # local, full breakdown
+  SYSTUI_LOG=systui::perf=info systui report --host <id> -o /dev/null # over SSH
+  SYSTUI_LOG=systui::perf=info systui                                 # live TUI refresh
+  ```
+
+#### Baselines (release build, sequential gather)
+
+Per-collector cost in ms, captured via `systui report` (headless gather, identical
+collector set and order to the dashboard refresh).
+
+| collector      | local (ms) | SSH `vpn` (ms) |
+|----------------|-----------:|---------------:|
+| system         |      210.8 |          298.7 |
+| processes      |       20.8 |           15.0 |
+| failed_units   |        7.6 |           10.1 |
+| logs           |       26.3 |           23.4 |
+| network        |       36.6 |           42.5 |
+| security_scan  |       28.5 |          310.5 |
+| docker         |       14.2 |            7.8 |
+| crons          |        0.2 |           91.7 |
+| cron_findings  |        0.0 |           11.5 |
+| timers         |        9.2 |           22.9 |
+| databases      |       36.0 |           68.2 |
+| **gather_total** | **390.6** |      **902.5** |
+
+**Reading the numbers.** Locally the `system` collector alone is ~54% of the total
+because it samples CPU with a ~200ms delay between two `/proc/stat` reads — a fixed
+floor unrelated to I/O. Over SSH the per-command latency multiplier shows up exactly
+where a collector issues many small commands: `security_scan` (28→310ms), `crons`
+(0.2→92ms), `cron_findings`, `databases`. The gather is strictly sequential, so the
+total is the sum of all of them — which is what S8d.2 (background), S8d.3
+(concurrency) and S8d.5 (batching) attack. Slow-changing data folded into `system`
+(hostname/kernel/etc.) is re-collected every tick → S8d.4 (tiering).

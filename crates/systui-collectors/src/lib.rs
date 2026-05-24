@@ -17,6 +17,7 @@ pub mod network;
 pub mod process;
 pub mod service;
 pub mod system;
+pub mod timing;
 
 pub use capabilities::{HostCapabilities, probe_capabilities};
 pub use connectivity::{DnsLookup, PingResult, TcpProbe, dns_lookup, ping, tcp_connect};

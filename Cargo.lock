@@ -969,6 +969,7 @@ dependencies = [
  "systui-core",
  "systui-transport",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -993,6 +994,7 @@ dependencies = [
  "systui-security",
  "systui-transport",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1047,6 +1049,7 @@ dependencies = [
  "systui-storage",
  "systui-transport",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

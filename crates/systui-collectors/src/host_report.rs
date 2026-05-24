@@ -6,7 +6,7 @@ use systui_core::{Collector, Result, Thresholds, Transport};
 
 use crate::{
     FailedUnitsCollector, HealthReport, LogEntry, LogQuery, LogsCollector, Process,
-    ProcessCollector, ServiceUnit, SystemCollector, SystemSnapshot, evaluate_health,
+    ProcessCollector, ServiceUnit, SystemCollector, SystemSnapshot, evaluate_health, timing,
 };
 
 /// A complete collected view of a host at one point in time.
@@ -28,19 +28,22 @@ pub async fn collect_host_report(
     thresholds: &Thresholds,
     log_query: &LogQuery,
 ) -> Result<HostReport> {
-    let snapshot = SystemCollector::new().collect(transport).await?;
-    let processes = ProcessCollector::new()
-        .collect(transport)
+    let snapshot = timing::timed("system", SystemCollector::new().collect(transport)).await?;
+    let processes = timing::timed("processes", ProcessCollector::new().collect(transport))
         .await
         .unwrap_or_default();
-    let failed_units = FailedUnitsCollector::new()
-        .collect(transport)
-        .await
-        .unwrap_or_default();
-    let logs = LogsCollector::with_query(log_query.clone())
-        .collect(transport)
-        .await
-        .unwrap_or_default();
+    let failed_units = timing::timed(
+        "failed_units",
+        FailedUnitsCollector::new().collect(transport),
+    )
+    .await
+    .unwrap_or_default();
+    let logs = timing::timed(
+        "logs",
+        LogsCollector::with_query(log_query.clone()).collect(transport),
+    )
+    .await
+    .unwrap_or_default();
 
     let recent_errors = logs.iter().filter(|e| e.is_error()).count();
     let health = evaluate_health(&snapshot, failed_units.len(), recent_errors, thresholds);

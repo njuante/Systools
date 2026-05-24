@@ -2,10 +2,12 @@
 //! [`Transport`] and assemble a [`Report`]. This is the non-TUI equivalent of the
 //! dashboard refresh, used by the `report` CLI for local and remote hosts.
 
+use std::time::Instant;
+
 use systui_collectors::{
     DatabaseCollector, DockerCollector, InspectSummary, LogQuery, NetworkCollector,
     collect_cron_entries, collect_host_report, collect_timers, container_stats, exposure_map,
-    inspect_container, probe_capabilities,
+    inspect_container, probe_capabilities, timing,
 };
 use systui_core::{Collector, Config, ExecutionMode, Result, Transport};
 use systui_security::{cron_findings, database_findings, docker_findings, security_scan};
@@ -29,26 +31,33 @@ pub async fn gather_report(
     let capabilities = probe_capabilities(transport).await;
     let effective_mode = capabilities.effective_mode(mode);
 
+    let gather_start = Instant::now();
     let host = collect_host_report(transport, &config.thresholds, &LogQuery::default()).await?;
 
-    let network = NetworkCollector::new().collect(transport).await.ok();
+    let network = timing::timed("network", NetworkCollector::new().collect(transport))
+        .await
+        .ok();
     let exposures = network
         .as_ref()
         .map(|net| exposure_map(&net.listeners))
         .unwrap_or_default();
 
-    let mut findings = security_scan(
-        transport,
-        &exposures,
-        config.security.cert_expiry_warning_days,
-        &[],
+    let mut findings = timing::timed(
+        "security_scan",
+        security_scan(
+            transport,
+            &exposures,
+            config.security.cert_expiry_warning_days,
+            &[],
+        ),
     )
     .await;
 
     // Docker (best-effort; an unreachable daemon yields an empty, unavailable view).
     let (containers, container_inspects, container_stats_data, docker_available) =
-        match DockerCollector::new().collect(transport).await {
+        match timing::timed("docker", DockerCollector::new().collect(transport)).await {
             Ok(containers) => {
+                let inspect_start = Instant::now();
                 let inspects: Vec<InspectSummary> = {
                     let mut v = Vec::new();
                     for c in &containers {
@@ -58,21 +67,32 @@ pub async fn gather_report(
                     }
                     v
                 };
+                tracing::info!(
+                    target: timing::PERF_TARGET,
+                    collector = "docker_inspects",
+                    elapsed_ms = inspect_start.elapsed().as_secs_f64() * 1000.0,
+                );
                 findings.extend(docker_findings(&inspects));
-                let stats = container_stats(transport).await.unwrap_or_default();
+                let stats = timing::timed("container_stats", container_stats(transport))
+                    .await
+                    .unwrap_or_default();
                 (containers, inspects, stats, true)
             }
             Err(_) => (Vec::new(), Vec::new(), Vec::new(), false),
         };
 
-    let crons = collect_cron_entries(transport).await;
-    findings.extend(cron_findings(transport, &crons).await);
-    let timers = collect_timers(transport).await;
-    let databases = DatabaseCollector::new()
-        .collect(transport)
+    let crons = timing::timed("crons", collect_cron_entries(transport)).await;
+    findings.extend(timing::timed("cron_findings", cron_findings(transport, &crons)).await);
+    let timers = timing::timed("timers", collect_timers(transport)).await;
+    let databases = timing::timed("databases", DatabaseCollector::new().collect(transport))
         .await
         .unwrap_or_default();
     findings.extend(database_findings(&databases));
+    tracing::info!(
+        target: timing::PERF_TARGET,
+        collector = "gather_total",
+        elapsed_ms = gather_start.elapsed().as_secs_f64() * 1000.0,
+    );
 
     // Merged findings (security + docker + cron), worst-first.
     findings.sort_by(|a, b| b.severity.cmp(&a.severity).then_with(|| a.id.cmp(&b.id)));

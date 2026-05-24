@@ -114,12 +114,15 @@ snapshot may lag.
 - **Phase 4 / v0.4 (Docker & crons) — in progress.** Done: **S4.1** context;
   **S4.2** Docker collectors (`DockerCollector`, `container_stats`, `inspect_container`
   → `InspectSummary`); **S4.3** Docker ops (`DockerAction` start/stop/restart/remove
-  via the action engine + `container_logs` reader).
-- **Next: S4.4 — Docker risk checks**: privileged, docker.sock mount, dangerous
-  mounts (`/`,`/etc`,`/var/run`), sensitive published ports, unhealthy, restart
-  loops, `latest` tag, no mem limit → `Finding`s in `systui-security` over
-  `InspectSummary`. Then S4.5 cron sources, S4.6 timers + validation, S4.7 cron
-  checks → tag `v0.4`. Read `docs/phases/phase-04-v0.4-docker-crons.md` first.
+  via the action engine + `container_logs` reader); **S4.4** Docker risk checks
+  (`docker_findings` over `InspectSummary`: privileged, docker.sock/dangerous mounts,
+  sensitive published ports via reused `exposure_map`, unhealthy, restart loops,
+  `latest`, no mem limit).
+- **Next: S4.5 — Cron sources**: parse per-user `crontab -l`, `/etc/crontab`,
+  `/etc/cron.d/*` and `/etc/cron.{hourly,daily,weekly,monthly}` into cron entries
+  in `systui-collectors::cron`, fixture-tested. Then S4.6 timers + validation +
+  next-run, S4.7 cron checks + Docker/Crons tabs → tag `v0.4`. Read
+  `docs/phases/phase-04-v0.4-docker-crons.md` first.
 
 ## Starting a session
 

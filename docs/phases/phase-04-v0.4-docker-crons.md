@@ -110,6 +110,12 @@ checks produce shared `Finding`s. Crons are **read-only/detection** this phase.
   ports/volumes(mounts)/networks already come from `InspectSummary` (S4.2).
 - **S4.4 — Docker risk checks**: privileged, docker.sock mount, dangerous mounts,
   sensitive published ports, unhealthy, restart loops, `latest` tag, no mem limit.
+  **Done.** `systui-security::docker::{check_container, docker_findings}` over
+  `InspectSummary`: privileged (High), docker.sock mount (Critical), dangerous host
+  mounts `/`/`/etc`/`/var/run`/`/run` (High), sensitive published ports
+  (reusing the v0.3 `exposure_map` so the port set lives in one place — High/Critical),
+  unhealthy + restart loop ≥5 (Medium), `latest` tag + no memory limit (Low).
+  Pure, worst-first, fixture-tested.
 - **S4.5 — Cron sources**: user crontab, `/etc/crontab`, `/etc/cron.d`, `cron.*`.
 - **S4.6 — Timers & validation**: systemd timers, cron expression validation,
   next-run preview.

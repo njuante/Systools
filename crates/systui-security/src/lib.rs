@@ -9,6 +9,7 @@
 //! later phase; for now every finding is reported as `Open`.
 
 pub mod certs;
+pub mod docker;
 pub mod ports;
 pub mod ssh;
 pub mod sudo;
@@ -18,6 +19,7 @@ pub use certs::{
     CertInfo, certificate_findings, check_certificate, days_until_expiry, parse_x509,
     read_local_cert, read_remote_cert,
 };
+pub use docker::{check_container, docker_findings};
 pub use ports::check_exposed_ports;
 pub use ssh::{check_failed_logins, check_sshd_config, count_failed_logins};
 pub use sudo::{SudoEntry, check_sudo, parse_sudoers};

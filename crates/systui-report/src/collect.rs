@@ -12,22 +12,27 @@ use std::time::Instant;
 
 use systui_collectors::{
     Container, ContainerStats, CronEntry, DatabaseCollector, DatabaseSnapshot, DockerCollector,
-    ExposureEntry, InspectSummary, NetworkCollector, NetworkSnapshot, collect_cron_entries,
-    container_stats, exposure_map, inspect_container, timing,
+    ExposureEntry, InspectSummary, NetStatics, NetworkCollector, NetworkSnapshot,
+    collect_cron_entries, container_stats, exposure_map, inspect_container, timing,
 };
 use systui_core::{Collector, Finding, Transport};
 use systui_security::{cron_findings, database_findings, docker_findings, security_scan};
 
 /// Network snapshot → exposure map → security scan. The scan depends on the
 /// exposures, so this chain stays ordered. Returns the snapshot, the exposures
-/// and the security findings.
+/// and the security findings. `net_statics` reuses the slow-changing networking
+/// (interfaces/routes/DNS) when present (tiered refresh); pass `None` for fresh.
 pub async fn gather_network(
     transport: &dyn Transport,
     cert_warning_days: u32,
+    net_statics: Option<NetStatics>,
 ) -> (Option<NetworkSnapshot>, Vec<ExposureEntry>, Vec<Finding>) {
-    let network = timing::timed("network", NetworkCollector::new().collect(transport))
-        .await
-        .ok();
+    let network = timing::timed(
+        "network",
+        NetworkCollector::with_statics(net_statics).collect(transport),
+    )
+    .await
+    .ok();
     let exposures = network
         .as_ref()
         .map(|net| exposure_map(&net.listeners))

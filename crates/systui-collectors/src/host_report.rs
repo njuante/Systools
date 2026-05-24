@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use systui_core::{Collector, Result, Thresholds, Transport};
 
 use crate::{
-    FailedUnitsCollector, HealthReport, LogEntry, LogQuery, LogsCollector, Process,
+    FailedUnitsCollector, HealthReport, HostStatics, LogEntry, LogQuery, LogsCollector, Process,
     ProcessCollector, ServiceUnit, SystemCollector, SystemSnapshot, evaluate_health, timing,
 };
 
@@ -23,16 +23,19 @@ pub struct HostReport {
 ///
 /// The system snapshot is required; processes, failed units and logs are
 /// best-effort and degrade to empty. Health is computed from the result.
+/// `host_statics` reuses the slow-changing host identity (hostname/OS/kernel)
+/// when present, so a refresh skips re-reading it; pass `None` to read it fresh.
 pub async fn collect_host_report(
     transport: &dyn Transport,
     thresholds: &Thresholds,
     log_query: &LogQuery,
+    host_statics: Option<HostStatics>,
 ) -> Result<HostReport> {
     // The four readers are independent, so run them concurrently: while the
     // system collector waits out its CPU-sampling delay, the others' I/O
     // overlaps it. Bound to locals so the collectors outlive the borrowed
     // futures held by `join!`. Results are folded deterministically below.
-    let system = SystemCollector::new();
+    let system = SystemCollector::with_statics(host_statics);
     let processes_collector = ProcessCollector::new();
     let failed_collector = FailedUnitsCollector::new();
     let logs_collector = LogsCollector::with_query(log_query.clone());
@@ -92,6 +95,7 @@ mod tests {
             &full_transport(),
             &Thresholds::default(),
             &LogQuery::default(),
+            None,
         )
         .await
         .unwrap();
@@ -107,9 +111,14 @@ mod tests {
     async fn fails_when_system_snapshot_fails() {
         let transport = MockTransport::new(); // nothing configured
         assert!(
-            collect_host_report(&transport, &Thresholds::default(), &LogQuery::default())
-                .await
-                .is_err()
+            collect_host_report(
+                &transport,
+                &Thresholds::default(),
+                &LogQuery::default(),
+                None
+            )
+            .await
+            .is_err()
         );
     }
 }

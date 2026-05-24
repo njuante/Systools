@@ -11,8 +11,9 @@ use std::time::Instant;
 use chrono::{Local, NaiveDateTime};
 use systui_collectors::{
     Container, ContainerStats, CronEntry, DatabaseSnapshot, ExposureEntry, HealthReport,
-    InspectSummary, LogEntry, LogQuery, LogsCollector, NetworkSnapshot, Process, ServiceUnit,
-    SystemSnapshot, SystemdTimer, collect_host_report, collect_timers, timing,
+    HostStatics, InspectSummary, LogEntry, LogQuery, LogsCollector, NetStatics, NetworkSnapshot,
+    Process, ServiceUnit, SystemSnapshot, SystemdTimer, collect_host_report, collect_timers,
+    timing,
 };
 use systui_core::{Collector, CoreError, Finding, Thresholds, Transport};
 use systui_report::collect::{
@@ -60,6 +61,8 @@ pub async fn gather(
     thresholds: &Thresholds,
     log_query: &LogQuery,
     cert_warning_days: u32,
+    host_statics: Option<HostStatics>,
+    net_statics: Option<NetStatics>,
 ) -> RefreshOutcome {
     let started = Instant::now();
 
@@ -67,13 +70,15 @@ pub async fn gather(
     // *inside* each group (exposures→security_scan, docker→inspects→stats,
     // crons→cron_findings); the groups themselves share nothing, so a slow one
     // (e.g. the SSH-heavy security scan) overlaps the others instead of adding to
-    // the total. host_report's failure fails the whole refresh.
+    // the total. host_report's failure fails the whole refresh. The slow-changing
+    // tiers (`host_statics`/`net_statics`) are reused when present so the tick
+    // skips re-reading them.
     let (report, net, dbs, docker, crons_group, timers) = tokio::join!(
         timing::timed(
             "host_report",
-            collect_host_report(transport, thresholds, log_query)
+            collect_host_report(transport, thresholds, log_query, host_statics)
         ),
-        gather_network(transport, cert_warning_days),
+        gather_network(transport, cert_warning_days, net_statics),
         gather_databases(transport),
         gather_docker(transport),
         gather_crons(transport),
@@ -159,13 +164,25 @@ pub fn apply_refresh(app: &mut App, outcome: RefreshOutcome) {
 /// UI thread instead.
 pub fn refresh_blocking(runtime: &Runtime, transport: &dyn Transport, app: &mut App) {
     app.view_state = ViewState::Loading;
+    let (host_statics, net_statics) = cached_statics(app);
     let outcome = runtime.block_on(gather(
         transport,
         &app.thresholds,
         &app.log_query,
         app.cert_warning_days,
+        host_statics,
+        net_statics,
     ));
     apply_refresh(app, outcome);
+}
+
+/// Derive the slow-changing tiers from the data already on screen, so the next
+/// gather can reuse them instead of re-reading. `None` on the first refresh
+/// (nothing cached yet) makes that gather collect them fresh.
+pub fn cached_statics(app: &App) -> (Option<HostStatics>, Option<NetStatics>) {
+    let host = app.snapshot.as_ref().map(HostStatics::from_snapshot);
+    let net = app.network.as_ref().map(NetStatics::from_snapshot);
+    (host, net)
 }
 
 /// Re-collect only the logs, using the current log query (best-effort).

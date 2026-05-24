@@ -95,16 +95,45 @@ pub struct LoggedUser {
     pub login_time: String,
 }
 
+/// Slow-changing host identity: hostname, OS and kernel. Read once and cached so
+/// later refreshes skip the `uname` calls and the `/etc/os-release` read (three
+/// round-trips that effectively never change within a session). See [`tiering`].
+///
+/// [`tiering`]: SystemCollector::with_statics
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostStatics {
+    pub hostname: String,
+    pub os: Option<String>,
+    pub kernel: String,
+}
+
+impl HostStatics {
+    /// Extract the cacheable identity from an already-collected snapshot.
+    pub fn from_snapshot(snapshot: &SystemSnapshot) -> Self {
+        Self {
+            hostname: snapshot.hostname.clone(),
+            os: snapshot.os.clone(),
+            kernel: snapshot.kernel.clone(),
+        }
+    }
+}
+
 /// Collects a [`SystemSnapshot`]. CPU usage is sampled twice over a short delay.
-#[derive(Debug, Clone, Copy)]
+///
+/// If constructed with [`SystemCollector::with_statics`], the slow-changing
+/// identity ([`HostStatics`]) is reused instead of re-read, so a refresh skips
+/// `uname -n`, `uname -r` and the `/etc/os-release` read.
+#[derive(Debug, Clone)]
 pub struct SystemCollector {
     cpu_sample_delay: Duration,
+    statics: Option<HostStatics>,
 }
 
 impl Default for SystemCollector {
     fn default() -> Self {
         Self {
             cpu_sample_delay: Duration::from_millis(200),
+            statics: None,
         }
     }
 }
@@ -112,6 +141,15 @@ impl Default for SystemCollector {
 impl SystemCollector {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Reuse cached slow-changing identity when present (tiered refresh); pass
+    /// `None` to read it fresh.
+    pub fn with_statics(statics: Option<HostStatics>) -> Self {
+        Self {
+            statics,
+            ..Self::default()
+        }
     }
 }
 
@@ -124,9 +162,23 @@ impl Collector for SystemCollector {
     }
 
     async fn collect(&self, transport: &dyn Transport) -> Result<SystemSnapshot> {
-        // Core metrics: failures here fail the snapshot.
-        let hostname = run_trimmed(transport, "uname", &["-n"]).await?;
-        let kernel = run_trimmed(transport, "uname", &["-r"]).await?;
+        // Slow-changing identity: reuse the cache when tiered, else read it.
+        // `hostname`/`kernel` are required (their read failing fails the snapshot);
+        // `os` is best-effort.
+        let (hostname, kernel, os) = match &self.statics {
+            Some(s) => (s.hostname.clone(), s.kernel.clone(), s.os.clone()),
+            None => {
+                let hostname = run_trimmed(transport, "uname", &["-n"]).await?;
+                let kernel = run_trimmed(transport, "uname", &["-r"]).await?;
+                let os = read_text(transport, "/etc/os-release")
+                    .await
+                    .ok()
+                    .and_then(|s| parse_os_release(&s));
+                (hostname, kernel, os)
+            }
+        };
+
+        // Live metrics: failures here fail the snapshot.
         let uptime_secs = parse_uptime(&read_text(transport, "/proc/uptime").await?)?;
         let load = parse_loadavg(&read_text(transport, "/proc/loadavg").await?)?;
         let (memory, swap) = parse_meminfo(&read_text(transport, "/proc/meminfo").await?)?;
@@ -138,10 +190,6 @@ impl Collector for SystemCollector {
         let cpu = cpu_usage(first, second);
 
         // Best-effort metrics: degrade to defaults rather than failing.
-        let os = read_text(transport, "/etc/os-release")
-            .await
-            .ok()
-            .and_then(|s| parse_os_release(&s));
         let disks = match transport.run(&CommandSpec::new("df").arg("-P")).await {
             Ok(out) if out.success() => parse_df(&out.stdout),
             _ => Vec::new(),
@@ -483,6 +531,7 @@ mod tests {
 
         let collector = SystemCollector {
             cpu_sample_delay: Duration::ZERO,
+            statics: None,
         };
         let snap = collector.collect(&transport).await.unwrap();
 
@@ -524,6 +573,7 @@ mod tests {
 
         let collector = SystemCollector {
             cpu_sample_delay: Duration::ZERO,
+            statics: None,
         };
         let snap = collector.collect(&transport).await.unwrap();
 
@@ -531,5 +581,45 @@ mod tests {
         assert!(snap.disks.is_empty());
         assert!(snap.users.is_empty());
         assert_eq!(snap.cpu.cores, 1);
+    }
+
+    #[tokio::test]
+    async fn cached_statics_skip_identity_reads() {
+        use systui_transport::MockTransport;
+
+        // Only the live /proc data is configured — no `uname` and no
+        // `/etc/os-release`. A fresh collect would fail on the missing `uname -n`;
+        // with cached statics the identity is reused and those reads are skipped.
+        let transport = MockTransport::new()
+            .with_file("/proc/uptime", "10.0 5.0\n".as_bytes().to_vec())
+            .with_file("/proc/loadavg", "0 0 0 1/1 1\n".as_bytes().to_vec())
+            .with_file(
+                "/proc/meminfo",
+                "MemTotal: 100 kB\nMemAvailable: 50 kB\n"
+                    .as_bytes()
+                    .to_vec(),
+            )
+            .with_file(
+                "/proc/stat",
+                "cpu  1 0 1 8 0 0 0 0 0 0\n".as_bytes().to_vec(),
+            );
+
+        let statics = HostStatics {
+            hostname: "cached-host".to_owned(),
+            os: Some("Cached OS 1.0".to_owned()),
+            kernel: "9.9.9".to_owned(),
+        };
+        let collector = SystemCollector {
+            cpu_sample_delay: Duration::ZERO,
+            statics: Some(statics),
+        };
+        let snap = collector.collect(&transport).await.unwrap();
+
+        assert_eq!(snap.hostname, "cached-host");
+        assert_eq!(snap.kernel, "9.9.9");
+        assert_eq!(snap.os.as_deref(), Some("Cached OS 1.0"));
+        // Live data was still collected fresh.
+        assert_eq!(snap.uptime_secs, 10);
+        assert_eq!(snap.memory.total_kb, 100);
     }
 }

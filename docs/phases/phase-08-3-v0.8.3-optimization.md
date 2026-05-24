@@ -247,3 +247,34 @@ CPU-sampling delay (→ S8d.4 can collect the slow, non-CPU parts of `system` le
 Over SSH the floor is the two heaviest chains overlapping — host_report (~345ms) and the
 security scan (~354ms) — landing at ~445ms; S8d.5 (command batching) attacks the SSH
 round-trips inside those chains.
+
+### S8d.4 — Tiered refresh + caching ✅
+
+Slow-changing data is no longer re-collected every tick. Two tiers were split out:
+
+- **`HostStatics`** (hostname, OS, kernel) in `SystemCollector`. Reused via
+  `SystemCollector::with_statics`, skipping `uname -n`, `uname -r` and the
+  `/etc/os-release` read.
+- **`NetStatics`** (interfaces, routes, DNS) in `NetworkCollector`. Reused via
+  `NetworkCollector::with_statics`, skipping `ip addr`, `ip route` and the
+  `resolv.conf` read. Listeners and connections stay live every tick.
+
+The cache needs no new state: the slow tiers are *derived from the data already on
+screen* (`data::cached_statics` reads them off `App.snapshot` / `App.network`) and
+passed into the next gather. The first refresh has nothing cached (`None`) so it reads
+fresh; every later refresh reuses them for the session. The headless report
+(`gather_report`) is one-shot and always passes `None`, so reports are never stale.
+Net effect: a warm tick issues **6 fewer round-trips** (3 system + 3 network).
+
+#### Cold vs warm refresh (TUI over SSH `vpn`, 3s auto-refresh)
+
+| collector      | cold (first tick) | warm (cached) |
+|----------------|------------------:|--------------:|
+| host_report    |            316ms  |    ~270–284ms |
+| network        |             67ms  |     ~27–44ms  |
+| **refresh_total** |         410ms  |   ~330–363ms  |
+
+The warm `host_report` and `network` chains shrink by the round-trips removed. The
+remaining `refresh_total` floor over SSH is the `security_scan` chain (~320–340ms,
+unchanged) running concurrently with `host_report` → that chain's many small commands
+are the S8d.5 (batching) target.

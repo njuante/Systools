@@ -130,13 +130,46 @@ impl NetworkSnapshot {
     }
 }
 
+/// Slow-changing host networking: interfaces, routes and DNS config. Cached so
+/// later refreshes skip `ip addr`, `ip route` and the `resolv.conf` read while
+/// the live listeners/connections are still collected every tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetStatics {
+    pub interfaces: Vec<NetInterface>,
+    pub routes: Vec<Route>,
+    pub dns: DnsConfig,
+}
+
+impl NetStatics {
+    /// Extract the cacheable, slow-changing parts of a collected snapshot.
+    pub fn from_snapshot(snapshot: &NetworkSnapshot) -> Self {
+        Self {
+            interfaces: snapshot.interfaces.clone(),
+            routes: snapshot.routes.clone(),
+            dns: snapshot.dns.clone(),
+        }
+    }
+}
+
 /// Reads a full [`NetworkSnapshot`] from the host.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NetworkCollector;
+///
+/// If constructed with [`NetworkCollector::with_statics`], the slow-changing
+/// parts ([`NetStatics`]) are reused instead of re-collected, so a refresh only
+/// runs the live `ss` queries.
+#[derive(Debug, Default, Clone)]
+pub struct NetworkCollector {
+    statics: Option<NetStatics>,
+}
 
 impl NetworkCollector {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// Reuse cached slow-changing networking when present (tiered refresh); pass
+    /// `None` to collect it fresh.
+    pub fn with_statics(statics: Option<NetStatics>) -> Self {
+        Self { statics }
     }
 }
 
@@ -149,10 +182,20 @@ impl Collector for NetworkCollector {
     }
 
     async fn collect(&self, transport: &dyn Transport) -> Result<NetworkSnapshot> {
+        // Slow-changing parts: reuse the cache when tiered, else collect them.
+        let (interfaces, routes, dns) = match &self.statics {
+            Some(s) => (s.interfaces.clone(), s.routes.clone(), s.dns.clone()),
+            None => (
+                collect_interfaces(transport).await,
+                collect_routes(transport).await,
+                collect_dns(transport).await,
+            ),
+        };
         Ok(NetworkSnapshot {
-            interfaces: collect_interfaces(transport).await,
-            routes: collect_routes(transport).await,
-            dns: collect_dns(transport).await,
+            interfaces,
+            routes,
+            dns,
+            // Live: always collected.
             listeners: collect_listeners(transport).await,
             connections: collect_connections(transport).await,
         })
@@ -717,5 +760,36 @@ mod tests {
         assert!(snap.dns.nameservers.is_empty());
         assert!(snap.listeners.is_empty());
         assert!(snap.connections.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cached_statics_skip_slow_collection() {
+        // Only the live `ss` queries are configured — no `ip`/resolv.conf. With
+        // cached statics the interfaces/routes/DNS are reused and those commands
+        // are skipped, while listeners/connections are still collected.
+        let transport = MockTransport::new()
+            .with_stdout("ss -tulpn", include_str!("../fixtures/ss-tulpn.txt"))
+            .with_stdout("ss -tan", include_str!("../fixtures/ss-tan.txt"));
+
+        let statics = NetStatics {
+            interfaces: vec![NetInterface {
+                name: "eth0".to_owned(),
+                state: "UP".to_owned(),
+                addrs: Vec::new(),
+            }],
+            routes: Vec::new(),
+            dns: DnsConfig::default(),
+        };
+        let snap = NetworkCollector::with_statics(Some(statics))
+            .collect(&transport)
+            .await
+            .unwrap();
+
+        // Slow parts came from the cache.
+        assert_eq!(snap.interfaces.len(), 1);
+        assert_eq!(snap.interfaces[0].name, "eth0");
+        // Live parts were still collected from the transport.
+        assert!(!snap.listeners.is_empty());
+        assert!(!snap.connections.is_empty());
     }
 }

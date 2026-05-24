@@ -36,12 +36,14 @@ pub async fn gather_report(
     // Independent collector groups run concurrently; real dependencies are kept
     // inside each group. Identical scheduling to the dashboard refresh.
     let log_query = LogQuery::default();
+    // One-shot gather: no session cache, so the slow-changing tiers are always
+    // read fresh (`None`).
     let (host, net, dbs, docker, crons_group, timers) = tokio::join!(
         timing::timed(
             "host_report",
-            collect_host_report(transport, &config.thresholds, &log_query)
+            collect_host_report(transport, &config.thresholds, &log_query, None)
         ),
-        gather_network(transport, config.security.cert_expiry_warning_days),
+        gather_network(transport, config.security.cert_expiry_warning_days, None),
         gather_databases(transport),
         gather_docker(transport),
         gather_crons(transport),

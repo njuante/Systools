@@ -90,12 +90,17 @@ fn spawn_refresh(
     let thresholds = app.thresholds.clone();
     let log_query = app.log_query.clone();
     let cert_warning_days = app.cert_warning_days;
+    // Reuse the slow-changing tiers already on screen so this gather skips
+    // re-reading them (tiered refresh); `None` on the first gather reads fresh.
+    let (host_statics, net_statics) = data::cached_statics(app);
     runtime.spawn(async move {
         let outcome = data::gather(
             transport.as_ref(),
             &thresholds,
             &log_query,
             cert_warning_days,
+            host_statics,
+            net_statics,
         )
         .await;
         // The receiver is dropped only when the loop exits; ignore send errors.

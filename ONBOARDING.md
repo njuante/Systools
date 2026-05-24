@@ -92,9 +92,9 @@ offline once dependencies are cached.
 Source of truth is `git log` and the active phase context file — check them, this
 snapshot may lag.
 
-- **`v0.7` complete and tagged on `main`.** Each version is built on
+- **`v0.8` complete and tagged on `main`.** Each version is built on
   `release/vX.Y` from `main`, then merged `--no-ff` + tagged at the end of its phase.
-  `v0.1` through `v0.7` are tagged on `main`.
+  `v0.1` through `v0.8` are tagged on `main`.
 - **Phase 0 (Foundation) complete**: workspace, contracts, Local/Mock transports,
   CLI + config + tracing, TUI shell, async/sync bridge.
 - **Phase 1 / v0.1 complete**: dashboard with health score + findings,
@@ -158,9 +158,23 @@ snapshot may lag.
   credential source is detected, blocked work, broken replication and recent
   errors. The TUI includes a **Databases** tab; JSON/Markdown/HTML reports include a
   Databases section. No database password is stored or rendered.
-- **Next: Phase 8 / v0.8 — Fleet.** Start with the phase context file
-  (`docs/phases/`) before any code, per the methodology. Read `docs/ROADMAP.md`
-  for the v0.8 scope.
+- **Phase 8 / v0.8 (Fleet) complete** (S8.1–S8.5): the inventory becomes a fleet.
+  `systui-core::fleet` selects hosts by tag (OR) / favorites with a deterministic
+  order. `systui fleet` gathers the selection **concurrently** over SSH (a bounded
+  `Semaphore` + per-host `timeout`, full per-host error isolation) into a
+  `FleetReview` that keeps each host's full `Report`; the worst-first `FleetOverview`
+  is derived from it. On a terminal it opens a read-only **fleet TUI**
+  (`systui-ui::fleet`, selectable table, `r` refresh, `Enter` to **drill into** a
+  host's per-host TUI over SSH), and prints a table when piped. From the same single
+  gather: **global search** (`--search`, by port or service substring), **host
+  comparison** (`--compare A B`, side-by-side + ports/services **drift** deltas via
+  `HostFacts`/`HostComparison`), and a **fleet report** (`--format json|markdown|html
+  [-o FILE]`) — JSON is the full model, MD/HTML a digest, escaped and self-contained.
+  Inspection & reporting only — no mass destructive actions. (Host-vs-snapshot drift
+  deferred to phase 9.)
+- **Next: Phase 9 / v0.9 — Policies & expected state.** Start with the phase context
+  file (`docs/phases/`) before any code, per the methodology. Read `docs/ROADMAP.md`
+  for the v0.9 scope.
 
 ## Starting a session
 

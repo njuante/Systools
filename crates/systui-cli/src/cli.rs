@@ -32,11 +32,26 @@ pub enum Command {
         target: String,
     },
 
-    /// Operate on a fleet of hosts (implemented in phase 8).
+    /// Operate on a fleet of hosts from the inventory (inspection only).
     Fleet {
-        /// Restrict to hosts carrying this tag.
+        /// Restrict to hosts carrying this tag. Repeat for "any of" (OR).
         #[arg(long)]
-        tag: Option<String>,
+        tag: Vec<String>,
+        /// Restrict to hosts flagged as favorites.
+        #[arg(long)]
+        favorites: bool,
+        /// Search the fleet for a service or port; list matching hosts and exit.
+        #[arg(long, value_name = "TERM")]
+        search: Option<String>,
+        /// Compare two inventory hosts side by side: `--compare <A> <B>`.
+        #[arg(long, num_args = 2, value_names = ["A", "B"])]
+        compare: Vec<String>,
+        /// Render a fleet report instead of the overview: `markdown`, `json` or `html`.
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
+        /// Write the fleet report to a file instead of stdout.
+        #[arg(long, short = 'o', value_name = "FILE")]
+        output: Option<PathBuf>,
     },
 
     /// Generate a report of a host's state (local, or remote with `--host`).

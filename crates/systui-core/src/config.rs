@@ -114,6 +114,9 @@ pub struct Host {
     /// Force read-only mode for this host regardless of CLI flags.
     #[serde(default)]
     pub read_only: bool,
+    /// Surface this host first in fleet views.
+    #[serde(default)]
+    pub favorite: bool,
     /// Name of the policy to evaluate this host against.
     #[serde(default)]
     pub policy: Option<String>,

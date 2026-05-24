@@ -28,6 +28,7 @@ substrate for `v0.1` and is built on the `release/v0.1` branch as the first sess
 | 7     | v0.7    | Databases                     | `release/v0.7`   |
 | 8     | v0.8    | Fleet                         | `release/v0.8`   |
 | 8.5   | v0.8.1  | In-TUI management & UX polish | `release/v0.8.1` |
+| 8.6   | v0.8.2  | UI redesign (approved design) | `release/v0.8.2` |
 | 9     | v0.9    | Policies & expected state     | `release/v0.9`   |
 | 10    | v1.0    | Stabilization & release       | `release/v1.0`   |
 
@@ -230,6 +231,41 @@ layout is visibly cleaner with render tests still passing.
 
 > System-wide cron (`/etc/cron.d`, timers), config sections other than `[hosts.*]`,
 > command palette and theme switching are **out of scope** (deferred).
+
+---
+
+## Phase 8.6 — v0.8.2 UI redesign
+
+**Goal:** adopt the **approved visual design** in [`interfaz/`](interfaz/) (a Ratatui
+spec + reference screenshots): a truecolor single-source theme, a 3-row chrome
+(host-attached bar + health gauge + mode badge), numbered tabs with count badges, and
+multi-panel screens matching the prototype. A **visual/structural** phase — it reskins
+and re-lays-out existing screens and reuses all current data, collectors and the
+action engine unchanged. Detailed scope in
+[`phases/phase-08-2-v0.8.2-ui-redesign.md`](phases/phase-08-2-v0.8.2-ui-redesign.md).
+
+Sessions:
+- **S8c.1 — Context + foundation**: `phase-08-2-v0.8.2-ui-redesign.md` + this insert;
+  truecolor theme tokens; the 3-row chrome (top bar / tabs-with-badges / status bar);
+  **Dashboard** rebuilt to its multi-panel recipe (metric tiles + health score +
+  findings + at-a-glance) with CPU/RAM history sparklines.
+- **S8c.2 — Services & Docker**: tables with severity dots + detail/risk side panels.
+- **S8c.3 — Logs**: live-tail with level badges, error-fingerprint panel, follow dot.
+- **S8c.4 — Network & Crons**: exposure table + interfaces/firewall panels; cron table
+  with severity left-bar + schedule preview + backup callout.
+- **S8c.5 — Security & Hosts**: security score header + evidence-block findings; the
+  Hosts/fleet card grid.
+- **S8c.6 — Polish + close**: spacing/alignment, help overlay, render-test refresh →
+  **tag v0.8.2**.
+
+**DoD:** the TUI matches the prototype's visual identity (truecolor theme, 3-row
+chrome, badged tabs, multi-panel screens); all colour comes from `theme.rs` tokens
+(no inline `Color::Rgb` in screens); every screen renders **real data** (nothing
+mocked); behaviour, keymaps and the safety model are unchanged; render stays a pure
+function of `App` with `TestBackend` tests passing.
+
+> Command palette / fuzzy search, mouse hit-testing, theme switching and any new
+> collectors are **out of scope** (deferred).
 
 ---
 

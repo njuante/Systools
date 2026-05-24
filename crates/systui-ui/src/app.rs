@@ -274,7 +274,14 @@ pub struct App {
     pub logs_reload_requested: bool,
     pub action_plan_requested: bool,
     pub action_exec_requested: bool,
+    /// Recent CPU busy% samples for the dashboard sparkline (oldest first).
+    pub cpu_history: Vec<u64>,
+    /// Recent RAM used% samples for the dashboard sparkline (oldest first).
+    pub mem_history: Vec<u64>,
 }
+
+/// How many samples the dashboard sparklines retain.
+pub const HISTORY_LEN: usize = 48;
 
 impl App {
     /// Create the initial application state for a host.
@@ -322,6 +329,22 @@ impl App {
             logs_reload_requested: false,
             action_plan_requested: false,
             action_exec_requested: false,
+            cpu_history: Vec::new(),
+            mem_history: Vec::new(),
+        }
+    }
+
+    /// Append the latest CPU/RAM utilisation to the sparkline history rings.
+    pub fn push_history(&mut self, cpu_percent: f64, mem_percent: f64) {
+        for (ring, value) in [
+            (&mut self.cpu_history, cpu_percent),
+            (&mut self.mem_history, mem_percent),
+        ] {
+            ring.push(value.clamp(0.0, 100.0).round() as u64);
+            if ring.len() > HISTORY_LEN {
+                let overflow = ring.len() - HISTORY_LEN;
+                ring.drain(0..overflow);
+            }
         }
     }
 

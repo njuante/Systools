@@ -5,31 +5,41 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Tabs, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Sparkline, Table, Wrap,
+};
 use regex::RegexBuilder;
 use systui_collectors::{
-    BindScope, Container, CronEntry, CronSource, DatabaseInstance, Disk, ExposureEntry, LogEntry,
+    BindScope, Container, CronEntry, CronSource, DatabaseInstance, ExposureEntry, LogEntry,
     NetworkSnapshot, SystemSnapshot, parse_schedule,
 };
 use systui_core::{Finding, ModuleId, Severity};
 
 use crate::app::{ActionStage, App, InputMode, Tab, ViewState};
 use crate::form::render_form;
+use crate::theme::Theme;
 
 /// Draw the whole UI for the current state.
 pub fn render(frame: &mut Frame, app: &App) {
+    // Fill the whole frame with the theme background so the truecolor palette
+    // covers gutters between panels.
+    frame.render_widget(
+        Block::default().style(Style::new().bg(app.theme.bg).fg(app.theme.fg)),
+        frame.area(),
+    );
+
     let rows = Layout::vertical([
-        Constraint::Length(1), // title
+        Constraint::Length(3), // top bar
         Constraint::Length(1), // tabs
-        Constraint::Min(0),    // content
-        Constraint::Length(1), // footer
+        Constraint::Min(0),    // body
+        Constraint::Length(1), // status bar
     ])
     .split(frame.area());
 
-    render_title(frame, app, rows[0]);
+    render_top_bar(frame, app, rows[0]);
     render_tabs(frame, app, rows[1]);
     render_content(frame, app, rows[2]);
-    render_footer(frame, app, rows[3]);
+    render_status_bar(frame, app, rows[3]);
 
     if app.show_help {
         render_help(frame, app);
@@ -110,57 +120,224 @@ fn render_action_modal(frame: &mut Frame, app: &App) {
     );
 }
 
-fn render_title(frame: &mut Frame, app: &App, area: Rect) {
-    let title = Line::from(vec![
+/// The 3-row top bar: brand + host-attached pill on the left, health gauge and
+/// execution-mode badge on the right, inside a rounded panel (spec §13).
+fn render_top_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(app.theme.border));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Brand + host pill on a single, vertically-centered line.
+    let mut left = vec![
         Span::styled(
             "SysTUI",
             Style::new()
-                .fg(app.theme.title)
+                .fg(app.theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" — "),
-        Span::styled(app.host_label.clone(), Style::new().fg(app.theme.accent)),
-    ]);
-    frame.render_widget(Paragraph::new(title), area);
-
-    let status = match &app.capabilities {
-        Some(caps) => format!("{} · mode: {} ", caps.label(), app.mode),
-        None => format!("mode: {} ", app.mode),
+        Span::styled(
+            format!(" v{}  ", env!("CARGO_PKG_VERSION")),
+            Style::new().fg(app.theme.fg_dim),
+        ),
+    ];
+    // Host-attached pill: status dot · label · transport/mode.
+    let attached = app.snapshot.is_some();
+    let dot_color = match &app.health {
+        Some(h) if h.score >= 80 => app.theme.accent,
+        Some(h) if h.score >= 50 => app.theme.high,
+        Some(_) => app.theme.critical,
+        None => app.theme.fg_dim,
     };
-    let status = Line::from(status).alignment(Alignment::Right);
+    left.push(Span::styled("● ", Style::new().fg(dot_color)));
+    left.push(Span::styled(
+        app.host_label.clone(),
+        Style::new()
+            .fg(app.theme.fg_strong)
+            .add_modifier(Modifier::BOLD),
+    ));
+    if let Some(caps) = &app.capabilities {
+        left.push(Span::styled(
+            format!("  {}", caps.label()),
+            Style::new().fg(app.theme.fg_muted),
+        ));
+    }
+    left.push(Span::styled(
+        if attached { " · live" } else { " · detached" },
+        Style::new().fg(app.theme.fg_dim),
+    ));
+
+    let (badge_text, badge_color) = mode_badge(&app.theme, app.mode);
+    let health_score = app.health.as_ref().map(|h| h.score);
+
+    // Right side: HEALTH nn/100 [gauge]  [MODE]. Built as spans so it lives on
+    // the same centered row as the brand/host pill.
+    let mut right: Vec<Span> = Vec::new();
+    if let Some(score) = health_score {
+        let color = score_color(app, score);
+        right.push(Span::styled("HEALTH ", Style::new().fg(app.theme.fg_muted)));
+        right.push(Span::styled(
+            format!("{score}"),
+            Style::new().fg(color).add_modifier(Modifier::BOLD),
+        ));
+        right.push(Span::styled("/100 ", Style::new().fg(app.theme.fg_dim)));
+        right.push(Span::styled(
+            gauge_bar(score as f64, 10),
+            Style::new().fg(color),
+        ));
+        right.push(Span::raw("  "));
+    }
+    right.push(Span::styled(
+        format!(" {badge_text} "),
+        Style::new()
+            .fg(app.theme.bg)
+            .bg(badge_color)
+            .add_modifier(Modifier::BOLD),
+    ));
+
+    // Vertically center within the 3-row panel (inner is 1 row tall here).
+    let cols = Layout::horizontal([Constraint::Min(10), Constraint::Length(right_width(&right))])
+        .split(inner);
+    frame.render_widget(Paragraph::new(Line::from(left)), cols[0]);
     frame.render_widget(
-        Paragraph::new(status).style(Style::new().fg(app.theme.dim)),
-        area,
+        Paragraph::new(Line::from(right)).alignment(Alignment::Right),
+        cols[1],
     );
 }
 
+/// Badge label and color for an execution mode.
+fn mode_badge(
+    theme: &Theme,
+    mode: systui_core::ExecutionMode,
+) -> (&'static str, ratatui::style::Color) {
+    use systui_core::ExecutionMode;
+    match mode {
+        ExecutionMode::ReadOnly => ("READ-ONLY", theme.accent),
+        ExecutionMode::SafeActions => ("SAFE", theme.high),
+        ExecutionMode::Privileged => ("PRIVILEGED", theme.critical),
+    }
+}
+
+/// Approximate rendered width of a span run, for right-alignment sizing.
+fn right_width(spans: &[Span]) -> u16 {
+    spans
+        .iter()
+        .map(|s| s.content.chars().count() as u16)
+        .sum::<u16>()
+        .saturating_add(1)
+}
+
+/// Color for a 0–100 score: green/amber/red by band.
+fn score_color(app: &App, score: u8) -> ratatui::style::Color {
+    if score >= 80 {
+        app.theme.accent
+    } else if score >= 50 {
+        app.theme.high
+    } else {
+        app.theme.critical
+    }
+}
+
+/// A solid block-character gauge of `width` cells filled to `percent`.
+fn gauge_bar(percent: f64, width: usize) -> String {
+    let filled = ((percent.clamp(0.0, 100.0) / 100.0) * width as f64).round() as usize;
+    let filled = filled.min(width);
+    let mut s = String::with_capacity(width);
+    s.extend(std::iter::repeat_n('█', filled));
+    s.extend(std::iter::repeat_n('░', width - filled));
+    s
+}
+
+/// Numbered tab bar with per-tab count badges (spec §13/§14).
 fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
-    let titles: Vec<Line> = Tab::ALL.iter().map(|t| Line::from(t.title())).collect();
-    let tabs = Tabs::new(titles)
-        .select(app.active_tab)
-        .style(Style::new().fg(app.theme.dim))
-        .highlight_style(
+    let mut spans: Vec<Span> = vec![Span::raw(" ")];
+    for (i, tab) in Tab::ALL.iter().enumerate() {
+        let active = i == app.active_tab;
+        let key = if i < 9 { (b'1' + i as u8) as char } else { '0' };
+        spans.push(Span::styled(
+            format!("{key} "),
+            Style::new().fg(app.theme.fg_dim),
+        ));
+        let name_style = if active {
             Style::new()
-                .fg(app.theme.selected_fg)
-                .bg(app.theme.selected_bg)
-                .add_modifier(Modifier::BOLD),
-        )
-        .divider(" ");
-    frame.render_widget(tabs, area);
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            Style::new().fg(app.theme.fg_muted)
+        };
+        spans.push(Span::styled(tab.title(), name_style));
+        if let Some((count, color)) = tab_badge(app, *tab) {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                format!(" {count} "),
+                Style::new()
+                    .fg(app.theme.bg)
+                    .bg(color)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        spans.push(Span::styled("  ", Style::new().fg(app.theme.fg_dim)));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The "needs attention" count badge for a tab, with its color. `None` hides it.
+fn tab_badge(app: &App, tab: Tab) -> Option<(usize, ratatui::style::Color)> {
+    let module_findings = |module| app.findings.iter().filter(|f| f.module == module).count();
+    match tab {
+        Tab::Dashboard => app
+            .health
+            .as_ref()
+            .map(|h| h.checks.len())
+            .filter(|n| *n > 0)
+            .map(|n| (n, app.theme.high)),
+        Tab::Services => {
+            (!app.failed_units.is_empty()).then_some((app.failed_units.len(), app.theme.critical))
+        }
+        Tab::Logs => {
+            let errors = app.logs.iter().filter(|e| e.is_error()).count();
+            (errors > 0).then_some((errors, app.theme.critical))
+        }
+        Tab::Network => {
+            let risky = app.risky_exposure_count();
+            (risky > 0).then_some((risky, app.theme.critical))
+        }
+        Tab::Docker => {
+            let n = module_findings(ModuleId::Docker);
+            (n > 0).then_some((n, app.theme.high))
+        }
+        Tab::Crons => {
+            let n = module_findings(ModuleId::Crons);
+            (n > 0).then_some((n, app.theme.high))
+        }
+        Tab::Security => {
+            let [crit, high, ..] = app.finding_counts();
+            let total: usize = app.finding_counts().iter().sum();
+            let color = if crit > 0 || high > 0 {
+                app.theme.critical
+            } else {
+                app.theme.high
+            };
+            (total > 0).then_some((total, color))
+        }
+        _ => None,
+    }
 }
 
 fn render_content(frame: &mut Frame, app: &App, area: Rect) {
     let tab = app.current_tab();
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::new().fg(app.theme.border))
-        .title(format!(" {} ", tab.title()));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    // No outer titled border anymore — the active tab is shown in the tab bar
+    // and each screen draws its own panels. Pad the body for breathing room.
+    let inner = area.inner(ratatui::layout::Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
 
     match (&app.view_state, &app.snapshot, tab) {
         (ViewState::Ready, Some(snap), Tab::Dashboard) => {
-            frame.render_widget(Paragraph::new(dashboard_text(app, snap)), inner);
+            render_dashboard(frame, app, snap, inner);
         }
         (ViewState::Ready, Some(snap), Tab::System) => {
             frame.render_widget(Paragraph::new(system_text(app, snap)), inner);
@@ -1168,198 +1345,345 @@ fn content_message(app: &App, tab: Tab) -> (String, String) {
 }
 
 /// The prioritized overview: header, CPU/RAM/swap bars and disk usage.
-fn dashboard_text(app: &App, snap: &SystemSnapshot) -> Text<'static> {
-    let dim = Style::new().fg(app.theme.dim);
-    let text_s = Style::new().fg(app.theme.text);
-    let accent = Style::new()
-        .fg(app.theme.accent)
-        .add_modifier(Modifier::BOLD);
+/// Dashboard: metric tiles + health score + critical findings + at-a-glance,
+/// laid out as a two-column multi-panel screen (spec §14).
+fn render_dashboard(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
+    let cols =
+        Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).split(area);
+    let left = Layout::vertical([Constraint::Length(8), Constraint::Min(0)]).split(cols[0]);
+    let right = Layout::vertical([Constraint::Length(12), Constraint::Min(0)]).split(cols[1]);
 
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled(snap.hostname.clone(), accent),
-            Span::styled("  ·  ", dim),
-            Span::styled(
-                snap.os.clone().unwrap_or_else(|| "unknown OS".to_owned()),
-                text_s,
-            ),
-        ]),
-        Line::from(vec![Span::styled(
-            format!(
-                "up {} · load {:.2} {:.2} {:.2} · {} cores",
-                human_uptime(snap.uptime_secs),
-                snap.load.one,
-                snap.load.five,
-                snap.load.fifteen,
-                snap.cpu.cores,
-            ),
-            dim,
-        )]),
-        Line::from(""),
-        metric_line(app, "CPU ", snap.cpu.busy_percent, None),
-        metric_line(
-            app,
-            "RAM ",
-            snap.memory.used_percent(),
-            Some(format!(
-                "{} / {}",
-                human_kb(snap.memory.used_kb()),
-                human_kb(snap.memory.total_kb)
-            )),
+    render_metric_tiles(frame, app, snap, left[0]);
+    render_findings_panel(frame, app, left[1]);
+    render_health_panel(frame, app, right[0]);
+    render_at_a_glance(frame, app, snap, right[1]);
+}
+
+/// A rounded, titled panel block in the theme's surface style.
+fn panel_block(theme: &Theme, title: &str) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.border))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::new().fg(theme.fg_muted).add_modifier(Modifier::BOLD),
+        ))
+}
+
+/// Color for a 0–100 utilisation: green / amber / red by band.
+fn usage_color(theme: &Theme, percent: f64) -> ratatui::style::Color {
+    if percent >= 85.0 {
+        theme.critical
+    } else if percent >= 60.0 {
+        theme.high
+    } else {
+        theme.accent
+    }
+}
+
+/// The four top metric tiles: CPU, RAM, DISK, LOAD.
+fn render_metric_tiles(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
+    let cells = Layout::horizontal([Constraint::Ratio(1, 4); 4]).split(area);
+
+    metric_tile(
+        frame,
+        &app.theme,
+        cells[0],
+        "CPU",
+        format!("{:.0}", snap.cpu.busy_percent),
+        "%",
+        format!("{} cores", snap.cpu.cores),
+        Some(&app.cpu_history),
+        snap.cpu.busy_percent,
+    );
+    metric_tile(
+        frame,
+        &app.theme,
+        cells[1],
+        "RAM",
+        format!("{:.0}", snap.memory.used_percent()),
+        "%",
+        format!(
+            "{} / {}",
+            human_kb(snap.memory.used_kb()),
+            human_kb(snap.memory.total_kb)
         ),
-    ];
-
-    let failed = app.failed_units.len();
-    let errors = app.logs.iter().filter(|e| e.is_error()).count();
-    let count_style = |n: usize| {
-        if n > 0 {
-            Style::new()
-                .fg(app.theme.danger)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::new().fg(app.theme.ok)
-        }
-    };
-    lines.insert(
-        2,
-        Line::from(vec![
-            Span::styled("failed units: ", dim),
-            Span::styled(failed.to_string(), count_style(failed)),
-            Span::styled("   recent errors: ", dim),
-            Span::styled(errors.to_string(), count_style(errors)),
-        ]),
+        Some(&app.mem_history),
+        snap.memory.used_percent(),
     );
 
-    if snap.swap.total_kb > 0 {
-        lines.push(metric_line(
-            app,
-            "Swap",
-            snap.swap.used_percent(),
-            Some(format!(
-                "{} / {}",
-                human_kb(snap.swap.used_kb()),
-                human_kb(snap.swap.total_kb)
-            )),
-        ));
+    let worst = snap.disks.iter().max_by_key(|d| d.use_percent);
+    let (dvalue, dsub, dpct) = match worst {
+        Some(d) => (
+            format!("{}", d.use_percent),
+            format!("{} {}", d.mount, human_kb(d.size_kb)),
+            d.use_percent as f64,
+        ),
+        None => ("–".to_owned(), "no disks".to_owned(), 0.0),
+    };
+    metric_tile(
+        frame, &app.theme, cells[2], "DISK", dvalue, "%", dsub, None, dpct,
+    );
+
+    let load_pct = if snap.cpu.cores > 0 {
+        (snap.load.one / snap.cpu.cores as f64 * 100.0).min(100.0)
     } else {
-        lines.push(Line::from(vec![
-            Span::styled("Swap  ", text_s),
-            Span::styled("none", dim),
-        ]));
-    }
+        0.0
+    };
+    metric_tile(
+        frame,
+        &app.theme,
+        cells[3],
+        "LOAD",
+        format!("{:.2}", snap.load.one),
+        "",
+        format!(
+            "{:.2} {:.2} · {} cores",
+            snap.load.five, snap.load.fifteen, snap.cpu.cores
+        ),
+        None,
+        load_pct,
+    );
+}
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("Disks", accent)));
-    for disk in &snap.disks {
-        lines.push(disk_line(app, disk));
-    }
+/// One metric tile: label, big value, sparkline-or-gauge, sub-line.
+#[allow(clippy::too_many_arguments)]
+fn metric_tile(
+    frame: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    label: &str,
+    value: String,
+    unit: &str,
+    sub: String,
+    history: Option<&[u64]>,
+    percent: f64,
+) {
+    let block = panel_block(theme, label);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    if let Some(health) = &app.health {
-        // Health score line at the very top, colored by severity band.
-        let score_color = if health.score >= 80 {
-            app.theme.ok
-        } else if health.score >= 50 {
-            app.theme.warn
-        } else {
-            app.theme.danger
-        };
-        lines.insert(
-            0,
-            Line::from(vec![
-                Span::styled("Health ", accent),
-                Span::styled(
-                    format!("{}/100", health.score),
-                    Style::new().fg(score_color).add_modifier(Modifier::BOLD),
-                ),
-            ]),
-        );
+    let color = usage_color(theme, percent);
+    let rows = Layout::vertical([
+        Constraint::Length(1), // value
+        Constraint::Length(1), // sparkline / gauge
+        Constraint::Min(0),    // sub
+    ])
+    .split(inner);
 
-        // Prioritized findings at the bottom.
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled("Findings", accent)));
-        if health.checks.is_empty() {
-            lines.push(Line::from(Span::styled("  none — healthy", dim)));
-        } else {
-            for check in health.checks.iter().take(8) {
-                lines.push(finding_line(app, check));
-            }
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                value,
+                Style::new()
+                    .fg(theme.fg_strong)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!(" {unit}"), Style::new().fg(theme.fg_muted)),
+        ])),
+        rows[0],
+    );
+
+    match history {
+        Some(h) if !h.is_empty() => {
+            frame.render_widget(
+                Sparkline::default()
+                    .data(h)
+                    .max(100)
+                    .style(Style::new().fg(color)),
+                rows[1],
+            );
+        }
+        _ => {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    gauge_bar(percent, rows[1].width as usize),
+                    Style::new().fg(color),
+                )),
+                rows[1],
+            );
         }
     }
 
-    // Security posture: network exposure and the worst security findings.
-    let [crit, high, med, ..] = app.finding_counts();
-    let risky = app.risky_exposure_count();
-    let count_span = |n: usize, color| {
-        let style = if n > 0 {
-            Style::new().fg(color).add_modifier(Modifier::BOLD)
-        } else {
-            Style::new().fg(app.theme.ok)
-        };
-        Span::styled(n.to_string(), style)
+    frame.render_widget(
+        Paragraph::new(Span::styled(sub, Style::new().fg(theme.fg_dim))).wrap(Wrap { trim: true }),
+        rows[2],
+    );
+}
+
+/// Health-score panel: the score, a gauge, and the deduction breakdown.
+fn render_health_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let block = panel_block(&app.theme, "Health score");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let Some(health) = &app.health else {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no data", Style::new().fg(app.theme.fg_dim))),
+            inner,
+        );
+        return;
     };
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("Security", accent)));
-    lines.push(Line::from(vec![
-        Span::styled("  exposed ports: ", dim),
-        count_span(risky, app.theme.danger),
-        Span::styled("   critical: ", dim),
-        count_span(crit, app.theme.danger),
-        Span::styled("   high: ", dim),
-        count_span(high, app.theme.danger),
-        Span::styled("   medium: ", dim),
-        count_span(med, app.theme.warn),
-    ]));
 
-    // Docker & crons: running/total containers and job/timer counts, each with
-    // the number of risk findings their module produced.
-    let module_findings = |module| app.findings.iter().filter(|f| f.module == module).count();
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("Docker", accent)));
-    if app.docker_available {
-        let running = app.containers.iter().filter(|c| c.is_running()).count();
-        lines.push(Line::from(vec![
-            Span::styled("  running: ", dim),
+    let color = score_color(app, health.score);
+    let mut lines = vec![
+        Line::from(vec![
             Span::styled(
-                format!("{running}/{}", app.containers.len()),
-                Style::new().fg(app.theme.text),
+                format!("{}", health.score),
+                Style::new().fg(color).add_modifier(Modifier::BOLD),
             ),
-            Span::styled("   issues: ", dim),
-            count_span(module_findings(ModuleId::Docker), app.theme.warn),
-        ]));
+            Span::styled(" /100  ", Style::new().fg(app.theme.fg_dim)),
+            Span::styled(gauge_bar(health.score as f64, 16), Style::new().fg(color)),
+        ]),
+        Line::from(""),
+    ];
+    if health.checks.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  no deductions — healthy",
+            Style::new().fg(app.theme.accent),
+        )));
     } else {
-        lines.push(Line::from(Span::styled("  unavailable", dim)));
+        for check in health.checks.iter().take(7) {
+            lines.push(finding_line(app, check));
+        }
     }
-    lines.push(Line::from(Span::styled("Crons", accent)));
-    lines.push(Line::from(vec![
-        Span::styled("  jobs: ", dim),
-        Span::styled(app.crons.len().to_string(), Style::new().fg(app.theme.text)),
-        Span::styled("   timers: ", dim),
-        Span::styled(
-            app.timers.len().to_string(),
-            Style::new().fg(app.theme.text),
-        ),
-        Span::styled("   warnings: ", dim),
-        count_span(module_findings(ModuleId::Crons), app.theme.warn),
-    ]));
+    frame.render_widget(Paragraph::new(lines), inner);
+}
 
-    Text::from(lines)
+/// Critical-findings list with severity-colored left edge bars (spec §14).
+fn render_findings_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let block = panel_block(&app.theme, "Critical findings");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let t = app.theme;
+
+    if app.findings.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "no findings — clean",
+                Style::new().fg(t.accent),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let max = (inner.height as usize / 2).max(1);
+    let mut lines: Vec<Line> = Vec::new();
+    for f in app.findings.iter().take(max) {
+        let color = t.severity(f.severity);
+        let sev = format!("{:?}", f.severity).to_uppercase();
+        lines.push(Line::from(vec![
+            Span::styled("▌ ", Style::new().fg(color)),
+            Span::styled(
+                format!("{sev:<5} "),
+                Style::new().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(f.title.clone(), Style::new().fg(t.fg_strong)),
+        ]));
+        let evidence = f.evidence.first().cloned().unwrap_or_else(|| f.id.clone());
+        lines.push(Line::from(Span::styled(
+            format!("    {evidence}"),
+            Style::new().fg(t.fg_muted),
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// At-a-glance grid: small headline stats in two columns (spec §14).
+fn render_at_a_glance(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
+    let block = panel_block(&app.theme, "At a glance");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let t = app.theme;
+
+    let [crit, high, med, ..] = app.finding_counts();
+    let errors = app.logs.iter().filter(|e| e.is_error()).count();
+    let running = app.containers.iter().filter(|c| c.is_running()).count();
+    let risky = app.risky_exposure_count();
+
+    let stat = |label: &str, value: Vec<Span<'static>>| -> Vec<Line<'static>> {
+        vec![
+            Line::from(Span::styled(label.to_owned(), Style::new().fg(t.fg_dim))),
+            Line::from(value),
+        ]
+    };
+    let count = |n: usize, unit: &str, color| {
+        let c = if n > 0 { color } else { t.accent };
+        vec![
+            Span::styled(
+                format!("{n}"),
+                Style::new().fg(c).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!(" {unit}"), Style::new().fg(t.fg_muted)),
+        ]
+    };
+
+    let docker_value = if app.docker_available {
+        vec![
+            Span::styled(
+                format!("{running}"),
+                Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" running", Style::new().fg(t.fg_muted)),
+        ]
+    } else {
+        vec![Span::styled("n/a", Style::new().fg(t.fg_dim))]
+    };
+    let plain = |text: String| {
+        vec![Span::styled(
+            text,
+            Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD),
+        )]
+    };
+
+    let stats: Vec<Vec<Line>> = vec![
+        stat(
+            "SERVICES",
+            count(app.failed_units.len(), "failed", t.critical),
+        ),
+        stat("PORTS", count(risky, "risky", t.critical)),
+        stat("DOCKER", docker_value),
+        stat(
+            "SECURITY",
+            vec![
+                Span::styled(
+                    format!("{crit}"),
+                    Style::new().fg(t.critical).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!(" / {high} / {med}"), Style::new().fg(t.fg_muted)),
+            ],
+        ),
+        stat("CRONS", count(app.crons.len(), "jobs", t.high)),
+        stat("LOGS", count(errors, "errors", t.critical)),
+        stat("USERS", plain(format!("{} logged", snap.users.len()))),
+        stat("UPTIME", plain(human_uptime(snap.uptime_secs))),
+    ];
+
+    let half = stats.len().div_ceil(2);
+    let (mut left, mut right): (Vec<Line>, Vec<Line>) = (Vec::new(), Vec::new());
+    for (i, s) in stats.into_iter().enumerate() {
+        let target = if i < half { &mut left } else { &mut right };
+        target.extend(s);
+        target.push(Line::from(""));
+    }
+    let cols =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(inner);
+    frame.render_widget(Paragraph::new(left), cols[0]);
+    frame.render_widget(Paragraph::new(right), cols[1]);
 }
 
 fn finding_line(app: &App, check: &systui_collectors::Check) -> Line<'static> {
-    use systui_core::Severity;
-    let color = match check.severity {
-        Severity::Critical | Severity::High => app.theme.danger,
-        Severity::Medium => app.theme.warn,
-        _ => app.theme.dim,
-    };
-    let label = format!("[{:?}]", check.severity).to_uppercase();
+    let color = app.theme.severity(check.severity);
+    let label = format!("{:?}", check.severity).to_uppercase();
     Line::from(vec![
         Span::styled(
-            format!("  -{:<3}", check.points),
-            Style::new().fg(app.theme.dim),
+            format!("  -{:<3} ", check.points),
+            Style::new().fg(app.theme.fg_dim),
         ),
-        Span::styled(format!("{label:<10}"), Style::new().fg(color)),
-        Span::styled(check.message.clone(), Style::new().fg(app.theme.text)),
+        Span::styled(format!("{label:<5} "), Style::new().fg(color)),
+        Span::styled(check.message.clone(), Style::new().fg(app.theme.fg)),
     ])
 }
 
@@ -1461,40 +1785,6 @@ fn system_text(app: &App, snap: &SystemSnapshot) -> Text<'static> {
     Text::from(lines)
 }
 
-fn metric_line(app: &App, label: &str, percent: f64, detail: Option<String>) -> Line<'static> {
-    let dim = Style::new().fg(app.theme.dim);
-    let text_s = Style::new().fg(app.theme.text);
-    let mut spans = vec![
-        Span::styled(format!("{label} "), text_s),
-        Span::styled(
-            format!("[{}]", bar(percent, 20)),
-            Style::new().fg(app.theme.accent),
-        ),
-        Span::styled(format!(" {percent:>3.0}%"), text_s),
-    ];
-    if let Some(detail) = detail {
-        spans.push(Span::styled(format!("  {detail}"), dim));
-    }
-    Line::from(spans)
-}
-
-fn disk_line(app: &App, disk: &Disk) -> Line<'static> {
-    let dim = Style::new().fg(app.theme.dim);
-    let text_s = Style::new().fg(app.theme.text);
-    Line::from(vec![
-        Span::styled(format!("  {:<10} ", disk.mount), text_s),
-        Span::styled(
-            format!("[{}]", bar(disk.use_percent as f64, 16)),
-            Style::new().fg(app.theme.accent),
-        ),
-        Span::styled(format!(" {:>3}%", disk.use_percent), text_s),
-        Span::styled(
-            format!("  {} / {}", human_kb(disk.used_kb), human_kb(disk.size_kb)),
-            dim,
-        ),
-    ])
-}
-
 fn label_value(app: &App, key: &str, value: &str) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("  {key:<10}"), Style::new().fg(app.theme.dim)),
@@ -1503,16 +1793,6 @@ fn label_value(app: &App, key: &str, value: &str) -> Line<'static> {
             Style::new().fg(app.theme.text).add_modifier(Modifier::BOLD),
         ),
     ])
-}
-
-/// A textual progress bar of `width` cells.
-fn bar(percent: f64, width: usize) -> String {
-    let filled = ((percent.clamp(0.0, 100.0) / 100.0) * width as f64).round() as usize;
-    let filled = filled.min(width);
-    let mut s = String::with_capacity(width);
-    s.extend(std::iter::repeat_n('█', filled));
-    s.extend(std::iter::repeat_n('░', width - filled));
-    s
 }
 
 /// Format a kB amount (1024-based) as KiB/MiB/GiB/TiB.
@@ -1540,16 +1820,65 @@ fn human_uptime(secs: u64) -> String {
     format!("{days}d {hours}h {mins}m")
 }
 
-fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let hint = if app.current_tab() == Tab::Crons {
-        " r refresh | a add | e edit | d delete | x toggle | ? help | q quit "
-    } else {
-        " r refresh | / search | a actions | ? help | q quit "
+/// Status bar: contextual key hints on the left, a live indicator on the right.
+fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let hints: &[(&str, &str)] = match app.current_tab() {
+        Tab::Crons => &[
+            ("r", "refresh"),
+            ("a", "add"),
+            ("e", "edit"),
+            ("d", "delete"),
+            ("x", "toggle"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
+        Tab::Logs => &[
+            ("r", "refresh"),
+            ("/", "search"),
+            ("l", "level"),
+            ("t", "window"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
+        _ => &[
+            ("r", "refresh"),
+            ("/", "search"),
+            ("a", "actions"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(hint)).style(Style::new().fg(app.theme.dim)),
-        area,
-    );
+    let mut spans = vec![Span::raw(" ")];
+    for (i, (key, label)) in hints.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled("  ·  ", Style::new().fg(app.theme.fg_dim)));
+        }
+        spans.push(Span::styled(
+            *key,
+            Style::new()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            format!(" {label}"),
+            Style::new().fg(app.theme.fg_muted),
+        ));
+    }
+
+    let cols = Layout::horizontal([Constraint::Min(10), Constraint::Length(28)]).split(area);
+    frame.render_widget(Paragraph::new(Line::from(spans)), cols[0]);
+
+    // Right: live/attached indicator.
+    let (dot, label, color) = if app.snapshot.is_some() {
+        ("●", "live", app.theme.accent)
+    } else {
+        ("○", "detached", app.theme.fg_dim)
+    };
+    let right = Line::from(vec![
+        Span::styled(format!("{dot} "), Style::new().fg(color)),
+        Span::styled(format!("{label} "), Style::new().fg(app.theme.fg_muted)),
+    ]);
+    frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), cols[1]);
 }
 
 fn render_help(frame: &mut Frame, app: &App) {
@@ -1612,6 +1941,7 @@ mod tests {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use systui_collectors::Disk;
     use systui_core::ExecutionMode;
 
     fn render_to_string(app: &App, width: u16, height: u16) -> String {
@@ -1633,10 +1963,11 @@ mod tests {
     #[test]
     fn renders_chrome_and_empty_state() {
         let app = App::new("prod-01", ExecutionMode::ReadOnly);
-        let out = render_to_string(&app, 100, 24);
+        // 120 cols so the full 10-tab bar (through "Security") is visible.
+        let out = render_to_string(&app, 120, 24);
         assert!(out.contains("SysTUI"));
         assert!(out.contains("prod-01"));
-        assert!(out.contains("read-only"));
+        assert!(out.contains("READ-ONLY"));
         assert!(out.contains("Dashboard"));
         assert!(out.contains("Security"));
         assert!(out.contains("q quit"));
@@ -1654,7 +1985,7 @@ mod tests {
         });
         let out = render_to_string(&app, 100, 24);
         assert!(out.contains("admin (sudo)"));
-        assert!(out.contains("privileged"));
+        assert!(out.contains("PRIVILEGED"));
     }
 
     #[test]
@@ -1734,12 +2065,14 @@ mod tests {
         app.view_state = ViewState::Ready;
 
         let out = render_to_string(&app, 100, 24);
-        assert!(out.contains("prod-01"));
+        // The hostname now lives in the chrome (host label "local"); the body
+        // shows the metric tiles for the snapshot.
+        assert!(out.contains("local"));
         assert!(out.contains("CPU"));
         assert!(out.contains("RAM"));
-        assert!(out.contains("Disks"));
-        assert!(out.contains("/home"));
-        assert!(out.contains("89%"));
+        assert!(out.contains("DISK"));
+        assert!(out.contains("LOAD"));
+        assert!(out.contains("89")); // worst disk usage %
     }
 
     #[test]
@@ -1809,7 +2142,8 @@ mod tests {
         app.view_state = ViewState::Ready;
 
         let out = render_to_string(&app, 100, 24);
-        assert!(out.contains("failed units: 1"));
+        assert!(out.contains("SERVICES"));
+        assert!(out.contains("1 failed"));
     }
 
     #[test]
@@ -1860,9 +2194,9 @@ mod tests {
         app.view_state = ViewState::Ready;
 
         let out = render_to_string(&app, 100, 30);
-        assert!(out.contains("Health"));
-        assert!(out.contains("72/100"));
-        assert!(out.contains("Findings"));
+        assert!(out.contains("Health score"));
+        assert!(out.contains("72"));
+        assert!(out.contains("/100"));
         assert!(out.contains("CRITICAL"));
         assert!(out.contains("95%"));
     }
@@ -1991,9 +2325,10 @@ mod tests {
         app.view_state = ViewState::Ready;
 
         let out = render_to_string(&app, 100, 40);
-        assert!(out.contains("Security"));
-        assert!(out.contains("exposed ports:"));
-        assert!(out.contains("critical:"));
+        assert!(out.contains("SECURITY"));
+        assert!(out.contains("PORTS"));
+        // The critical finding surfaces in the findings panel.
+        assert!(out.contains("Sensitive service exposed"));
     }
 
     #[test]

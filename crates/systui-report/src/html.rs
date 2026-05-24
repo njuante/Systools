@@ -14,7 +14,7 @@ use crate::util::{
     unique_recommendations,
 };
 
-const STYLE: &str = "\
+pub(crate) const STYLE: &str = "\
 body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:920px;\
 margin:2rem auto;padding:0 1rem;color:#1a1a1a;line-height:1.5}\
 h1{margin-bottom:.2rem}h2{border-bottom:1px solid #ddd;padding-bottom:.2rem;margin-top:2rem}\

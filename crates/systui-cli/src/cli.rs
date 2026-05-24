@@ -46,6 +46,12 @@ pub enum Command {
         /// Compare two inventory hosts side by side: `--compare <A> <B>`.
         #[arg(long, num_args = 2, value_names = ["A", "B"])]
         compare: Vec<String>,
+        /// Render a fleet report instead of the overview: `markdown`, `json` or `html`.
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
+        /// Write the fleet report to a file instead of stdout.
+        #[arg(long, short = 'o', value_name = "FILE")]
+        output: Option<PathBuf>,
     },
 
     /// Generate a report of a host's state (local, or remote with `--host`).

@@ -76,8 +76,12 @@ fn dispatch(command: Command, mode: ExecutionMode, config: &Config) -> anyhow::R
             favorites,
             search,
             compare,
+            format,
+            output,
         } => {
-            run_fleet(tag, favorites, search, compare, mode, config)?;
+            run_fleet(
+                tag, favorites, search, compare, format, output, mode, config,
+            )?;
         }
         Command::Report {
             host,
@@ -146,11 +150,14 @@ const FLEET_HOST_TIMEOUT: Duration = Duration::from_secs(30);
 ///
 /// On a terminal this opens the interactive fleet TUI (with drill-in to a host);
 /// when piped/redirected it prints the overview once, so the command is scriptable.
+#[allow(clippy::too_many_arguments)]
 fn run_fleet(
     tags: Vec<String>,
     favorites: bool,
     search: Option<String>,
     compare: Vec<String>,
+    format: Option<String>,
+    output: Option<PathBuf>,
     mode: ExecutionMode,
     config: &Config,
 ) -> anyhow::Result<()> {
@@ -186,6 +193,26 @@ fn run_fleet(
     // Search mode: list hosts whose ports/services match the term, then exit.
     if let Some(term) = search {
         print_fleet_search(&review, &term);
+        return Ok(());
+    }
+
+    // Report mode: render a fleet report in the requested format, then exit.
+    if let Some(format) = format {
+        let report = systui_report::FleetReport::from_review(&review);
+        let rendered = match format.as_str() {
+            "markdown" | "md" => systui_report::fleet_to_markdown(&report),
+            "json" => systui_report::fleet_to_json(&report),
+            "html" => systui_report::fleet_to_html(&report),
+            other => anyhow::bail!("unknown report format `{other}`; use markdown, json or html"),
+        };
+        match output {
+            Some(path) => {
+                std::fs::write(&path, rendered)
+                    .with_context(|| format!("failed to write report to {}", path.display()))?;
+                eprintln!("Fleet report written to {}", path.display());
+            }
+            None => print!("{rendered}"),
+        }
         return Ok(());
     }
 

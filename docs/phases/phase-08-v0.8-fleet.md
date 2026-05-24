@@ -157,6 +157,18 @@ collectors.
 - **S8.5 — Global reports + polish → tag v0.8**: `FleetReport` over the existing
   JSON/MD/HTML renderers, escaped and self-contained; final polish; merge `--no-ff`
   into `main` + tag `v0.8` (inspection & reporting only — no mass destructive ops).
+  **Done.** `systui-report::fleet_report` adds a serializable `FleetReport`
+  (`from_review`, worst-first) and three renderers, consistent with the per-host
+  design: **`fleet_to_json`** is the full structured model (every host's complete
+  `Report` or its error), while **`fleet_to_markdown`** and **`fleet_to_html`** are a
+  fleet digest — an overview table plus a condensed per-host section (OS/kernel,
+  health, finding counts, top-5 findings, open-port count). The HTML is a single
+  self-contained file reusing the per-host stylesheet, with all host-derived text
+  escaped. CLI: `systui fleet --format markdown|json|html [-o FILE]` (headless),
+  rendered from the same single concurrent gather as the overview/search/compare.
+  Golden-/substring-tested (ordering, JSON shape, MD sections, HTML escaping);
+  verified end-to-end in all three formats. Phase closed: merge `--no-ff` + tag
+  `v0.8`.
 
 ## Definition of Done
 

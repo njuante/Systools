@@ -7,10 +7,13 @@
 mod cli;
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
 use systui_core::{Config, ExecutionMode, Transport};
+use systui_report::FleetHostSummary;
 use tracing_subscriber::EnvFilter;
 
 use crate::cli::{Cli, Command};
@@ -69,7 +72,7 @@ fn dispatch(command: Command, mode: ExecutionMode, config: &Config) -> anyhow::R
             run_ssh(&target, mode, config)?;
         }
         Command::Fleet { tag, favorites } => {
-            run_fleet(tag, favorites, config);
+            run_fleet(tag, favorites, mode, config)?;
         }
         Command::Report {
             host,
@@ -121,11 +124,26 @@ fn run_ssh(target: &str, mode: ExecutionMode, config: &Config) -> anyhow::Result
     Ok(())
 }
 
-/// List the inventory hosts a fleet run would target, applying the tag and
-/// favorites filters. v0.8 fleet mode is inspection-only; the concurrent health
-/// overview lands in a later session, so for now this surfaces the selection so
-/// the operator can confirm *which* hosts the fleet covers.
-fn run_fleet(tags: Vec<String>, favorites: bool, config: &Config) {
+/// Maximum number of hosts reviewed concurrently. Bounds the in-flight `ssh`
+/// connections so a large fleet does not exhaust local resources.
+const FLEET_CONCURRENCY: usize = 8;
+/// Per-host review timeout. A slow or hung host degrades to an error row instead
+/// of stalling the whole fleet.
+const FLEET_HOST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Review a fleet of inventory hosts and print a worst-first overview.
+///
+/// Hosts are selected from the inventory by the tag/favorites filter, then their
+/// state is gathered **concurrently** over SSH (bounded by [`FLEET_CONCURRENCY`],
+/// each capped by [`FLEET_HOST_TIMEOUT`]). Every host is isolated: an unreachable
+/// host, an auth failure or a timeout becomes a "failed" row and never aborts the
+/// run. Fleet mode is inspection-only — no actions are taken.
+fn run_fleet(
+    tags: Vec<String>,
+    favorites: bool,
+    mode: ExecutionMode,
+    config: &Config,
+) -> anyhow::Result<()> {
     let filter = systui_core::FleetFilter {
         tags,
         favorites_only: favorites,
@@ -134,30 +152,141 @@ fn run_fleet(tags: Vec<String>, favorites: bool, config: &Config) {
 
     if config.hosts.is_empty() {
         eprintln!("No hosts in the inventory. Add `[hosts.<id>]` entries to your config.");
-        return;
+        return Ok(());
     }
     if selected.is_empty() {
         eprintln!("No inventory hosts match the given filters.");
-        return;
+        return Ok(());
     }
 
-    println!("Fleet ({} host(s)):", selected.len());
-    for host in &selected {
-        let marker = if host.favorite { "*" } else { " " };
-        let dest = match &host.user {
-            Some(user) => format!("{user}@{}:{}", host.host, host.port),
-            None => format!("{}:{}", host.host, host.port),
-        };
-        let mut labels = host.tags.clone();
-        if host.read_only {
-            labels.push("read-only".to_owned());
+    let runtime = tokio::runtime::Runtime::new().context("failed to start async runtime")?;
+    let generated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    eprintln!("Reviewing {} host(s)…", selected.len());
+
+    let overview = runtime.block_on(gather_fleet(selected, mode, config, generated_at));
+    print_fleet_overview(&overview);
+    Ok(())
+}
+
+/// Gather every selected host concurrently (bounded) into a [`FleetOverview`].
+async fn gather_fleet(
+    hosts: Vec<systui_core::FleetHost>,
+    mode: ExecutionMode,
+    config: &Config,
+    generated_at: String,
+) -> systui_report::FleetOverview {
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(FLEET_CONCURRENCY));
+    let mut tasks = tokio::task::JoinSet::new();
+
+    for host in hosts {
+        let semaphore = Arc::clone(&semaphore);
+        let config = config.clone();
+        let generated_at = generated_at.clone();
+        tasks.spawn(async move {
+            // Permit is held for the duration of this host's review, bounding
+            // concurrent ssh connections. The semaphore is never closed.
+            let _permit = semaphore
+                .acquire_owned()
+                .await
+                .expect("fleet semaphore is never closed");
+            review_one_host(host, mode, &config, generated_at).await
+        });
+    }
+
+    let mut summaries = Vec::new();
+    while let Some(joined) = tasks.join_next().await {
+        match joined {
+            Ok(summary) => summaries.push(summary),
+            // A panicking review task should not lose the rest of the fleet.
+            Err(err) => tracing::error!(%err, "fleet review task failed to join"),
         }
-        let suffix = if labels.is_empty() {
-            String::new()
+    }
+
+    systui_report::FleetOverview::build(generated_at, summaries)
+}
+
+/// Review a single host over SSH, mapping any failure (connection, auth, timeout)
+/// to a failed summary row.
+async fn review_one_host(
+    host: systui_core::FleetHost,
+    mode: ExecutionMode,
+    config: &Config,
+    generated_at: String,
+) -> systui_report::FleetHostSummary {
+    let mut transport = systui_transport::SshTransport::new(host.host.clone()).port(host.port);
+    if let Some(user) = &host.user {
+        transport = transport.user(user.clone());
+    }
+    let effective_mode = if host.read_only {
+        ExecutionMode::ReadOnly
+    } else {
+        mode
+    };
+
+    let gather = systui_report::gather_report(
+        &transport,
+        config,
+        host.id.clone(),
+        effective_mode,
+        generated_at,
+        Vec::new(),
+    );
+
+    match tokio::time::timeout(FLEET_HOST_TIMEOUT, gather).await {
+        Ok(Ok(report)) => FleetHostSummary::reviewed(host.id, host.tags, host.favorite, &report),
+        Ok(Err(err)) => {
+            FleetHostSummary::failed(host.id, host.tags, host.favorite, err.to_string())
+        }
+        Err(_) => FleetHostSummary::failed(
+            host.id,
+            host.tags,
+            host.favorite,
+            format!("timed out after {}s", FLEET_HOST_TIMEOUT.as_secs()),
+        ),
+    }
+}
+
+/// Print the fleet overview as a worst-first table.
+fn print_fleet_overview(overview: &systui_report::FleetOverview) {
+    use systui_report::FleetOutcome;
+
+    println!(
+        "Fleet overview — {} reviewed, {} unreachable (generated {}):\n",
+        overview.reviewed_count(),
+        overview.failed_count(),
+        overview.generated_at,
+    );
+    for host in &overview.hosts {
+        let marker = if host.favorite { "*" } else { " " };
+        let tags = if host.tags.is_empty() {
+            "-".to_owned()
         } else {
-            format!("  [{}]", labels.join(", "))
+            host.tags.join(",")
         };
-        println!("{marker} {:<16} {dest}{suffix}", host.id);
+        let status = match &host.outcome {
+            FleetOutcome::Reviewed {
+                health,
+                finding_counts,
+                ..
+            } => format!("{health:>3}/100  {}", findings_summary(finding_counts)),
+            FleetOutcome::Failed { error } => format!("  ERR  {error}"),
+        };
+        println!("{marker} {:<16} {:<16} {status}", host.id, tags);
+    }
+}
+
+/// A one-line findings summary from `[critical, high, medium, low, info]`.
+fn findings_summary(counts: &[usize; 5]) -> String {
+    let mut parts = Vec::new();
+    for (count, label) in [(counts[0], "crit"), (counts[1], "high"), (counts[2], "med")] {
+        if count > 0 {
+            parts.push(format!("{count} {label}"));
+        }
+    }
+    if parts.is_empty() {
+        "OK".to_owned()
+    } else {
+        parts.join(", ")
     }
 }
 

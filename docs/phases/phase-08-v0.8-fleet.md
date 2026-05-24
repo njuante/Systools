@@ -116,6 +116,19 @@ collectors.
   `gather_report` across the selection with per-host timeout/error isolation; the
   sortable overview model; `systui fleet` CLI table + TUI fleet view; drill-in to a
   host.
+  **Headless overview + CLI done.** `systui-report::fleet` adds a pure, serializable
+  `FleetOverview` / `FleetHostSummary` / `FleetOutcome` (decided: a module in
+  `systui-report`, reusing `gather_report`, not a new crate) with a **worst-first**
+  ordering (failed hosts first, then ascending health, then critical+high, then id)
+  and `reviewed`/`failed` constructors + unit tests. The `fleet` CLI gathers the
+  selection **concurrently** over `SshTransport` — bounded by a `Semaphore`
+  (`FLEET_CONCURRENCY = 8`), each host capped by a `tokio::time::timeout`
+  (`FLEET_HOST_TIMEOUT = 30s`) via a `JoinSet` — with full **per-host error
+  isolation** (unreachable/auth/timeout → an `ERR` row, never an aborted run),
+  honouring per-host `read_only`, and prints the worst-first table. Verified against
+  unreachable hosts (isolated `ERR` rows, run completes). **Remaining for S8.3:** the
+  interactive **TUI fleet view + drill-in** to a host (the CLI overview already
+  satisfies the core "see N servers without entering each" DoD).
 - **S8.4 — Global search + host comparison + basic drift**: search a service/port
   across the fleet; side-by-side host comparison; host-vs-host / host-vs-snapshot
   drift deltas.

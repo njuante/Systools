@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 systui-core.workspace = true
+systui-collectors.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 

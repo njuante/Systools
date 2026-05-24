@@ -124,6 +124,18 @@ writing, and an audit record for every change.
 - **S8b.4 — Cron actions**: `CronAction` (add/edit/delete/toggle on the user crontab)
   with schedule validation, backup and audit, built on `CommandSpec::stdin`;
   fixture-tested crontab read/modify/write.
+  **Done.** `systui-actions::cron::CronAction` implements the `Action` contract for
+  the **user crontab** (`CronOp` Add/Edit/Delete/Enable/Disable): `preview` validates
+  the schedule via `parse_schedule` (invalid → rejected before any write); `execute`
+  reads `crontab -l`, computes the new crontab with **pure, tested transforms**
+  (append / remove / replace / comment-toggle, matching entries by parsed
+  schedule+command, reusing `parse_crontab`), **backs up** the prior crontab to
+  `/tmp/systui-crontab.bak` via `tee`, then installs via `crontab -` with the content
+  piped through `CommandSpec::stdin` (no shell interpolation). Risk: Delete High,
+  Enable Low, others Medium; no privilege (user-owned crontab). It flows through the
+  engine like every mutation (mode gate, confirmation, audit). System cron and timers
+  remain read-only. Transforms + execute paths (read/backup/install, missing-entry
+  failure, invalid-schedule rejection) are unit-tested with `MockTransport`.
 - **S8b.5 — Cron management in the Crons tab**: wire the form + `CronAction` through
   the engine (preview/confirm/audit) into the Crons tab; refresh after.
 - **S8b.6 — TUI layout polish + close**: header/status bar, borders/spacing,

@@ -925,11 +925,15 @@ name = "systui-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
+ "systui-collectors",
  "systui-core",
+ "systui-report",
  "systui-storage",
  "systui-transport",
  "systui-ui",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
@@ -961,6 +965,10 @@ dependencies = [
 [[package]]
 name = "systui-report"
 version = "0.1.0"
+dependencies = [
+ "systui-collectors",
+ "systui-core",
+]
 
 [[package]]
 name = "systui-security"

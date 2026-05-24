@@ -299,8 +299,32 @@ fn parse_os_release(s: &str) -> Option<String> {
     None
 }
 
+/// Pseudo filesystem device names skipped in the disk view (they are not real
+/// storage and only add noise).
+const PSEUDO_FS: &[&str] = &[
+    "tmpfs",
+    "devtmpfs",
+    "none",
+    "efivarfs",
+    "overlay",
+    "squashfs",
+    "ramfs",
+    "proc",
+    "sysfs",
+    "cgroup",
+    "cgroup2",
+    "mqueue",
+    "hugetlbfs",
+    "debugfs",
+    "tracefs",
+];
+
 fn parse_df(s: &str) -> Vec<Disk> {
-    s.lines().skip(1).filter_map(parse_df_line).collect()
+    s.lines()
+        .skip(1)
+        .filter_map(parse_df_line)
+        .filter(|d| !PSEUDO_FS.contains(&d.filesystem.as_str()))
+        .collect()
 }
 
 fn parse_df_line(line: &str) -> Option<Disk> {
@@ -404,13 +428,14 @@ mod tests {
     }
 
     #[test]
-    fn parses_df() {
+    fn parses_df_and_skips_pseudo_filesystems() {
+        // fixture has /dev/sda1, tmpfs, /dev/sda2 — tmpfs is filtered out.
         let disks = parse_df(include_str!("../fixtures/df-P.txt"));
-        assert_eq!(disks.len(), 3);
+        assert_eq!(disks.len(), 2);
         let root = &disks[0];
         assert_eq!(root.mount, "/");
         assert_eq!(root.use_percent, 89);
-        assert_eq!(disks[2].mount, "/home");
+        assert_eq!(disks[1].mount, "/home");
     }
 
     #[test]
@@ -467,7 +492,7 @@ mod tests {
         assert_eq!(snap.uptime_secs, 123_456);
         assert_eq!(snap.load.one, 0.52);
         assert_eq!(snap.memory.total_kb, 16_327_680);
-        assert_eq!(snap.disks.len(), 3);
+        assert_eq!(snap.disks.len(), 2); // tmpfs filtered out
         assert_eq!(snap.users.len(), 2);
         // Both /proc/stat reads return the same fixture, so CPU delta is zero.
         assert_eq!(snap.cpu.cores, 4);

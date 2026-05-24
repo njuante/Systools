@@ -11,3 +11,5 @@ description = "SysTUI report generation in JSON, Markdown and HTML"
 workspace = true
 
 [dependencies]
+systui-core.workspace = true
+systui-collectors.workspace = true

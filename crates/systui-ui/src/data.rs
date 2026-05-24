@@ -5,10 +5,8 @@
 //! foundation's single-collector wiring; phase 1 generalises it into a proper
 //! controller with background refresh.
 
-use systui_collectors::{
-    FailedUnitsCollector, LogsCollector, ProcessCollector, SystemCollector, evaluate_health,
-};
-use systui_core::{Collector, CoreError, Transport};
+use systui_collectors::collect_host_report;
+use systui_core::{CoreError, Transport};
 use tokio::runtime::Runtime;
 
 use crate::app::{App, ViewState};
@@ -16,28 +14,16 @@ use crate::app::{App, ViewState};
 /// Re-run the collectors and fold the result into the app state.
 ///
 /// The system snapshot is the core view: if it fails, the whole refresh fails.
-/// Processes are best-effort and degrade to an empty list.
+/// Other collectors are best-effort and degrade to empty.
 pub fn refresh_blocking(runtime: &Runtime, transport: &dyn Transport, app: &mut App) {
     app.view_state = ViewState::Loading;
-    match runtime.block_on(SystemCollector::new().collect(transport)) {
-        Ok(snapshot) => {
-            app.processes = runtime
-                .block_on(ProcessCollector::new().collect(transport))
-                .unwrap_or_default();
-            app.failed_units = runtime
-                .block_on(FailedUnitsCollector::new().collect(transport))
-                .unwrap_or_default();
-            app.logs = runtime
-                .block_on(LogsCollector::new().collect(transport))
-                .unwrap_or_default();
-            let recent_errors = app.logs.iter().filter(|e| e.is_error()).count();
-            app.health = Some(evaluate_health(
-                &snapshot,
-                app.failed_units.len(),
-                recent_errors,
-                &app.thresholds,
-            ));
-            app.snapshot = Some(snapshot);
+    match runtime.block_on(collect_host_report(transport, &app.thresholds)) {
+        Ok(report) => {
+            app.snapshot = Some(report.snapshot);
+            app.processes = report.processes;
+            app.failed_units = report.failed_units;
+            app.logs = report.logs;
+            app.health = Some(report.health);
             app.view_state = ViewState::Ready;
         }
         Err(err) => apply_error(app, err),

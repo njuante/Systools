@@ -86,7 +86,13 @@ This builds directly on the phase-0 foundation: collectors run through a
   score + prioritized findings from disk/RAM/swap/load thresholds, failed units and
   recent errors; the dashboard shows the score (color-banded) and findings. The UI
   now takes `Config`: auto-refresh every `default_refresh_seconds` plus manual `r`.
-- **S1.8 — Minimal Markdown report** + polish → **tag v0.1**.
+- **S1.8 — Minimal Markdown report** *(done)*: `systui-report::to_markdown` renders
+  a `HostReport` (shared collector bundle `collect_host_report`) as Markdown;
+  `systui report --format markdown` collects locally and prints it. Disk view now
+  filters pseudo filesystems. → **tag v0.1**.
+
+**Phase 1 complete — v0.1.** All sessions done; DoD met (verified `systui report`
+against a real host). Ready to merge to `main` and tag `v0.1`.
 
 ## Definition of Done
 

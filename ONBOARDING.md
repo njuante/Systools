@@ -92,14 +92,15 @@ offline once dependencies are cached.
 Source of truth is `git log` and the active phase context file — check them, this
 snapshot may lag.
 
-- Branch: `release/v0.1`.
-- **Phase 0 (Foundation) complete** (S0.1–S0.7): workspace, `systui-core` contracts,
-  Local/Mock transports, CLI skeleton + config + tracing, TUI shell, and a
-  `HostInfoCollector` wired end-to-end (transport → collector → state → UI) with
-  the sync-loop/async-runtime bridge.
-- **Next: Phase 1 / v0.1** — start with **S1.1**, the phase context file
-  (`docs/phases/phase-01-v0.1-demo.md`), then the system collectors and dashboard
-  panels. Still on `release/v0.1`; tag `v0.1` when phase 1's DoD is met.
+- Branch: `release/v0.1` (merges to `main` + tag `v0.1` at end of phase 1).
+- **Phase 0 (Foundation) complete**: workspace, `systui-core` contracts, Local/Mock
+  transports, CLI skeleton + config + tracing, TUI shell, async/sync bridge.
+- **Phase 1 / v0.1 complete** (S1.1–S1.8): system/process/service/log collectors,
+  dashboard with explainable health score + findings, System/Processes/Services/Logs
+  tabs, threshold checks, auto-refresh, and `systui report --format markdown`.
+- **Next: Phase 2 / v0.2** (Local operation) — start with **S2.1**, the phase context
+  file (`docs/phases/phase-02-v0.2-local-ops.md`): full systemd module, full
+  processes, log filters, the action engine, read-only mode and the audit log.
 
 ## Starting a session
 

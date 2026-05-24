@@ -71,9 +71,34 @@ fn dispatch(command: Command, mode: ExecutionMode, config: &Config) -> anyhow::R
             println!("systui: fleet mode [{scope}] ({mode}) — implemented in phase 8");
         }
         Command::Report { host, format } => {
-            let host = host.as_deref().unwrap_or("local");
-            println!("systui: report for {host} as {format} ({mode}) — implemented in phase 6");
+            run_report(host, &format, config)?;
         }
     }
+    Ok(())
+}
+
+/// Generate a health report for the local host. Remote (`--host`) and non-Markdown
+/// formats arrive in later phases.
+fn run_report(host: Option<String>, format: &str, config: &Config) -> anyhow::Result<()> {
+    if let Some(host) = host {
+        anyhow::bail!(
+            "remote reports for `{host}` require SSH support (phase 5); only local is available in v0.1"
+        );
+    }
+    if format != "markdown" {
+        anyhow::bail!("report format `{format}` is not supported yet; use --format markdown");
+    }
+
+    let runtime = tokio::runtime::Runtime::new().context("failed to start async runtime")?;
+    let transport = systui_transport::LocalTransport::new();
+    let report = runtime
+        .block_on(systui_collectors::collect_host_report(
+            &transport,
+            &config.thresholds,
+        ))
+        .context("failed to collect host report")?;
+
+    let generated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    print!("{}", systui_report::to_markdown(&report, &generated_at));
     Ok(())
 }

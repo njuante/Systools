@@ -13,6 +13,34 @@ pub fn severity_label(severity: Severity) -> &'static str {
     }
 }
 
+/// CSS class for a severity badge in the HTML report.
+pub fn severity_class(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Critical => "sev-critical",
+        Severity::High => "sev-high",
+        Severity::Medium => "sev-medium",
+        Severity::Low => "sev-low",
+        Severity::Info => "sev-info",
+    }
+}
+
+/// Escape text for safe embedding in HTML. SysTUI renders strings collected from
+/// untrusted remote hosts, so every host-derived value passes through this.
+pub fn escape_html(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 /// Format seconds as `Xd Yh Zm`.
 pub fn human_uptime(secs: u64) -> String {
     let days = secs / 86_400;
@@ -56,4 +84,24 @@ pub fn unique_recommendations(findings: &[systui_core::Finding]) -> Vec<String> 
         .filter(|f| seen.insert(f.recommendation.clone()))
         .map(|f| f.recommendation.clone())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escapes_html_metacharacters() {
+        assert_eq!(
+            escape_html("<script>alert(\"x\" & 'y')</script>"),
+            "&lt;script&gt;alert(&quot;x&quot; &amp; &#39;y&#39;)&lt;/script&gt;"
+        );
+        assert_eq!(escape_html("plain text"), "plain text");
+    }
+
+    #[test]
+    fn human_kb_scales_units() {
+        assert_eq!(human_kb(512), "512 KiB");
+        assert_eq!(human_kb(2048), "2.0 MiB");
+    }
 }

@@ -13,4 +13,4 @@ pub use gather::gather_report;
 pub use html::to_html;
 pub use json::to_json;
 pub use markdown::to_markdown;
-pub use model::{Report, ReportMeta};
+pub use model::{Report, ReportMeta, ReportScope};

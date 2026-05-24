@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 
 use systui_core::Severity;
 
-use crate::model::Report;
+use crate::model::{Report, ReportScope};
 use crate::util::{
     escape_html as esc, human_kb, human_uptime, listener_owner, severity_class, severity_label,
     unique_recommendations,
@@ -38,7 +38,9 @@ fn badge(severity: Severity) -> String {
 }
 
 /// Render a [`Report`] as a single self-contained HTML document.
-pub fn to_html(report: &Report) -> String {
+/// [`ReportScope::Security`] emits only the security-relevant sections.
+pub fn to_html(report: &Report, scope: ReportScope) -> String {
+    let full = scope == ReportScope::Full;
     let meta = &report.meta;
     let snap = &report.host.snapshot;
     let mut out = String::new();
@@ -73,13 +75,17 @@ pub fn to_html(report: &Report) -> String {
     );
 
     executive_summary(&mut out, report);
-    health(&mut out, report);
+    if full {
+        health(&mut out, report);
+    }
     security_findings(&mut out, report);
     open_ports(&mut out, report);
     docker(&mut out, report);
-    failed_services(&mut out, report);
-    crons(&mut out, report);
-    host_inventory(&mut out, report);
+    if full {
+        failed_services(&mut out, report);
+        crons(&mut out, report);
+        host_inventory(&mut out, report);
+    }
     recommendations(&mut out, report);
     notes(&mut out, report);
 
@@ -477,7 +483,7 @@ mod tests {
             ],
             Vec::new(),
         );
-        let html = to_html(&report);
+        let html = to_html(&report, ReportScope::Full);
         assert!(html.starts_with("<!DOCTYPE html>"));
         assert!(html.contains("<style>")); // inline CSS, self-contained
         assert!(html.contains("<title>SysTUI Report — prod-01</title>"));
@@ -513,7 +519,7 @@ mod tests {
                 created: String::new(),
             }],
         );
-        let html = to_html(&report);
+        let html = to_html(&report, ReportScope::Full);
         // Raw metacharacters from host data never reach the output unescaped.
         assert!(!html.contains("<script>"));
         assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));

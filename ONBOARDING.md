@@ -92,9 +92,9 @@ offline once dependencies are cached.
 Source of truth is `git log` and the active phase context file — check them, this
 snapshot may lag.
 
-- **`v0.5` complete and tagged on `main`.** Each version is built on
+- **`v0.6` complete and tagged on `main`.** Each version is built on
   `release/vX.Y` from `main`, then merged `--no-ff` + tagged at the end of its phase.
-  `v0.1` through `v0.5` are tagged on `main`.
+  `v0.1` through `v0.6` are tagged on `main`.
 - **Phase 0 (Foundation) complete**: workspace, contracts, Local/Mock transports,
   CLI + config + tracing, TUI shell, async/sync bridge.
 - **Phase 1 / v0.1 complete**: dashboard with health score + findings,
@@ -137,9 +137,20 @@ snapshot may lag.
   via the `Transport`); the UI is identical local vs remote apart from the host
   label. Note: v0.5 requires non-interactive auth (`BatchMode`); a native Rust SSH
   backend remains deferred but enabled by the trait boundary.
-- **Next: Phase 6 / v0.6 — Reports.** Start with the phase context file
+- **Phase 6 / v0.6 (Reports) complete** (S6.1–S6.5): a serializable **`Report`**
+  model + **`gather_report`** (the headless equivalent of the dashboard refresh over
+  any `Transport`) in `systui-report`, with three pure renderers — **`to_json`**
+  (full structured model), **`to_markdown`** and **`to_html`** (a single
+  self-contained, escaped, printable file) — covering executive summary, health,
+  security findings (evidence + recommendations), open ports, docker, failed
+  services, crons, host inventory, recommendations and notes. A **`ReportScope`**
+  powers `--security`. The **`report` CLI** (`systui report [--host <id|user@host>]
+  --format markdown|json|html [--security] [-o FILE] [--note TEXT]…`) runs locally or
+  over the v0.5 SSH transport, honouring per-host `read_only`. All host-derived text
+  is HTML-escaped.
+- **Next: Phase 7 / v0.7 — Databases.** Start with the phase context file
   (`docs/phases/`) before any code, per the methodology. Read `docs/ROADMAP.md`
-  for the v0.6 scope.
+  for the v0.7 scope.
 
 ## Starting a session
 

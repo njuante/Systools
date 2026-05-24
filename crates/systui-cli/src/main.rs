@@ -6,6 +6,8 @@
 
 mod cli;
 
+use std::path::PathBuf;
+
 use anyhow::Context;
 use clap::Parser;
 use systui_core::{Config, ExecutionMode, Transport};
@@ -70,8 +72,14 @@ fn dispatch(command: Command, mode: ExecutionMode, config: &Config) -> anyhow::R
             let scope = tag.as_deref().unwrap_or("all hosts");
             println!("systui: fleet mode [{scope}] ({mode}) — implemented in phase 8");
         }
-        Command::Report { host, format } => {
-            run_report(host, &format, mode, config)?;
+        Command::Report {
+            host,
+            format,
+            security,
+            output,
+            note,
+        } => {
+            run_report(host, &format, security, output, note, mode, config)?;
         }
     }
     Ok(())
@@ -114,37 +122,84 @@ fn run_ssh(target: &str, mode: ExecutionMode, config: &Config) -> anyhow::Result
     Ok(())
 }
 
-/// Generate a report for the local host. Remote (`--host`), JSON/HTML and section
-/// flags are wired up in S6.5; for now this renders a local Markdown report.
+/// Generate a report of a host's state, locally or over SSH (`--host`), in
+/// Markdown, JSON or HTML, optionally security-scoped and written to a file.
 fn run_report(
     host: Option<String>,
     format: &str,
+    security: bool,
+    output: Option<PathBuf>,
+    notes: Vec<String>,
     mode: ExecutionMode,
     config: &Config,
 ) -> anyhow::Result<()> {
-    if let Some(host) = host {
-        anyhow::bail!(
-            "remote reports for `{host}` require the report CLI wiring (S6.5); only local is available now"
-        );
-    }
-    if format != "markdown" {
-        anyhow::bail!("report format `{format}` is not wired yet; use --format markdown");
-    }
-
     let runtime = tokio::runtime::Runtime::new().context("failed to start async runtime")?;
-    let transport = systui_transport::LocalTransport::new();
     let generated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let report = runtime
-        .block_on(systui_report::gather_report(
-            &transport,
-            config,
-            systui_core::HostId::LOCAL,
-            mode,
-            generated_at,
-            Vec::new(),
-        ))
-        .context("failed to gather host report")?;
 
-    print!("{}", systui_report::to_markdown(&report));
+    let report = match host {
+        Some(target) => {
+            let resolved = config.resolve_target(&target);
+            let mut transport =
+                systui_transport::SshTransport::new(resolved.host.clone()).port(resolved.port);
+            if let Some(user) = &resolved.user {
+                transport = transport.user(user.clone());
+            }
+            let label = if resolved.from_inventory {
+                resolved.id.clone()
+            } else {
+                transport.label().to_owned()
+            };
+            let effective_mode = if resolved.read_only {
+                ExecutionMode::ReadOnly
+            } else {
+                mode
+            };
+            eprintln!("Connecting to {label} …");
+            runtime
+                .block_on(systui_report::gather_report(
+                    &transport,
+                    config,
+                    label,
+                    effective_mode,
+                    generated_at,
+                    notes,
+                ))
+                .context("failed to gather report over ssh")?
+        }
+        None => {
+            let transport = systui_transport::LocalTransport::new();
+            runtime
+                .block_on(systui_report::gather_report(
+                    &transport,
+                    config,
+                    systui_core::HostId::LOCAL,
+                    mode,
+                    generated_at,
+                    notes,
+                ))
+                .context("failed to gather host report")?
+        }
+    };
+
+    let scope = if security {
+        systui_report::ReportScope::Security
+    } else {
+        systui_report::ReportScope::Full
+    };
+    let rendered = match format {
+        "markdown" | "md" => systui_report::to_markdown(&report, scope),
+        "json" => systui_report::to_json(&report),
+        "html" => systui_report::to_html(&report, scope),
+        other => anyhow::bail!("unknown report format `{other}`; use markdown, json or html"),
+    };
+
+    match output {
+        Some(path) => {
+            std::fs::write(&path, rendered)
+                .with_context(|| format!("failed to write report to {}", path.display()))?;
+            eprintln!("Report written to {}", path.display());
+        }
+        None => print!("{rendered}"),
+    }
     Ok(())
 }

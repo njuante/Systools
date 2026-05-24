@@ -8,6 +8,17 @@ use systui_collectors::{
 };
 use systui_core::{ExecutionMode, Finding};
 
+/// How much of the report a human-format renderer emits. JSON always carries the
+/// full model; Markdown/HTML honour this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportScope {
+    /// Every section.
+    Full,
+    /// A security-focused report: summary, findings, exposed ports, containers,
+    /// recommendations and notes — skipping health, services, crons and inventory.
+    Security,
+}
+
 /// Metadata describing how and when the report was produced.
 #[derive(Debug, Clone, Serialize)]
 pub struct ReportMeta {

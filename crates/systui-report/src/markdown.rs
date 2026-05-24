@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 
 use systui_core::Severity;
 
-use crate::model::Report;
+use crate::model::{Report, ReportScope};
 use crate::util::{human_kb, human_uptime, listener_owner, severity_label, unique_recommendations};
 
 /// Number of risky (High/Critical) externally reachable exposures.
@@ -20,8 +20,10 @@ fn risky_exposures(report: &Report) -> usize {
 }
 
 /// Render a [`Report`] as a Markdown document. Output is deterministic — the
-/// timestamp comes from `report.meta.generated_at`.
-pub fn to_markdown(report: &Report) -> String {
+/// timestamp comes from `report.meta.generated_at`. [`ReportScope::Security`]
+/// emits only the security-relevant sections.
+pub fn to_markdown(report: &Report, scope: ReportScope) -> String {
+    let full = scope == ReportScope::Full;
     let mut out = String::new();
     let meta = &report.meta;
     let snap = &report.host.snapshot;
@@ -46,13 +48,17 @@ pub fn to_markdown(report: &Report) -> String {
     let _ = writeln!(out);
 
     executive_summary(&mut out, report);
-    health(&mut out, report);
+    if full {
+        health(&mut out, report);
+    }
     security_findings(&mut out, report);
     open_ports(&mut out, report);
     docker(&mut out, report);
-    failed_services(&mut out, report);
-    crons(&mut out, report);
-    host_inventory(&mut out, report);
+    if full {
+        failed_services(&mut out, report);
+        crons(&mut out, report);
+        host_inventory(&mut out, report);
+    }
     recommendations(&mut out, report);
     notes(&mut out, report);
 
@@ -432,7 +438,7 @@ mod tests {
 
     #[test]
     fn renders_all_sections() {
-        let md = to_markdown(&sample());
+        let md = to_markdown(&sample(), ReportScope::Full);
         assert!(md.contains("# SysTUI Report — prod-01"));
         assert!(md.contains("2026-05-24 10:00:00"));
         assert!(md.contains("## Executive summary"));
@@ -464,12 +470,28 @@ mod tests {
         report.host.failed_units.clear();
         report.findings.clear();
         report.notes.clear();
-        let md = to_markdown(&report);
+        let md = to_markdown(&report, ReportScope::Full);
         assert!(md.contains("No threshold issues."));
         assert!(md.contains("No findings — nothing flagged."));
         assert!(md.contains("## Failed services (0)"));
         assert!(md.contains("No actions recommended."));
         // No notes section when there are none.
         assert!(!md.contains("## Notes"));
+    }
+
+    #[test]
+    fn security_scope_drops_operational_sections() {
+        let md = to_markdown(&sample(), ReportScope::Security);
+        // Security-relevant sections stay.
+        assert!(md.contains("## Executive summary"));
+        assert!(md.contains("## Security findings (1)"));
+        assert!(md.contains("## Open ports"));
+        assert!(md.contains("## Recommendations"));
+        assert!(md.contains("## Notes"));
+        // Operational sections are omitted.
+        assert!(!md.contains("## Health"));
+        assert!(!md.contains("## Failed services"));
+        assert!(!md.contains("## Crons"));
+        assert!(!md.contains("## Host inventory"));
     }
 }

@@ -103,6 +103,14 @@ local and remote hosts, and session notes.
 - **S6.5 — `report` CLI** (local + remote, `--format`, `--security`, `--output`) +
   **session notes** + polish → **tag v0.6** (final session: merge `--no-ff` into
   `main` + tag).
+  **Done.** `systui report [--host <id|user@host>] --format markdown|json|html
+  [--security] [-o FILE] [--note TEXT]…` gathers a `Report` locally or over the v0.5
+  `SshTransport` (honouring a per-host `read_only` profile) and renders it. A
+  `ReportScope` drives `--security`, dropping operational sections (health, services,
+  crons, inventory) from the human formats while JSON stays the full model. Session
+  notes arrive via repeatable `--note` and appear in every format; `--output` writes
+  to a file, otherwise stdout. Verified end-to-end against the local host in all
+  three formats.
 
 ## Definition of Done
 

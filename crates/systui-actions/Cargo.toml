@@ -1,0 +1,13 @@
+[package]
+name = "systui-actions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SysTUI action engine: previews, confirmations, backups and safe execution"
+
+[lints]
+workspace = true
+
+[dependencies]

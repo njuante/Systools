@@ -1,0 +1,22 @@
+[package]
+name = "systui-collectors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SysTUI collectors: system, process, service, log and network readers"
+
+[lints]
+workspace = true
+
+[dependencies]
+systui-core.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+systui-transport.workspace = true

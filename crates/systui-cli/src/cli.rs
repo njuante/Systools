@@ -26,7 +26,7 @@ pub enum Command {
     /// Inspect the local machine. This is the default when no subcommand is given.
     Local,
 
-    /// Connect to a remote host over SSH (implemented in phase 5).
+    /// Connect to a remote host over SSH.
     Ssh {
         /// Target as `user@host`, or a host id from the inventory.
         target: String,

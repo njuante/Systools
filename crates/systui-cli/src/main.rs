@@ -1,14 +1,14 @@
 //! SysTUI command-line entry point.
 //!
 //! Wires argument parsing, logging and configuration loading, then resolves the
-//! execution mode and dispatches to a mode handler. The handlers are stubs until
-//! the TUI shell (S0.6) and the remote/report/fleet phases land.
+//! execution mode and dispatches to a mode handler. Local and SSH launch the TUI;
+//! report is local-only for now and fleet lands in a later phase.
 
 mod cli;
 
 use anyhow::Context;
 use clap::Parser;
-use systui_core::{Config, ExecutionMode};
+use systui_core::{Config, ExecutionMode, Transport};
 use tracing_subscriber::EnvFilter;
 
 use crate::cli::{Cli, Command};
@@ -64,7 +64,7 @@ fn dispatch(command: Command, mode: ExecutionMode, config: &Config) -> anyhow::R
             systui_ui::run(transport, systui_core::HostId::LOCAL, mode, config)?;
         }
         Command::Ssh { target } => {
-            println!("systui: ssh mode -> {target} ({mode}) — implemented in phase 5");
+            run_ssh(&target, mode, config)?;
         }
         Command::Fleet { tag } => {
             let scope = tag.as_deref().unwrap_or("all hosts");
@@ -74,6 +74,40 @@ fn dispatch(command: Command, mode: ExecutionMode, config: &Config) -> anyhow::R
             run_report(host, &format, config)?;
         }
     }
+    Ok(())
+}
+
+/// Resolve an SSH target (an inventory id or `user@host`) and launch the TUI
+/// against it over [`SshTransport`].
+///
+/// A per-host `read_only` profile forces read-only mode regardless of CLI flags.
+/// The transport is stateless — each command opens its own `ssh` connection — so
+/// a dropped link self-heals on the next refresh without explicit reconnect
+/// logic; host-key verification and auth are delegated to the system ssh client
+/// (`known_hosts`, `~/.ssh/config`, ssh-agent).
+fn run_ssh(target: &str, mode: ExecutionMode, config: &Config) -> anyhow::Result<()> {
+    let resolved = config.resolve_target(target);
+    let effective_mode = if resolved.read_only {
+        ExecutionMode::ReadOnly
+    } else {
+        mode
+    };
+
+    let mut transport =
+        systui_transport::SshTransport::new(resolved.host.clone()).port(resolved.port);
+    if let Some(user) = &resolved.user {
+        transport = transport.user(user.clone());
+    }
+
+    // Friendly title: the inventory id when known, else the ssh:// destination.
+    let label = if resolved.from_inventory {
+        resolved.id.clone()
+    } else {
+        transport.label().to_owned()
+    };
+    tracing::info!(host = %label, %effective_mode, "connecting over ssh");
+
+    systui_ui::run(Box::new(transport), label, effective_mode, config)?;
     Ok(())
 }
 

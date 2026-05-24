@@ -123,6 +123,58 @@ fn default_ssh_port() -> u16 {
     22
 }
 
+/// A host resolved from an `ssh` CLI target — either a known inventory id or an
+/// ad-hoc `user@host` (or bare `host`) specification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedHost {
+    /// The inventory id when matched, otherwise the raw target string.
+    pub id: String,
+    /// Whether the target matched a configured inventory host.
+    pub from_inventory: bool,
+    pub host: String,
+    pub user: Option<String>,
+    pub port: u16,
+    /// Force read-only mode for this host (from its profile).
+    pub read_only: bool,
+    /// Name of the policy to evaluate this host against, if any.
+    pub policy: Option<String>,
+}
+
+impl Config {
+    /// Resolve an `ssh` target. A target matching an inventory id (`[hosts.<id>]`)
+    /// uses that profile; otherwise it is parsed as `user@host` or a bare `host`
+    /// with default port and no profile overrides.
+    pub fn resolve_target(&self, target: &str) -> ResolvedHost {
+        if let Some(host) = self.hosts.get(target) {
+            return ResolvedHost {
+                id: target.to_owned(),
+                from_inventory: true,
+                host: host.host.clone(),
+                user: host.user.clone(),
+                port: host.port,
+                read_only: host.read_only,
+                policy: host.policy.clone(),
+            };
+        }
+
+        let (user, host) = match target.split_once('@') {
+            Some((user, host)) if !user.is_empty() && !host.is_empty() => {
+                (Some(user.to_owned()), host.to_owned())
+            }
+            _ => (None, target.to_owned()),
+        };
+        ResolvedHost {
+            id: target.to_owned(),
+            from_inventory: false,
+            host,
+            user,
+            port: default_ssh_port(),
+            read_only: false,
+            policy: None,
+        }
+    }
+}
+
 /// Expected-state policy for a host or group (`Product.md` §4.15, §13).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -195,5 +247,45 @@ host = "10.0.0.1"
         )
         .unwrap();
         assert_eq!(cfg.hosts["db"].port, 22);
+    }
+
+    #[test]
+    fn resolves_an_inventory_host_id() {
+        let cfg: Config = toml::from_str(
+            r#"
+[hosts.prod-01]
+host = "192.168.1.20"
+user = "admin"
+port = 2222
+read_only = true
+policy = "production-web"
+"#,
+        )
+        .unwrap();
+        let resolved = cfg.resolve_target("prod-01");
+        assert!(resolved.from_inventory);
+        assert_eq!(resolved.host, "192.168.1.20");
+        assert_eq!(resolved.user.as_deref(), Some("admin"));
+        assert_eq!(resolved.port, 2222);
+        assert!(resolved.read_only);
+        assert_eq!(resolved.policy.as_deref(), Some("production-web"));
+    }
+
+    #[test]
+    fn parses_user_at_host_when_not_in_inventory() {
+        let cfg = Config::default();
+        let resolved = cfg.resolve_target("admin@10.0.0.5");
+        assert!(!resolved.from_inventory);
+        assert_eq!(resolved.user.as_deref(), Some("admin"));
+        assert_eq!(resolved.host, "10.0.0.5");
+        assert_eq!(resolved.port, 22);
+        assert!(!resolved.read_only);
+    }
+
+    #[test]
+    fn parses_bare_host_without_user() {
+        let resolved = Config::default().resolve_target("server.example.com");
+        assert_eq!(resolved.user, None);
+        assert_eq!(resolved.host, "server.example.com");
     }
 }

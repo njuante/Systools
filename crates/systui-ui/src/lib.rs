@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
-use systui_core::{Config, CoreError, ExecutionMode, Result, Transport};
+use systui_actions::ActionEngine;
+use systui_core::{AuditContext, Config, CoreError, ExecutionMode, Result, Transport};
+use systui_storage::AuditLog;
 use tokio::runtime::Runtime;
 
 /// How often the event loop wakes to poll for input and check the refresh timer.
@@ -73,10 +75,19 @@ fn event_loop(
             }
         }
 
+        if app.action_plan_requested {
+            app.action_plan_requested = false;
+            plan_action(runtime, transport, app);
+        } else if app.action_exec_requested {
+            app.action_exec_requested = false;
+            execute_action(runtime, transport, app);
+        }
+
         let auto_due = !refresh_interval.is_zero() && last_refresh.elapsed() >= refresh_interval;
         if app.refresh_requested || auto_due {
             app.refresh_requested = false;
             data::refresh_blocking(runtime, transport, app);
+            app.clamp_selections();
             last_refresh = Instant::now();
         } else if app.logs_reload_requested {
             // A log filter changed: re-collect only the logs.
@@ -85,4 +96,45 @@ fn event_loop(
         }
     }
     Ok(())
+}
+
+/// Plan the pending action through the engine and update the modal.
+fn plan_action(runtime: &Runtime, transport: &dyn Transport, app: &mut App) {
+    let Some(pending) = &app.pending else {
+        return;
+    };
+    let engine = ActionEngine::new(app.mode);
+    match runtime.block_on(engine.plan(pending.as_action(), transport)) {
+        Ok(decision) => app.set_decision(decision),
+        Err(err) => app.set_decision(systui_actions::ActionDecision::Rejected(err.to_string())),
+    }
+}
+
+/// Execute the pending action, persist the audit record and show the result.
+fn execute_action(runtime: &Runtime, transport: &dyn Transport, app: &mut App) {
+    let Some(pending) = app.pending.take() else {
+        return;
+    };
+    let confirmation = app
+        .action
+        .as_ref()
+        .map(|m| m.input.clone())
+        .unwrap_or_default();
+    let ctx = AuditContext {
+        host: app.host_label.clone(),
+        user: std::env::var("USER").unwrap_or_else(|_| "unknown".to_owned()),
+    };
+
+    let engine = ActionEngine::new(app.mode);
+    let (result, record) =
+        runtime.block_on(engine.run(pending.as_action(), transport, Some(&confirmation), &ctx));
+    if let Ok(log) = AuditLog::at_default_location() {
+        let _ = log.append(&record);
+    }
+    let message = match result {
+        Ok(outcome) => outcome.message,
+        Err(err) => err.to_string(),
+    };
+    app.set_action_result(message);
+    app.request_refresh();
 }

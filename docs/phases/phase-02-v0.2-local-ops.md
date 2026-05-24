@@ -96,7 +96,15 @@ Everything still goes through the `Transport`/`CommandSpec` contracts; the UI on
   `Action::target()`, `ActionEngine::run` (executes + builds a record), and
   `systui-storage::AuditLog` (append JSON lines to `~/.local/share/systui/audit.log`).
   UI persistence of records lands with action invocation in S2.7.
-- **S2.7 — Contextual confirmations + guardrails** + polish → **tag v0.2**.
+- **S2.7 — Contextual confirmations + guardrails** *(done)*: Services/Processes tabs
+  gain row selection (↑/↓); `a` proposes the default action (restart / SIGTERM) and
+  opens the action modal → preview → typed confirmation (risky) or Enter (low risk)
+  → engine `run` → audit record persisted → result. Read-only/guardrail rejections
+  show in the modal. (Op menus for other systemd ops/signals are a follow-up.)
+  → **tag v0.2**.
+
+**Phase 2 complete — v0.2.** All sessions done; DoD met. Ready to merge to `main`
+and tag `v0.2`.
 
 ## Definition of Done
 

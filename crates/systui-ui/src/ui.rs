@@ -7,9 +7,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Tabs, Wrap};
 use regex::RegexBuilder;
-use systui_collectors::{Disk, LogEntry, Process, SystemSnapshot};
+use systui_collectors::{Disk, LogEntry, SystemSnapshot};
 
-use crate::app::{App, InputMode, ProcessSort, Tab, ViewState};
+use crate::app::{ActionStage, App, InputMode, Tab, ViewState};
 
 /// Draw the whole UI for the current state.
 pub fn render(frame: &mut Frame, app: &App) {
@@ -29,6 +29,77 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.show_help {
         render_help(frame, app);
     }
+    if app.action.is_some() {
+        render_action_modal(frame, app);
+    }
+}
+
+fn render_action_modal(frame: &mut Frame, app: &App) {
+    let Some(modal) = &app.action else {
+        return;
+    };
+    let area = centered_rect(60, 50, frame.area());
+    frame.render_widget(Clear, area);
+
+    let (border, footer) = match modal.stage {
+        ActionStage::Confirm => (app.theme.warn, "Enter confirm · Esc cancel"),
+        ActionStage::Ready => (app.theme.accent, "Enter run · Esc cancel"),
+        ActionStage::Result => (app.theme.border, "press any key to close"),
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::new().fg(border))
+        .title(format!(" {} ", modal.title));
+
+    let mut lines = vec![Line::from("")];
+    for detail in &modal.details {
+        lines.push(Line::from(Span::styled(
+            format!("  {detail}"),
+            Style::new().fg(app.theme.dim),
+        )));
+    }
+    match modal.stage {
+        ActionStage::Confirm => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("  Type to confirm: ", Style::new().fg(app.theme.text)),
+                Span::styled(
+                    modal.phrase.clone(),
+                    Style::new().fg(app.theme.warn).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::from(Span::styled(
+                format!("  > {}_", modal.input),
+                Style::new().fg(app.theme.accent),
+            )));
+        }
+        ActionStage::Ready => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  Ready to run.",
+                Style::new().fg(app.theme.text),
+            )));
+        }
+        ActionStage::Result => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!("  {}", modal.message),
+                Style::new().fg(app.theme.text),
+            )));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("  [{footer}]"),
+        Style::new().fg(app.theme.dim),
+    )));
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn render_title(frame: &mut Frame, app: &App, area: Rect) {
@@ -170,6 +241,13 @@ fn render_log_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+fn selected_style(app: &App) -> Style {
+    Style::new()
+        .fg(app.theme.selected_fg)
+        .bg(app.theme.selected_bg)
+        .add_modifier(Modifier::BOLD)
+}
+
 fn log_priority_color(app: &App, entry: &LogEntry) -> ratatui::style::Color {
     if entry.priority <= 3 {
         app.theme.danger
@@ -209,8 +287,8 @@ fn render_services(frame: &mut Frame, app: &App, area: Rect) {
 
     let header = Row::new(["UNIT", "ACTIVE", "SUB", "DESCRIPTION"])
         .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
-    let body = app.failed_units.iter().map(|u| {
-        Row::new([
+    let body = app.failed_units.iter().enumerate().map(|(i, u)| {
+        let row = Row::new([
             Cell::from(Span::styled(
                 u.name.clone(),
                 Style::new().fg(app.theme.danger),
@@ -218,7 +296,12 @@ fn render_services(frame: &mut Frame, app: &App, area: Rect) {
             Cell::from(u.active.clone()),
             Cell::from(u.sub.clone()),
             Cell::from(u.description.clone()),
-        ])
+        ]);
+        if i == app.services_selected {
+            row.style(selected_style(app))
+        } else {
+            row
+        }
     });
     let widths = [
         Constraint::Length(28),
@@ -255,27 +338,22 @@ fn render_processes(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let mut procs: Vec<&Process> = app.processes.iter().collect();
-    let key = |p: &Process| match app.process_sort {
-        ProcessSort::Cpu => p.cpu_percent,
-        ProcessSort::Mem => p.mem_percent,
-    };
-    procs.sort_by(|a, b| {
-        key(b)
-            .partial_cmp(&key(a))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
+    let procs = app.visible_processes();
     let header = Row::new(["PID", "USER", "%CPU", "%MEM", "COMMAND"])
         .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
-    let body = procs.iter().take(20).map(|p| {
-        Row::new([
+    let body = procs.iter().take(20).enumerate().map(|(i, p)| {
+        let row = Row::new([
             p.pid.to_string(),
             p.user.clone(),
             format!("{:.1}", p.cpu_percent),
             format!("{:.1}", p.mem_percent),
             p.command.clone(),
-        ])
+        ]);
+        if i == app.processes_selected {
+            row.style(selected_style(app))
+        } else {
+            row
+        }
     });
     let widths = [
         Constraint::Length(7),
@@ -664,6 +742,8 @@ fn render_help(frame: &mut Frame, app: &App) {
         ("Tab / →", "next tab"),
         ("Shift+Tab / ←", "previous tab"),
         ("1–8", "jump to tab"),
+        ("↑ / ↓", "move selection (services/processes)"),
+        ("a", "act on selection (restart / signal)"),
         ("r", "refresh"),
         ("s", "sort processes by CPU/memory"),
         ("/", "search logs (Esc to clear)"),
@@ -994,6 +1074,32 @@ mod tests {
         let out = render_to_string(&app, 100, 24);
         assert!(out.contains("failed password"));
         assert!(!out.contains("upstream timed out"));
+    }
+
+    #[test]
+    fn action_modal_renders_confirmation() {
+        use crate::app::{ActionModal, ActionStage};
+        let mut app = App::new("local", ExecutionMode::Privileged);
+        app.snapshot = Some(sample_snapshot());
+        app.view_state = ViewState::Ready;
+        app.set_decision(systui_actions::ActionDecision::NeedsConfirmation {
+            preview: systui_core::ActionPreview {
+                summary: "Restart nginx.service".to_owned(),
+                details: vec!["Restarts the unit; it will be briefly unavailable.".to_owned()],
+                command: None,
+                reversible: false,
+                creates_backup: false,
+            },
+            phrase: "Restart nginx.service".to_owned(),
+        });
+
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("Restart nginx.service"));
+        assert!(out.contains("Type to confirm"));
+
+        // sanity: the modal type is what we expect
+        let modal: &ActionModal = app.action.as_ref().unwrap();
+        assert_eq!(modal.stage, ActionStage::Confirm);
     }
 
     #[test]

@@ -92,15 +92,19 @@ offline once dependencies are cached.
 Source of truth is `git log` and the active phase context file — check them, this
 snapshot may lag.
 
-- Branch: `release/v0.1` (merges to `main` + tag `v0.1` at end of phase 1).
-- **Phase 0 (Foundation) complete**: workspace, `systui-core` contracts, Local/Mock
-  transports, CLI skeleton + config + tracing, TUI shell, async/sync bridge.
-- **Phase 1 / v0.1 complete** (S1.1–S1.8): system/process/service/log collectors,
-  dashboard with explainable health score + findings, System/Processes/Services/Logs
-  tabs, threshold checks, auto-refresh, and `systui report --format markdown`.
-- **Next: Phase 2 / v0.2** (Local operation) — start with **S2.1**, the phase context
-  file (`docs/phases/phase-02-v0.2-local-ops.md`): full systemd module, full
-  processes, log filters, the action engine, read-only mode and the audit log.
+- Each version is built on `release/vX.Y` from `main`; merged `--no-ff` + tagged at
+  the end of its phase. `v0.1` and `v0.2` are tagged on `main`.
+- **Phase 0 (Foundation) complete**: workspace, contracts, Local/Mock transports,
+  CLI + config + tracing, TUI shell, async/sync bridge.
+- **Phase 1 / v0.1 complete**: dashboard with health score + findings,
+  system/processes/services/logs views, threshold checks, auto-refresh, Markdown report.
+- **Phase 2 / v0.2 complete** (S2.1–S2.8): full systemd + process collectors/detail,
+  service + signal actions, log filters + incremental search, the **action engine**
+  (guardrail → read-only → risk → preview → confirm → execute → verify), the **audit
+  log**, and UI action invocation (select + `a` → confirm → run → audited).
+- **Next: Phase 3 / v0.3** (Network & security) — start with **S3.1**, the phase
+  context file (`docs/phases/phase-03-v0.3-net-security.md`): network collectors,
+  exposure map, connectivity tools, security findings and certificates.
 
 ## Starting a session
 

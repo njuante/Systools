@@ -1022,8 +1022,10 @@ version = "0.1.0"
 dependencies = [
  "ratatui",
  "regex",
+ "systui-actions",
  "systui-collectors",
  "systui-core",
+ "systui-storage",
  "systui-transport",
  "tokio",
 ]

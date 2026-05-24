@@ -2,13 +2,33 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::{App, InputMode};
+use crate::app::{ActionStage, App, InputMode};
 
 /// Apply a key press to the application state.
 pub fn handle_key(app: &mut App, key: KeyEvent) {
     // Ctrl+C always quits.
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
         app.quit();
+        return;
+    }
+
+    // The action overlay captures all input while open.
+    if let Some(stage) = app.action.as_ref().map(|m| m.stage) {
+        match stage {
+            ActionStage::Result => app.close_action(),
+            ActionStage::Ready => match key.code {
+                KeyCode::Enter => app.submit_action(),
+                KeyCode::Esc => app.close_action(),
+                _ => {}
+            },
+            ActionStage::Confirm => match key.code {
+                KeyCode::Enter => app.submit_action(),
+                KeyCode::Esc => app.close_action(),
+                KeyCode::Backspace => app.pop_action_char(),
+                KeyCode::Char(c) => app.push_action_char(c),
+                _ => {}
+            },
+        }
         return;
     }
 
@@ -43,6 +63,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('/') => app.enter_search(),
         KeyCode::Char('l') => app.cycle_log_level(),
         KeyCode::Char('t') => app.cycle_log_window(),
+        KeyCode::Char('a') => app.request_action(),
+        KeyCode::Up => app.select_up(),
+        KeyCode::Down => app.select_down(),
         KeyCode::Tab | KeyCode::Right => app.next_tab(),
         KeyCode::BackTab | KeyCode::Left => app.prev_tab(),
         KeyCode::Char(c @ '1'..='9') => app.select_tab(c as usize - '1' as usize),

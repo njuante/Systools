@@ -118,12 +118,14 @@ snapshot may lag.
   (`docker_findings` over `InspectSummary`: privileged, docker.sock/dangerous mounts,
   sensitive published ports via reused `exposure_map`, unhealthy, restart loops,
   `latest`, no mem limit); **S4.5** cron sources (`cron.rs`: `parse_crontab` +
-  `collect_cron_entries` over user/system/cron.d/periodic sources).
-- **Next: S4.6 — Timers & validation**: parse systemd timers (`systemctl
-  list-timers`), validate the cron expression (5 fields/`@macro`), render a
-  natural-language schedule and compute the next run(s). Decide the cron/next-run
-  crate vs `chrono` here. Then S4.7 cron checks + Docker/Crons tabs → tag `v0.4`.
-  Read `docs/phases/phase-04-v0.4-docker-crons.md` first.
+  `collect_cron_entries` over user/system/cron.d/periodic sources); **S4.6** timers
+  & validation (`parse_schedule`/`CronSchedule` with `describe`/`next_after`/
+  `upcoming` — own cron evaluator, no crate — plus `collect_timers`/`SystemdTimer`).
+- **Next: S4.7 — Cron checks + tabs polish**: cron `Finding`s (missing script, not
+  executable, no logging, duplicate, risky root, suspicious frequency) in
+  `systui-security`; Docker + Crons TUI tabs and dashboard hooks → **tag `v0.4`**
+  (final session: merge `--no-ff` into `main` + tag). Read
+  `docs/phases/phase-04-v0.4-docker-crons.md` first.
 
 ## Starting a session
 

@@ -124,7 +124,13 @@ checks produce shared `Finding`s. Crons are **read-only/detection** this phase.
   (run-parts ignore rules applied). `CronEntry { schedule, user, command, source,
   origin }`. Best-effort/degrading, fixture-tested.
 - **S4.6 — Timers & validation**: systemd timers, cron expression validation,
-  next-run preview.
+  next-run preview. **Done.** `parse_schedule` validates the 5-field expression /
+  `@macro` into a `CronSchedule`; `describe()` renders natural language and
+  `next_after`/`upcoming` compute fire times (caller injects `now`; DOM/DOW use
+  classic OR semantics). **Decision:** evaluate cron ourselves instead of adding a
+  crate — offline builds, standard 5-field format, explicit timezone. `collect_timers`
+  parses `systemctl list-timers` (anchored on the `*.timer` token) into `SystemdTimer
+  { unit, activates, next }`. Fixture-/unit-tested.
 - **S4.7 — Cron checks** (missing script, no exec perms, no logging, duplicate,
   risky root) + Docker/Crons tabs polish → **tag v0.4**.
 

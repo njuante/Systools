@@ -92,8 +92,9 @@ offline once dependencies are cached.
 Source of truth is `git log` and the active phase context file — check them, this
 snapshot may lag.
 
-- Each version is built on `release/vX.Y` from `main`; merged `--no-ff` + tagged at
-  the end of its phase. `v0.1` and `v0.2` are tagged on `main`.
+- **Current branch: `release/v0.3`** (Phase 3 in progress). Each version is built on
+  `release/vX.Y` from `main`, then merged `--no-ff` + tagged at the end of its phase.
+  `v0.1` and `v0.2` are tagged on `main`.
 - **Phase 0 (Foundation) complete**: workspace, contracts, Local/Mock transports,
   CLI + config + tracing, TUI shell, async/sync bridge.
 - **Phase 1 / v0.1 complete**: dashboard with health score + findings,
@@ -102,9 +103,13 @@ snapshot may lag.
   service + signal actions, log filters + incremental search, the **action engine**
   (guardrail → read-only → risk → preview → confirm → execute → verify), the **audit
   log**, and UI action invocation (select + `a` → confirm → run → audited).
-- **Next: Phase 3 / v0.3** (Network & security) — start with **S3.1**, the phase
-  context file (`docs/phases/phase-03-v0.3-net-security.md`): network collectors,
-  exposure map, connectivity tools, security findings and certificates.
+- **Phase 3 / v0.3 (Network & security) — in progress.** Done: **S3.1** (phase
+  context, `docs/phases/phase-03-v0.3-net-security.md`).
+- **Next: S3.2 — Network collectors**: interfaces/IPs, routes, DNS, listening ports
+  and active connections with each listener's owning process (via `ss`/`ip`),
+  fixture-tested. Then S3.3 correlation, S3.4 exposure map, S3.5 connectivity tools,
+  S3.6 findings + security checks, S3.7 certificates, S3.8 Network/Security tabs →
+  tag `v0.3`. Read `docs/phases/phase-03-v0.3-net-security.md` first.
 
 ## Starting a session
 

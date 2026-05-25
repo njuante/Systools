@@ -35,10 +35,16 @@ impl AuditLog {
         }
         let line = serde_json::to_string(record)
             .map_err(|e| CoreError::Config(format!("audit serialization: {e}")))?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
+        let mut opts = OpenOptions::new();
+        opts.create(true).append(true);
+        // Restrict the audit trail to the owner: it records who did what on which
+        // host and should not be world-readable on a shared machine.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(&self.path)?;
         writeln!(file, "{line}")?;
         Ok(())
     }

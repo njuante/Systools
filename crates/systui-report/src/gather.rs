@@ -47,7 +47,7 @@ pub async fn gather_report(
     );
 
     let host = host?;
-    let (network, exposures, security_findings) = net;
+    let (network, exposures, security_findings, _firewall) = net;
     let (databases, database_findings_v) = dbs;
     let (containers, container_inspects, container_stats_data, docker_available, docker_findings_v) =
         docker;

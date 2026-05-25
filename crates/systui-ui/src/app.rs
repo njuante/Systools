@@ -7,8 +7,8 @@ use systui_actions::{
 };
 use systui_collectors::{
     Container, ContainerStats, CronEntry, CronSource, DatabaseSnapshot, ExposureEntry,
-    HealthReport, HostCapabilities, InspectSummary, LogEntry, LogQuery, NetworkSnapshot, Process,
-    ServiceUnit, SystemSnapshot, SystemdTimer, parse_schedule,
+    FirewallSnapshot, HealthReport, HostCapabilities, InspectSummary, LogEntry, LogQuery,
+    NetworkSnapshot, Process, ServiceUnit, SystemSnapshot, SystemdTimer, parse_schedule,
 };
 use systui_core::{Action, ExecutionMode, Finding, ModuleId, Severity, Thresholds};
 
@@ -298,6 +298,7 @@ pub struct App {
     /// A background connectivity run is in flight (drives the indicator and
     /// coalesces requests).
     pub connectivity_running: bool,
+    pub firewall: FirewallSnapshot,
     pub findings: Vec<Finding>,
     pub databases: DatabaseSnapshot,
     pub cert_warning_days: u32,
@@ -363,6 +364,7 @@ impl App {
             connectivity: Vec::new(),
             connectivity_requested: false,
             connectivity_running: false,
+            firewall: FirewallSnapshot::default(),
             findings: Vec::new(),
             databases: DatabaseSnapshot::default(),
             cert_warning_days: 30,

@@ -13,10 +13,10 @@ use std::time::{Duration, Instant};
 
 use systui_collectors::{
     Container, ContainerStats, CronEntry, DatabaseCollector, DatabaseSnapshot, DockerCollector,
-    ExposureEntry, HostReport, HostStatics, InspectSummary, LogQuery, NetStatics, NetworkCollector,
-    NetworkSnapshot, ServiceCollector, ServiceUnit, SystemdTimer, UnitFilesCollector,
-    collect_cron_entries, collect_host_report, collect_timers, container_stats, exposure_map,
-    inspect_container, timing,
+    ExposureEntry, FirewallCollector, FirewallSnapshot, HostReport, HostStatics, InspectSummary,
+    LogQuery, NetStatics, NetworkCollector, NetworkSnapshot, ServiceCollector, ServiceUnit,
+    SystemdTimer, UnitFilesCollector, collect_cron_entries, collect_host_report, collect_timers,
+    container_stats, exposure_map, inspect_container, timing,
 };
 use systui_core::{Collector, CoreError, Finding, Result, Thresholds, Transport};
 use systui_security::{cron_findings, database_findings, docker_findings, security_scan};
@@ -66,10 +66,15 @@ pub async fn gather_network(
     transport: &dyn Transport,
     cert_warning_days: u32,
     net_statics: Option<NetStatics>,
-) -> (Option<NetworkSnapshot>, Vec<ExposureEntry>, Vec<Finding>) {
+) -> (
+    Option<NetworkSnapshot>,
+    Vec<ExposureEntry>,
+    Vec<Finding>,
+    FirewallSnapshot,
+) {
     within_timeout(
         "network_group",
-        (None, Vec::new(), Vec::new()),
+        (None, Vec::new(), Vec::new(), FirewallSnapshot::default()),
         async move {
             let network = timing::timed(
                 "network",
@@ -81,12 +86,18 @@ pub async fn gather_network(
                 .as_ref()
                 .map(|net| exposure_map(&net.listeners))
                 .unwrap_or_default();
-            let findings = timing::timed(
-                "security_scan",
-                security_scan(transport, &exposures, cert_warning_days, &[]),
-            )
-            .await;
-            (network, exposures, findings)
+            // The security scan depends on the exposures; the firewall read is
+            // independent, so overlap them instead of running back-to-back.
+            let firewall_collector = FirewallCollector::new();
+            let (findings, firewall) = tokio::join!(
+                timing::timed(
+                    "security_scan",
+                    security_scan(transport, &exposures, cert_warning_days, &[]),
+                ),
+                timing::timed("firewall", firewall_collector.collect(transport)),
+            );
+            let firewall = firewall.unwrap_or_default();
+            (network, exposures, findings, firewall)
         },
     )
     .await

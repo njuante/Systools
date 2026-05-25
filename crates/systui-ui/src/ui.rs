@@ -892,14 +892,70 @@ fn render_network(frame: &mut Frame, app: &App, area: Rect) {
     render_exposure_panel(frame, app, left[0]);
     render_connectivity_panel(frame, app, left[1]);
     let right = Layout::vertical([
-        Constraint::Percentage(46),
+        Constraint::Percentage(32),
+        Constraint::Percentage(22),
+        Constraint::Percentage(16),
         Constraint::Percentage(30),
-        Constraint::Percentage(24),
     ])
     .split(cols[1]);
     render_net_interfaces(frame, app, net, right[0]);
     render_net_dns_routes(frame, app, net, right[1]);
     render_net_connections(frame, app, net, right[2]);
+    render_firewall_panel(frame, app, right[3]);
+}
+
+/// Firewall summary: the active manager/engine, table & chain names and the rule
+/// count, plus any caveats (e.g. that the listing needs privilege).
+fn render_firewall_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let fw = &app.firewall;
+    let badge = if fw.active {
+        fw.backend.as_str()
+    } else {
+        "off"
+    };
+    let block = panel_block(&t, "Firewall");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let (state_label, state_color) = if fw.active {
+        ("active", t.accent)
+    } else if fw.backend == "none" {
+        ("none", t.fg_dim)
+    } else {
+        ("inactive", t.high)
+    };
+    let field = |key: &str, value: String, color| {
+        Line::from(vec![
+            Span::styled(format!("{key:<8} "), Style::new().fg(t.fg_dim)),
+            Span::styled(value, Style::new().fg(color)),
+        ])
+    };
+    let mut lines = vec![field(
+        "backend",
+        format!("{} ({})", badge, state_label),
+        state_color,
+    )];
+    if !fw.tables.is_empty() {
+        lines.push(field("tables", fw.tables.join(" · "), t.fg_muted));
+    }
+    if !fw.chains.is_empty() {
+        lines.push(field("chains", fw.chains.join(" · "), t.fg_muted));
+    }
+    if fw.rule_count > 0 {
+        lines.push(field(
+            "rules",
+            format!("{} active", fw.rule_count),
+            t.fg_strong,
+        ));
+    }
+    for note in &fw.notes {
+        lines.push(Line::from(Span::styled(
+            format!("! {note}"),
+            Style::new().fg(t.high),
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 /// On-demand reachability probes against the host's gateway and resolvers.
@@ -2962,6 +3018,29 @@ mod tests {
         assert!(out.contains("CRIT")); // redis on 0.0.0.0:6379
         assert!(out.contains("6379"));
         assert!(out.contains("redis.service"));
+    }
+
+    #[test]
+    fn network_tab_shows_firewall_panel() {
+        use systui_collectors::FirewallSnapshot;
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.network = Some(sample_network());
+        app.firewall = FirewallSnapshot {
+            backend: "nftables".to_owned(),
+            active: true,
+            tables: vec!["inet filter".to_owned()],
+            chains: vec!["input".to_owned(), "forward".to_owned()],
+            rule_count: 6,
+            notes: Vec::new(),
+        };
+        app.view_state = ViewState::Ready;
+        app.select_tab(5); // Network
+
+        let out = render_to_string(&app, 130, 30);
+        assert!(out.contains("Firewall"));
+        assert!(out.contains("nftables"));
+        assert!(out.contains("6 active"));
     }
 
     #[test]

@@ -145,6 +145,20 @@ The omitted panels, audited against the current code, fall into four buckets:
   gates green.
 - **S8e.3 — Firewall**: `firewall.rs` collector (backend + tables/chains/rules +
   conflict notes) → the Network **Firewall** panel.
+  **Done.** New `FirewallCollector` names the active manager (`firewalld` via
+  `firewall-cmd --state`, `ufw` via `ufw status`) and reads the *effective*
+  ruleset — `nft list ruleset` first, then `iptables -S` — into real table,
+  chain and rule-statement counts (text parsers, fixture-tested). All probes are
+  read-only and marked `privileged`; when the listing is denied/unavailable the
+  snapshot degrades to a "needs privilege?" note instead of claiming "no
+  firewall". It collects concurrently with the security scan inside the existing
+  `network_group` (bounded by its timeout — no stall). The Network right rail
+  gained a **Firewall** panel (backend + state, tables, chains, `N active`
+  rules, caveat notes). The prototype's "rule but no process bound / conflicts
+  with a listening port" correlation is **deferred** — it cannot be derived
+  reliably across backends without fragile, fakeable rule parsing, so per the
+  real-data-only contract it is left out rather than guessed. Render + parser
+  tests added; gates green.
 - **S8e.4 — Docker compose + image hygiene + prune**: the two omitted Docker panels
   from new collectors; `prune dangling` mutation through the action engine.
 - **S8e.5 — Packages & Anacron**: packages/updates collector → Dashboard **UPDATES**

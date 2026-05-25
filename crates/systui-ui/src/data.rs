@@ -10,9 +10,9 @@ use std::time::Instant;
 
 use chrono::{Local, NaiveDateTime};
 use systui_collectors::{
-    Container, ContainerStats, CronEntry, DatabaseSnapshot, ExposureEntry, HealthReport,
-    HostStatics, InspectSummary, LogEntry, LogQuery, LogsCollector, NetStatics, NetworkSnapshot,
-    Process, ServiceUnit, SystemSnapshot, SystemdTimer, timing,
+    Container, ContainerStats, CronEntry, DatabaseSnapshot, ExposureEntry, FirewallSnapshot,
+    HealthReport, HostStatics, InspectSummary, LogEntry, LogQuery, LogsCollector, NetStatics,
+    NetworkSnapshot, Process, ServiceUnit, SystemSnapshot, SystemdTimer, timing,
 };
 use systui_core::{Collector, CoreError, Finding, Thresholds, Transport};
 use systui_report::collect::{
@@ -37,6 +37,7 @@ pub struct RefreshResult {
     pub health: HealthReport,
     pub network: Option<NetworkSnapshot>,
     pub exposures: Vec<ExposureEntry>,
+    pub firewall: FirewallSnapshot,
     pub databases: DatabaseSnapshot,
     pub containers: Vec<Container>,
     pub container_inspects: Vec<InspectSummary>,
@@ -86,7 +87,7 @@ pub async fn gather(
     );
 
     let report = report?;
-    let (network, exposures, security_findings) = net;
+    let (network, exposures, security_findings, firewall) = net;
     let (databases, database_findings_v) = dbs;
     let (containers, container_inspects, container_stats_data, docker_available, docker_findings_v) =
         docker;
@@ -116,6 +117,7 @@ pub async fn gather(
         health: report.health,
         network,
         exposures,
+        firewall,
         databases,
         containers,
         container_inspects,
@@ -149,6 +151,7 @@ pub fn apply_refresh(app: &mut App, outcome: RefreshOutcome) {
             app.health = Some(result.health);
             app.network = result.network;
             app.exposures = result.exposures;
+            app.firewall = result.firewall;
             app.databases = result.databases;
             app.containers = result.containers;
             app.container_inspects = result.container_inspects;

@@ -79,7 +79,7 @@ engine with read-only mode and a JSON audit trail.
 **Functional demo.** System collectors, dashboard panels, top processes, failed units,
 basic journald logs, threshold checks and a minimal Markdown report.
 
-[1.0.0]: https://github.com/njuante/Systools/releases/tag/v1.0
+[1.0.0]: https://github.com/njuante/Systools/releases/tag/v1.0.0
 [0.9]: https://github.com/njuante/Systools/releases/tag/v0.9
 [0.8.4]: https://github.com/njuante/Systools/releases/tag/v0.8.4
 [0.8.3]: https://github.com/njuante/Systools/releases/tag/v0.8.3

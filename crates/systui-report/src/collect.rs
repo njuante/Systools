@@ -14,8 +14,9 @@ use std::time::{Duration, Instant};
 use systui_collectors::{
     Container, ContainerStats, CronEntry, DatabaseCollector, DatabaseSnapshot, DockerCollector,
     ExposureEntry, HostReport, HostStatics, InspectSummary, LogQuery, NetStatics, NetworkCollector,
-    NetworkSnapshot, SystemdTimer, collect_cron_entries, collect_host_report, collect_timers,
-    container_stats, exposure_map, inspect_container, timing,
+    NetworkSnapshot, ServiceCollector, ServiceUnit, SystemdTimer, UnitFilesCollector,
+    collect_cron_entries, collect_host_report, collect_timers, container_stats, exposure_map,
+    inspect_container, timing,
 };
 use systui_core::{Collector, CoreError, Finding, Result, Thresholds, Transport};
 use systui_security::{cron_findings, database_findings, docker_findings, security_scan};
@@ -156,6 +157,30 @@ pub async fn gather_crons(transport: &dyn Transport) -> (Vec<CronEntry>, Vec<Fin
         let crons = timing::timed("crons", collect_cron_entries(transport)).await;
         let findings = timing::timed("cron_findings", cron_findings(transport, &crons)).await;
         (crons, findings)
+    })
+    .await
+}
+
+/// Full service unit list + the set of unit names enabled at boot. The
+/// `--failed` fast path (in the host report) stays the live health signal; this
+/// group backs the Services screen's ALL/RUNNING/INACTIVE/ENABLED filters. Both
+/// reads run concurrently and degrade to empty.
+pub async fn gather_services(transport: &dyn Transport) -> (Vec<ServiceUnit>, Vec<String>) {
+    within_timeout("services_group", (Vec::new(), Vec::new()), async move {
+        let service_collector = ServiceCollector::new();
+        let unit_files_collector = UnitFilesCollector::new();
+        let (units, files) = tokio::join!(
+            timing::timed("service_units", service_collector.collect(transport)),
+            timing::timed("unit_files", unit_files_collector.collect(transport)),
+        );
+        let units = units.unwrap_or_default();
+        let enabled = files
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|f| f.is_enabled())
+            .map(|f| f.name)
+            .collect();
+        (units, enabled)
     })
     .await
 }

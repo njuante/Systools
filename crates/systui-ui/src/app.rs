@@ -209,6 +209,49 @@ impl ProcessSort {
     }
 }
 
+/// Which subset of systemd units the Services screen shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceFilter {
+    All,
+    Failed,
+    Running,
+    Inactive,
+    Enabled,
+}
+
+impl ServiceFilter {
+    /// All filters, in display (cycle) order.
+    pub const ALL: [ServiceFilter; 5] = [
+        ServiceFilter::All,
+        ServiceFilter::Failed,
+        ServiceFilter::Running,
+        ServiceFilter::Inactive,
+        ServiceFilter::Enabled,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ServiceFilter::All => "ALL",
+            ServiceFilter::Failed => "FAILED",
+            ServiceFilter::Running => "RUNNING",
+            ServiceFilter::Inactive => "INACTIVE",
+            ServiceFilter::Enabled => "ENABLED",
+        }
+    }
+}
+
+/// One reachability probe result shown in the Network → Connectivity panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectivityResult {
+    /// The probed host/address.
+    pub target: String,
+    /// Where the target came from (`gateway`, `dns`).
+    pub label: String,
+    pub reachable: bool,
+    /// Human summary, e.g. `0.4ms avg · 0% loss` or `no reply`.
+    pub detail: String,
+}
+
 /// Whether keystrokes drive navigation or the log search box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
@@ -241,8 +284,20 @@ pub struct App {
     pub processes: Vec<Process>,
     pub process_sort: ProcessSort,
     pub failed_units: Vec<ServiceUnit>,
+    /// Full service unit list (slow-tier), backing the Services screen filters.
+    pub all_units: Vec<ServiceUnit>,
+    /// Names of units enabled at boot, from `list-unit-files`.
+    pub enabled_units: Vec<String>,
+    pub service_filter: ServiceFilter,
     pub network: Option<NetworkSnapshot>,
     pub exposures: Vec<ExposureEntry>,
+    /// On-demand reachability probes (Network tab, run on `c`).
+    pub connectivity: Vec<ConnectivityResult>,
+    /// A connectivity probe run was requested; the loop spawns it in background.
+    pub connectivity_requested: bool,
+    /// A background connectivity run is in flight (drives the indicator and
+    /// coalesces requests).
+    pub connectivity_running: bool,
     pub findings: Vec<Finding>,
     pub databases: DatabaseSnapshot,
     pub cert_warning_days: u32,
@@ -300,8 +355,14 @@ impl App {
             processes: Vec::new(),
             process_sort: ProcessSort::Cpu,
             failed_units: Vec::new(),
+            all_units: Vec::new(),
+            enabled_units: Vec::new(),
+            service_filter: ServiceFilter::All,
             network: None,
             exposures: Vec::new(),
+            connectivity: Vec::new(),
+            connectivity_requested: false,
+            connectivity_running: false,
             findings: Vec::new(),
             databases: DatabaseSnapshot::default(),
             cert_warning_days: 30,
@@ -384,6 +445,37 @@ impl App {
         self.refresh_requested = true;
     }
 
+    /// Ask the loop to run connectivity probes in the background.
+    pub fn request_connectivity(&mut self) {
+        self.connectivity_requested = true;
+    }
+
+    /// Targets to probe: the default gateway and each configured DNS server,
+    /// derived from the current network snapshot. De-duplicated, in a stable
+    /// order. Empty when there is no network data yet. Deliberately limited to
+    /// the host's own gateway/resolvers — never arbitrary external hosts.
+    pub fn connectivity_targets(&self) -> Vec<(String, String)> {
+        let mut targets: Vec<(String, String)> = Vec::new();
+        let mut push = |addr: &str, label: &str| {
+            if !addr.is_empty() && !targets.iter().any(|(t, _)| t == addr) {
+                targets.push((addr.to_owned(), label.to_owned()));
+            }
+        };
+        if let Some(net) = &self.network {
+            for route in &net.routes {
+                if route.dst == "default"
+                    && let Some(gw) = &route.gateway
+                {
+                    push(gw, "gateway");
+                }
+            }
+            for ns in &net.dns.nameservers {
+                push(ns, "dns");
+            }
+        }
+        targets
+    }
+
     /// Switch the process list ordering between CPU and memory.
     pub fn toggle_process_sort(&mut self) {
         self.process_sort = self.process_sort.toggled();
@@ -448,6 +540,43 @@ impl App {
         self.logs_reload_requested = true;
     }
 
+    /// Units shown on the Services screen under the active filter. Falls back to
+    /// the live `failed_units` when the full list has not been gathered yet (so
+    /// the screen is never blank on the first frames), and always for the FAILED
+    /// filter (the freshest signal).
+    pub fn visible_units(&self) -> Vec<&ServiceUnit> {
+        if self.service_filter == ServiceFilter::Failed || self.all_units.is_empty() {
+            return self.failed_units.iter().collect();
+        }
+        self.all_units
+            .iter()
+            .filter(|u| match self.service_filter {
+                ServiceFilter::All => true,
+                ServiceFilter::Failed => u.is_failed(),
+                ServiceFilter::Running => u.sub == "running",
+                ServiceFilter::Inactive => u.active == "inactive",
+                ServiceFilter::Enabled => self.enabled_units.iter().any(|n| n == &u.name),
+            })
+            .collect()
+    }
+
+    /// The unit currently selected on the Services screen, under the active filter.
+    pub fn selected_service(&self) -> Option<ServiceUnit> {
+        self.visible_units()
+            .get(self.services_selected)
+            .map(|u| (*u).clone())
+    }
+
+    /// Cycle the Services screen filter and reset the selection to the top.
+    pub fn cycle_service_filter(&mut self) {
+        let current = ServiceFilter::ALL
+            .iter()
+            .position(|f| *f == self.service_filter)
+            .unwrap_or(0);
+        self.service_filter = ServiceFilter::ALL[(current + 1) % ServiceFilter::ALL.len()];
+        self.services_selected = 0;
+    }
+
     /// Processes in display order (sorted by the current key).
     pub fn visible_processes(&self) -> Vec<&Process> {
         let mut procs: Vec<&Process> = self.processes.iter().collect();
@@ -489,7 +618,7 @@ impl App {
 
     fn selection_len(&self) -> usize {
         match self.current_tab() {
-            Tab::Services => self.failed_units.len(),
+            Tab::Services => self.visible_units().len(),
             Tab::Processes => self.processes.len(),
             Tab::Docker => self.containers.len(),
             Tab::Crons => self.crons.len(),
@@ -553,7 +682,7 @@ impl App {
     pub fn clamp_selections(&mut self) {
         self.services_selected = self
             .services_selected
-            .min(self.failed_units.len().saturating_sub(1));
+            .min(self.visible_units().len().saturating_sub(1));
         self.processes_selected = self
             .processes_selected
             .min(self.processes.len().saturating_sub(1));
@@ -570,8 +699,7 @@ impl App {
     pub fn request_action(&mut self) {
         let pending = match self.current_tab() {
             Tab::Services => self
-                .failed_units
-                .get(self.services_selected)
+                .selected_service()
                 .map(|u| PendingAction::Service(ServiceAction::new(ServiceOp::Restart, &u.name))),
             Tab::Processes => {
                 let procs = self.visible_processes();
@@ -850,6 +978,37 @@ mod tests {
             }
             other => panic!("expected a service action, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn connectivity_targets_from_gateway_and_dns() {
+        use systui_collectors::{DnsConfig, NetworkSnapshot, Route};
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        assert!(app.connectivity_targets().is_empty()); // no network yet
+        app.network = Some(NetworkSnapshot {
+            interfaces: Vec::new(),
+            routes: vec![Route {
+                dst: "default".to_owned(),
+                gateway: Some("10.0.0.1".to_owned()),
+                dev: "eth0".to_owned(),
+                prefsrc: None,
+            }],
+            dns: DnsConfig {
+                nameservers: vec!["1.1.1.1".to_owned(), "10.0.0.1".to_owned()],
+                search: Vec::new(),
+            },
+            listeners: Vec::new(),
+            connections: Vec::new(),
+        });
+        let targets = app.connectivity_targets();
+        // gateway first, then DNS; the duplicate 10.0.0.1 is de-duplicated.
+        assert_eq!(
+            targets,
+            vec![
+                ("10.0.0.1".to_owned(), "gateway".to_owned()),
+                ("1.1.1.1".to_owned(), "dns".to_owned()),
+            ]
+        );
     }
 
     #[test]

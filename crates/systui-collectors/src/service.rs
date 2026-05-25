@@ -98,6 +98,54 @@ impl Collector for FailedUnitsCollector {
     }
 }
 
+/// A unit-file row from `systemctl list-unit-files` (the install state, which
+/// `list-units` does not carry).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnitFile {
+    pub name: String,
+    pub state: String,
+}
+
+impl UnitFile {
+    /// Whether the unit is enabled to start at boot (`enabled` / `enabled-runtime`).
+    pub fn is_enabled(&self) -> bool {
+        self.state == "enabled" || self.state == "enabled-runtime"
+    }
+}
+
+/// Lists service unit files and their install state via
+/// `systemctl list-unit-files`. Slow-changing: it answers the
+/// enabled/disabled view that `list-units` cannot.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UnitFilesCollector;
+
+impl UnitFilesCollector {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl Collector for UnitFilesCollector {
+    type Output = Vec<UnitFile>;
+
+    fn module(&self) -> ModuleId {
+        ModuleId::Services
+    }
+
+    async fn collect(&self, transport: &dyn Transport) -> Result<Vec<UnitFile>> {
+        let spec = CommandSpec::new("systemctl").args([
+            "list-unit-files",
+            "--type=service",
+            "--no-legend",
+            "--plain",
+            "--no-pager",
+        ]);
+        let output = transport.run(&spec).await?.into_result("systemctl")?;
+        Ok(parse_unit_files(&output.stdout))
+    }
+}
+
 /// Read the detailed state of one unit via `systemctl show`.
 pub async fn unit_detail(transport: &dyn Transport, unit: &str) -> Result<UnitDetail> {
     let spec = CommandSpec::new("systemctl").args([
@@ -130,6 +178,23 @@ fn parse_unit_line(line: &str) -> Option<ServiceUnit> {
         sub: parts[3].to_owned(),
         description: parts[4..].join(" "),
     })
+}
+
+fn parse_unit_files(s: &str) -> Vec<UnitFile> {
+    s.lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let name = parts.next()?;
+            let state = parts.next()?;
+            if !name.contains('.') {
+                return None;
+            }
+            Some(UnitFile {
+                name: name.to_owned(),
+                state: state.to_owned(),
+            })
+        })
+        .collect()
 }
 
 fn parse_show(s: &str) -> UnitDetail {
@@ -183,6 +248,21 @@ mod tests {
         let nginx = units.iter().find(|u| u.name == "nginx.service").unwrap();
         assert_eq!(nginx.active, "active");
         assert!(!nginx.is_failed());
+    }
+
+    #[test]
+    fn parses_unit_files_and_enabled_state() {
+        let files = parse_unit_files(include_str!("../fixtures/systemctl-unit-files.txt"));
+        assert_eq!(files.len(), 8);
+        let enabled: Vec<&str> = files
+            .iter()
+            .filter(|f| f.is_enabled())
+            .map(|f| f.name.as_str())
+            .collect();
+        assert!(enabled.contains(&"nginx.service"));
+        assert!(enabled.contains(&"unattended-upgrades.service")); // enabled-runtime
+        assert!(!enabled.contains(&"bluetooth.service")); // disabled
+        assert!(!enabled.contains(&"getty@.service")); // static
     }
 
     #[test]

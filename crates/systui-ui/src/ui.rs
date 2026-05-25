@@ -11,11 +11,11 @@ use ratatui::widgets::{
 use regex::RegexBuilder;
 use systui_collectors::{
     BindScope, Container, CronEntry, CronSource, DatabaseInstance, LogEntry, NetworkSnapshot,
-    SystemSnapshot, parse_schedule,
+    ServiceUnit, SystemSnapshot, parse_schedule,
 };
 use systui_core::{Finding, ModuleId, Severity};
 
-use crate::app::{ActionStage, App, InputMode, Tab, ViewState};
+use crate::app::{ActionStage, App, InputMode, ServiceFilter, Tab, ViewState};
 use crate::form::render_form;
 use crate::theme::Theme;
 
@@ -626,38 +626,90 @@ fn log_matches(entry: &LogEntry, query: &str, regex: Option<&regex::Regex>) -> b
 }
 
 fn render_services(frame: &mut Frame, app: &App, area: Rect) {
-    if app.failed_units.is_empty() {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                "✓ no failed units — all healthy",
-                Style::new().fg(app.theme.accent),
-            ))
-            .alignment(Alignment::Center),
-            area,
-        );
-        return;
-    }
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    render_service_filter_bar(frame, app, rows[0]);
 
     let cols =
-        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).split(area);
+        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).split(rows[1]);
     render_service_list(frame, app, cols[0]);
     render_service_detail(frame, app, cols[1]);
 }
 
+fn render_service_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let mut spans = vec![Span::styled("filter ", Style::new().fg(t.fg_muted))];
+    for filter in ServiceFilter::ALL {
+        let style = if filter == app.service_filter {
+            Style::new()
+                .fg(t.bg)
+                .bg(t.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(t.fg_dim)
+        };
+        spans.push(Span::styled(format!(" {} ", filter.label()), style));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled("· f cycle", Style::new().fg(t.fg_dim)));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Dot colour for a unit's state: failed=critical, running=accent, inactive=dim,
+/// anything else (activating/reloading/…) = amber.
+fn unit_dot_color(t: &Theme, u: &ServiceUnit) -> ratatui::style::Color {
+    if u.is_failed() {
+        t.critical
+    } else if u.sub == "running" || u.active == "active" {
+        t.accent
+    } else if u.active == "inactive" {
+        t.fg_dim
+    } else {
+        t.high
+    }
+}
+
 fn render_service_list(frame: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, &format!("systemd · {} failed", app.failed_units.len()));
+    let units = app.visible_units();
+    let block = panel_block(
+        &t,
+        &format!("systemd · {} {}", units.len(), app.service_filter.label()),
+    );
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let header = Row::new(["", "UNIT", "ACTIVE", "SUB"])
+    if units.is_empty() {
+        let showing_failed =
+            app.service_filter == ServiceFilter::Failed || app.all_units.is_empty();
+        let (msg, color) = if showing_failed {
+            ("✓ no failed units — all healthy", t.accent)
+        } else {
+            ("no units match this filter", t.fg_dim)
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(msg, Style::new().fg(color))),
+            inner,
+        );
+        return;
+    }
+
+    let header = Row::new(["", "UNIT", "ACTIVE", "SUB", "EN"])
         .style(Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD));
-    let body = app.failed_units.iter().enumerate().map(|(i, u)| {
+    let body = units.iter().enumerate().map(|(i, u)| {
+        let active_color = if u.is_failed() { t.critical } else { t.fg };
+        let enabled = app.enabled_units.iter().any(|n| n == &u.name);
         let row = Row::new([
-            Cell::from(Span::styled("●", Style::new().fg(t.critical))),
+            Cell::from(Span::styled("●", Style::new().fg(unit_dot_color(&t, u)))),
             Cell::from(Span::styled(u.name.clone(), Style::new().fg(t.fg_strong))),
-            Cell::from(Span::styled(u.active.clone(), Style::new().fg(t.critical))),
+            Cell::from(Span::styled(
+                u.active.clone(),
+                Style::new().fg(active_color),
+            )),
             Cell::from(Span::styled(u.sub.clone(), Style::new().fg(t.fg_muted))),
+            Cell::from(Span::styled(
+                if enabled { "on" } else { "" },
+                Style::new().fg(t.accent),
+            )),
         ]);
         if i == app.services_selected {
             row.style(Style::new().bg(t.bg_sel).add_modifier(Modifier::BOLD))
@@ -670,6 +722,7 @@ fn render_service_list(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Min(16),
         Constraint::Length(8),
         Constraint::Length(10),
+        Constraint::Length(3),
     ];
     frame.render_widget(
         Table::new(body, widths)
@@ -681,7 +734,8 @@ fn render_service_list(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_service_detail(frame: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
-    let Some(u) = app.failed_units.get(app.services_selected) else {
+    let units = app.visible_units();
+    let Some(u) = units.get(app.services_selected) else {
         frame.render_widget(
             Paragraph::new(Span::styled("no unit selected", Style::new().fg(t.fg_dim)))
                 .block(panel_block(&t, "Unit")),
@@ -707,8 +761,17 @@ fn render_service_detail(frame: &mut Frame, app: &App, area: Rect) {
         )),
         Line::from(""),
         field("load", u.load.clone(), t.fg),
-        field("active", u.active.clone(), t.critical),
-        field("sub", u.sub.clone(), t.high),
+        field("active", u.active.clone(), unit_dot_color(&t, u)),
+        field("sub", u.sub.clone(), t.fg_muted),
+        field(
+            "enabled",
+            if app.enabled_units.iter().any(|n| n == &u.name) {
+                "yes".to_owned()
+            } else {
+                "no".to_owned()
+            },
+            t.fg,
+        ),
         Line::from(""),
     ];
     let hint = if app.mode == systui_core::ExecutionMode::ReadOnly {
@@ -825,7 +888,9 @@ fn render_network(frame: &mut Frame, app: &App, area: Rect) {
 
     let cols =
         Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).split(area);
-    render_exposure_panel(frame, app, cols[0]);
+    let left = Layout::vertical([Constraint::Min(0), Constraint::Length(7)]).split(cols[0]);
+    render_exposure_panel(frame, app, left[0]);
+    render_connectivity_panel(frame, app, left[1]);
     let right = Layout::vertical([
         Constraint::Percentage(46),
         Constraint::Percentage(30),
@@ -835,6 +900,53 @@ fn render_network(frame: &mut Frame, app: &App, area: Rect) {
     render_net_interfaces(frame, app, net, right[0]);
     render_net_dns_routes(frame, app, net, right[1]);
     render_net_connections(frame, app, net, right[2]);
+}
+
+/// On-demand reachability probes against the host's gateway and resolvers.
+/// Empty until the user runs them with `c` (they are active probes, not part of
+/// the passive refresh).
+fn render_connectivity_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let title = if app.connectivity_running {
+        "Connectivity tests · running…"
+    } else {
+        "Connectivity tests"
+    };
+    let block = panel_block(&t, title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.connectivity.is_empty() {
+        let msg = if app.connectivity_running {
+            "probing gateway · DNS…"
+        } else {
+            "press c to test reachability (gateway · DNS)"
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(msg, Style::new().fg(t.fg_dim))),
+            inner,
+        );
+        return;
+    }
+
+    let lines: Vec<Line> = app
+        .connectivity
+        .iter()
+        .map(|r| {
+            let (mark, color) = if r.reachable {
+                ("ok ", t.accent)
+            } else {
+                ("fail", t.critical)
+            };
+            Line::from(vec![
+                Span::styled(format!("→ {:<15} ", r.target), Style::new().fg(t.fg_strong)),
+                Span::styled(format!("{mark} "), Style::new().fg(color)),
+                Span::styled(format!("{:<8} ", r.label), Style::new().fg(t.fg_dim)),
+                Span::styled(r.detail.clone(), Style::new().fg(t.fg_muted)),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// The ranked exposure map: one row per listening socket, address colour-coded
@@ -2375,6 +2487,19 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             ("?", "help"),
             ("q", "quit"),
         ],
+        Tab::Services => &[
+            ("r", "refresh"),
+            ("f", "filter"),
+            ("a", "actions"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
+        Tab::Network => &[
+            ("r", "refresh"),
+            ("c", "connectivity"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
         _ => &[
             ("r", "refresh"),
             ("/", "search"),
@@ -2434,6 +2559,8 @@ fn render_help(frame: &mut Frame, app: &App) {
         ("e / d / x", "edit, delete or toggle a user crontab entry"),
         ("r", "refresh"),
         ("s", "sort processes by CPU/memory"),
+        ("f", "cycle Services filter (all/failed/running/…)"),
+        ("c", "run connectivity probes (Network tab)"),
         ("/", "search logs (Esc to clear)"),
         ("l / t", "cycle log level / time window"),
         ("?", "toggle this help"),
@@ -2713,6 +2840,40 @@ mod tests {
     }
 
     #[test]
+    fn services_tab_shows_full_list_and_filter_bar() {
+        use crate::app::ServiceFilter;
+        let unit = |name: &str, active: &str, sub: &str| ServiceUnit {
+            name: name.to_owned(),
+            load: "loaded".to_owned(),
+            active: active.to_owned(),
+            sub: sub.to_owned(),
+            description: String::new(),
+        };
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.view_state = ViewState::Ready;
+        app.select_tab(3); // Services
+        app.all_units = vec![
+            unit("nginx.service", "active", "running"),
+            unit("bluetooth.service", "inactive", "dead"),
+        ];
+        app.enabled_units = vec!["nginx.service".to_owned()];
+
+        let out = render_to_string(&app, 100, 24);
+        // Filter bar labels and the full list (not just failed) are shown.
+        assert!(out.contains("ALL"));
+        assert!(out.contains("ENABLED"));
+        assert!(out.contains("nginx.service"));
+        assert!(out.contains("bluetooth.service"));
+
+        // Cycling to the INACTIVE filter narrows the list to dead units.
+        app.service_filter = ServiceFilter::Inactive;
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("bluetooth.service"));
+        assert!(!out.contains("nginx.service"));
+    }
+
+    #[test]
     fn dashboard_shows_health_score_and_findings() {
         use systui_collectors::{Check, HealthReport};
         use systui_core::Severity;
@@ -2801,6 +2962,41 @@ mod tests {
         assert!(out.contains("CRIT")); // redis on 0.0.0.0:6379
         assert!(out.contains("6379"));
         assert!(out.contains("redis.service"));
+    }
+
+    #[test]
+    fn network_tab_shows_connectivity_panel() {
+        use crate::app::ConnectivityResult;
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.network = Some(sample_network());
+        app.view_state = ViewState::Ready;
+        app.select_tab(5); // Network
+
+        // Before running, the panel invites the user to probe.
+        let out = render_to_string(&app, 130, 30);
+        assert!(out.contains("Connectivity tests"));
+        assert!(out.contains("press c to test"));
+
+        // After a run, results are listed with their reachability.
+        app.connectivity = vec![
+            ConnectivityResult {
+                target: "192.168.1.1".to_owned(),
+                label: "gateway".to_owned(),
+                reachable: true,
+                detail: "0.4ms avg · 0% loss".to_owned(),
+            },
+            ConnectivityResult {
+                target: "1.1.1.1".to_owned(),
+                label: "dns".to_owned(),
+                reachable: false,
+                detail: "no reply".to_owned(),
+            },
+        ];
+        let out = render_to_string(&app, 130, 30);
+        assert!(out.contains("192.168.1.1"));
+        assert!(out.contains("gateway"));
+        assert!(out.contains("no reply"));
     }
 
     #[test]

@@ -45,7 +45,10 @@ pub use network::{
 pub use process::{
     Process, ProcessCollector, ProcessDetail, TreeRow, build_process_tree, process_detail,
 };
-pub use service::{FailedUnitsCollector, ServiceCollector, ServiceUnit, UnitDetail, unit_detail};
+pub use service::{
+    FailedUnitsCollector, ServiceCollector, ServiceUnit, UnitDetail, UnitFile, UnitFilesCollector,
+    unit_detail,
+};
 pub use system::{
     CpuUsage, Disk, HostStatics, LoadAverage, LoggedUser, Memory, Swap, SystemCollector,
     SystemSnapshot,

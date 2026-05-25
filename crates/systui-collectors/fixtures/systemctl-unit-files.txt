@@ -1,0 +1,8 @@
+nginx.service                  enabled         enabled
+postgresql@15-main.service     enabled         enabled
+bluetooth.service              disabled        disabled
+fail2ban.service               enabled         enabled
+docker.service                 enabled         preset
+getty@.service                 static          -
+unattended-upgrades.service    enabled-runtime enabled
+ssh.service                    enabled         enabled

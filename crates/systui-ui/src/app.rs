@@ -12,6 +12,7 @@ use systui_collectors::{
     SystemdTimer, parse_schedule,
 };
 use systui_core::{Action, ExecutionMode, Finding, ModuleId, Severity, Thresholds};
+use systui_storage::PersistentState;
 
 use crate::form::{Field, Form};
 use crate::theme::Theme;
@@ -343,6 +344,14 @@ pub struct App {
     pub cpu_history: Vec<u64>,
     /// Recent RAM used% samples for the dashboard sparkline (oldest first).
     pub mem_history: Vec<u64>,
+    /// Persisted local state (health/finding snapshots, notes, saved searches).
+    pub state: PersistentState,
+    /// `true` when [`state`] changed and should be flushed to disk.
+    pub state_dirty: bool,
+    /// In-progress session note being typed (Dashboard); `None` when not entering.
+    pub note_draft: Option<String>,
+    /// Selected saved search on the Logs tab.
+    pub saved_search_selected: usize,
 }
 
 /// How many samples the dashboard sparklines retain.
@@ -407,6 +416,10 @@ impl App {
             action_exec_requested: false,
             cpu_history: Vec::new(),
             mem_history: Vec::new(),
+            state: PersistentState::default(),
+            state_dirty: false,
+            note_draft: None,
+            saved_search_selected: 0,
         }
     }
 
@@ -444,6 +457,88 @@ impl App {
         if index < Tab::ALL.len() {
             self.active_tab = index;
         }
+    }
+
+    // --- Session notes (Dashboard) ----------------------------------------
+
+    /// Begin typing a session note for the current host.
+    pub fn open_note(&mut self) {
+        self.note_draft = Some(String::new());
+    }
+
+    pub fn note_push_char(&mut self, c: char) {
+        if let Some(draft) = &mut self.note_draft {
+            draft.push(c);
+        }
+    }
+
+    pub fn note_pop_char(&mut self) {
+        if let Some(draft) = &mut self.note_draft {
+            draft.pop();
+        }
+    }
+
+    pub fn cancel_note(&mut self) {
+        self.note_draft = None;
+    }
+
+    /// Save the in-progress note to the persistent store (no-op if empty).
+    pub fn submit_note(&mut self) {
+        let Some(draft) = self.note_draft.take() else {
+            return;
+        };
+        let text = draft.trim();
+        if text.is_empty() {
+            return;
+        }
+        let at = self.now.format("%Y-%m-%d %H:%M").to_string();
+        self.state.add_note(&self.host_label, &at, text);
+        self.state_dirty = true;
+    }
+
+    // --- Saved log searches (Logs) ----------------------------------------
+
+    /// Persist the current log search query as a saved search.
+    pub fn save_current_search(&mut self) {
+        if self.log_search.trim().is_empty() {
+            return;
+        }
+        self.state.add_search(&self.log_search);
+        self.state_dirty = true;
+        self.saved_search_selected = 0;
+    }
+
+    /// Apply the selected saved search to the log filter and reload.
+    pub fn apply_saved_search(&mut self) {
+        if let Some(search) = self.state.saved_searches.get(self.saved_search_selected) {
+            self.log_search = search.query.clone();
+            self.logs_reload_requested = true;
+        }
+    }
+
+    /// Move the saved-search selection (Logs tab).
+    pub fn saved_search_down(&mut self) {
+        let len = self.state.saved_searches.len();
+        if len > 0 && self.saved_search_selected + 1 < len {
+            self.saved_search_selected += 1;
+        }
+    }
+
+    pub fn saved_search_up(&mut self) {
+        self.saved_search_selected = self.saved_search_selected.saturating_sub(1);
+    }
+
+    /// Record a health/finding snapshot for today into the persistent store
+    /// (deduped per day). Called after each refresh.
+    pub fn record_health_snapshot(&mut self) {
+        let Some(health) = &self.health else {
+            return;
+        };
+        let [crit, high, med, ..] = self.finding_counts();
+        let date = self.now.format("%Y-%m-%d").to_string();
+        self.state
+            .record_snapshot(&self.host_label, &date, health.score, crit, high, med);
+        self.state_dirty = true;
     }
 
     /// Toggle the help overlay.

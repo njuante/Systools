@@ -170,6 +170,7 @@ pub fn apply_refresh(app: &mut App, outcome: RefreshOutcome) {
             app.packages = result.packages;
             app.now = result.now;
             app.findings = result.findings;
+            app.record_health_snapshot();
             app.view_state = ViewState::Ready;
         }
         Err(err) => apply_error(app, err),

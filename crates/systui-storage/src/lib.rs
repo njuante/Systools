@@ -7,9 +7,11 @@
 pub mod audit;
 pub mod config;
 pub mod paths;
+pub mod store;
 
 pub use audit::AuditLog;
 pub use config::{
     load as load_config, load_from as load_config_from, remove_host, remove_host_from, save_host,
     save_host_to,
 };
+pub use store::{HealthSnapshot, PersistentState, SavedSearch, SessionNote, StateStore};

@@ -23,7 +23,7 @@ use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use systui_actions::ActionEngine;
 use systui_core::{AuditContext, Config, CoreError, ExecutionMode, Result, Transport};
-use systui_storage::AuditLog;
+use systui_storage::{AuditLog, StateStore};
 use tokio::runtime::Runtime;
 
 use crate::app::ConnectivityResult;
@@ -51,6 +51,11 @@ pub fn run(
     let mut app = App::new(host_label, mode);
     app.thresholds = config.thresholds.clone();
     app.cert_warning_days = config.security.cert_expiry_warning_days;
+    // Load persisted local state (trends, notes, saved searches); best-effort.
+    let state_store = StateStore::at_default_location().ok();
+    if let Some(store) = &state_store {
+        app.state = store.load();
+    }
     let refresh_interval = Duration::from_secs(config.general.default_refresh_seconds);
 
     // Probe what the connected user can do (once), then degrade the mode to match:
@@ -70,6 +75,12 @@ pub fn run(
         refresh_interval,
     );
     let _ = ratatui::try_restore();
+    // Flush accumulated local state (snapshots/notes/searches) on exit.
+    if let Some(store) = &state_store
+        && app.state_dirty
+    {
+        let _ = store.save(&app.state);
+    }
     result
 }
 

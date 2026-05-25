@@ -50,6 +50,34 @@ pub fn render(frame: &mut Frame, app: &App) {
     if let Some(state) = &app.cron_form {
         render_form(frame, &state.form, &app.theme);
     }
+    if let Some(draft) = &app.note_draft {
+        render_note_input(frame, app, draft);
+    }
+}
+
+/// Single-line input overlay for a new session note.
+fn render_note_input(frame: &mut Frame, app: &App, draft: &str) {
+    let t = app.theme;
+    let area = centered_rect(60, 20, frame.area());
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(t.accent))
+        .title(" New session note ");
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  {draft}_"),
+            Style::new().fg(t.fg_strong),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Enter save · Esc cancel",
+            Style::new().fg(t.fg_dim),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn render_action_modal(frame: &mut Frame, app: &App) {
@@ -379,10 +407,52 @@ fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
     let cols =
         Layout::horizontal([Constraint::Percentage(68), Constraint::Percentage(32)]).split(area);
     render_log_tail(frame, app, &filtered, cols[0]);
-    let right =
-        Layout::vertical([Constraint::Percentage(58), Constraint::Percentage(42)]).split(cols[1]);
+    let right = Layout::vertical([
+        Constraint::Percentage(46),
+        Constraint::Percentage(30),
+        Constraint::Percentage(24),
+    ])
+    .split(cols[1]);
     render_log_fingerprints(frame, app, &filtered, right[0]);
     render_log_sources(frame, app, &filtered, right[1]);
+    render_saved_searches(frame, app, right[2]);
+}
+
+/// Persisted log searches. `S` saves the current query; ↑/↓ select and Enter
+/// applies one.
+fn render_saved_searches(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Saved searches");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let searches = &app.state.saved_searches;
+    if searches.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "none — S saves the current search",
+                Style::new().fg(t.fg_dim),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let lines: Vec<Line> = searches
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let selected = i == app.saved_search_selected;
+            let marker = if selected { "→ " } else { "  " };
+            let style = if selected {
+                Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(t.fg_muted)
+            };
+            Line::from(Span::styled(format!("{marker}{}", s.query), style))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_log_tail(frame: &mut Frame, app: &App, filtered: &[&LogEntry], area: Rect) {
@@ -2043,7 +2113,9 @@ fn render_security_header(frame: &mut Frame, app: &App, area: Rect) {
     let counts = app.finding_counts();
     let labels = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
     let colors = [t.critical, t.high, t.medium, t.low, t.fg_muted];
-    let cells = Layout::horizontal([Constraint::Ratio(1, 5); 5]).split(inner);
+
+    let split = Layout::horizontal([Constraint::Min(0), Constraint::Length(22)]).split(inner);
+    let cells = Layout::horizontal([Constraint::Ratio(1, 5); 5]).split(split[0]);
     for (i, label) in labels.iter().enumerate() {
         let n = counts[i];
         let count_color = if n > 0 { colors[i] } else { t.fg_dim };
@@ -2055,6 +2127,27 @@ fn render_security_header(frame: &mut Frame, app: &App, area: Rect) {
             Line::from(Span::styled(*label, Style::new().fg(t.fg_dim))),
         ];
         frame.render_widget(Paragraph::new(lines), cells[i]);
+    }
+
+    // Findings trend vs ~7 days ago, from the persisted snapshots.
+    if let Some(base) = app.state.baseline(&app.host_label, app.now.date(), 7) {
+        let now_total = counts[0] + counts[1] + counts[2];
+        let base_total = base.findings();
+        let (arrow, word, color) = match now_total.cmp(&base_total) {
+            std::cmp::Ordering::Less => ("↓", base_total - now_total, t.accent),
+            std::cmp::Ordering::Greater => ("↑", now_total - base_total, t.critical),
+            std::cmp::Ordering::Equal => ("=", 0, t.fg_dim),
+        };
+        let text = if word == 0 {
+            "no change vs last week".to_owned()
+        } else {
+            format!("{arrow}{word} from last week")
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(text, Style::new().fg(color))))
+                .alignment(Alignment::Right),
+            split[1],
+        );
     }
 }
 
@@ -2145,12 +2238,46 @@ fn render_dashboard(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: R
     let cols =
         Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).split(area);
     let left = Layout::vertical([Constraint::Length(8), Constraint::Min(0)]).split(cols[0]);
-    let right = Layout::vertical([Constraint::Length(12), Constraint::Min(0)]).split(cols[1]);
+    let right = Layout::vertical([
+        Constraint::Length(12),
+        Constraint::Min(0),
+        Constraint::Length(6),
+    ])
+    .split(cols[1]);
 
     render_metric_tiles(frame, app, snap, left[0]);
     render_findings_panel(frame, app, left[1]);
     render_health_panel(frame, app, right[0]);
     render_at_a_glance(frame, app, snap, right[1]);
+    render_session_notes(frame, app, right[2]);
+}
+
+/// Per-host session notes, persisted in the local state store. The newest notes
+/// are shown last; `n` starts a new note.
+fn render_session_notes(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Session notes");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let notes = app.state.notes(&app.host_label);
+    let mut lines: Vec<Line> = Vec::new();
+    if notes.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "no notes — press n to add one",
+            Style::new().fg(t.fg_dim),
+        )));
+    } else {
+        // Show the most recent few (the panel is short).
+        let start = notes.len().saturating_sub(4);
+        for note in &notes[start..] {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{} ", note.at), Style::new().fg(t.fg_dim)),
+                Span::styled(note.text.clone(), Style::new().fg(t.fg)),
+            ]));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 /// A rounded, titled panel block in the theme's surface style.
@@ -2321,17 +2448,22 @@ fn render_health_panel(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let color = score_color(app, health.score);
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled(
-                format!("{}", health.score),
-                Style::new().fg(color).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" /100  ", Style::new().fg(app.theme.fg_dim)),
-            Span::styled(gauge_bar(health.score as f64, 16), Style::new().fg(color)),
-        ]),
-        Line::from(""),
+    let mut score_line = vec![
+        Span::styled(
+            format!("{}", health.score),
+            Style::new().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" /100  ", Style::new().fg(app.theme.fg_dim)),
+        Span::styled(gauge_bar(health.score as f64, 16), Style::new().fg(color)),
     ];
+    // Trend vs ~7 days ago, from the persisted snapshots (fills over time).
+    if let Some(base) = app.state.baseline(&app.host_label, app.now.date(), 7) {
+        score_line.push(Span::styled(
+            format!("  was {} 7d ago", base.score),
+            Style::new().fg(app.theme.fg_dim),
+        ));
+    }
+    let mut lines = vec![Line::from(score_line), Line::from("")];
     if health.checks.is_empty() {
         lines.push(Line::from(Span::styled(
             "  no deductions — healthy",
@@ -2662,6 +2794,14 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             ("/", "search"),
             ("l", "level"),
             ("t", "window"),
+            ("S", "save search"),
+            ("↵", "apply"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
+        Tab::Dashboard => &[
+            ("r", "refresh"),
+            ("n", "add note"),
             ("?", "help"),
             ("q", "quit"),
         ],
@@ -2748,6 +2888,8 @@ fn render_help(frame: &mut Frame, app: &App) {
         ("f", "cycle Services filter (all/failed/running/…)"),
         ("c", "run connectivity probes (Network tab)"),
         ("p", "prune dangling images (Docker tab)"),
+        ("n", "add a session note (Dashboard)"),
+        ("S / ↵", "save / apply a log search (Logs tab)"),
         ("/", "search logs (Esc to clear)"),
         ("l / t", "cycle log level / time window"),
         ("?", "toggle this help"),
@@ -2977,6 +3119,57 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_shows_health_trend_and_session_notes() {
+        use systui_collectors::HealthReport;
+        let mut app = App::new("prod-01", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.health = Some(HealthReport {
+            score: 78,
+            checks: Vec::new(),
+        });
+        app.now = chrono::NaiveDate::from_ymd_opt(2026, 5, 25)
+            .unwrap()
+            .and_hms_opt(14, 0, 0)
+            .unwrap();
+        // A snapshot 7 days ago provides the baseline; a note is persisted.
+        app.state
+            .record_snapshot("prod-01", "2026-05-18", 91, 0, 0, 0);
+        app.state
+            .add_note("prod-01", "2026-05-25 14:18", "reviewed nginx errors");
+        app.view_state = ViewState::Ready;
+
+        let out = render_to_string(&app, 120, 32);
+        assert!(out.contains("was 91 7d ago"));
+        assert!(out.contains("Session notes"));
+        assert!(out.contains("reviewed nginx errors"));
+    }
+
+    #[test]
+    fn note_input_overlay_shows_when_typing() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.view_state = ViewState::Ready;
+        app.open_note();
+        app.note_push_char('h');
+        app.note_push_char('i');
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("New session note"));
+        assert!(out.contains("hi_"));
+    }
+
+    #[test]
+    fn logs_tab_shows_saved_searches() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.view_state = ViewState::Ready;
+        app.select_tab(4); // Logs
+        app.state.add_search("nginx timeout");
+        let out = render_to_string(&app, 130, 30);
+        assert!(out.contains("Saved searches"));
+        assert!(out.contains("nginx timeout"));
+    }
+
+    #[test]
     fn dashboard_at_a_glance_shows_pending_updates() {
         use systui_collectors::PackageUpdates;
         let mut app = App::new("local", ExecutionMode::ReadOnly);
@@ -3009,7 +3202,9 @@ mod tests {
         }];
         app.view_state = ViewState::Ready;
 
-        let out = render_to_string(&app, 100, 24);
+        // The multi-panel dashboard (incl. the session-notes panel) targets a
+        // tall terminal like the prototype's; render at a realistic height.
+        let out = render_to_string(&app, 120, 36);
         assert!(out.contains("SERVICES"));
         assert!(out.contains("1 failed"));
     }

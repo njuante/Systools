@@ -194,6 +194,21 @@ The omitted panels, audited against the current code, fall into four buckets:
 - **S8e.6 — Persistence-backed panels**: the local store for health/finding-count
   snapshots (Dashboard + Security **trend** lines), per-host **Session notes**, and
   **Saved searches** in Logs.
+  **Done.** New `systui-storage::store` — a single versioned JSON document
+  (`state.json`, schema v1, best-effort: a missing/corrupt file loads as default,
+  a write failure never blocks the UI) holding per-host daily health/finding
+  **snapshots** (deduped per day, capped), per-host **session notes**, and
+  **saved log searches** (deduped, most-recent first). The TUI loads it at
+  startup and flushes on exit; each refresh records today's snapshot. The
+  **Dashboard** health panel now shows `was N 7d ago` and the **Security** header
+  shows `↓N from last week`, both computed from the nearest past snapshot
+  (`baseline`) and empty until history accumulates (like the sparklines). A
+  **Session notes** panel was added to the Dashboard right rail with an `n`
+  single-line note overlay; a **Saved searches** panel in the Logs right rail
+  with `S` to save the current query and ↑/↓ + Enter to apply one. Status-bar
+  and help hints updated; store + render tests added (one pre-existing dashboard
+  render test was bumped to a taller viewport, since the extra panel needs the
+  prototype's height). Gates green.
 - **S8e.7 — Polish & close**: render-test refresh, help-overlay/keymap updates for the
   new actions, a final prototype-vs-app panel inventory; gates green; merge `--no-ff`
   into `main` + tag `v0.8.4`.

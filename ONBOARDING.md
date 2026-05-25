@@ -16,24 +16,61 @@ document; everything else is English).
 ## Read these, in order
 
 1. [`Product.md`](Product.md) — product vision, architecture, per-module specs.
-2. [`docs/ROADMAP.md`](docs/ROADMAP.md) — phases → versions → sessions, up to v1.0.
-3. [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) — how we work (branches, sessions, gates).
-4. [`docs/phases/`](docs/phases/) — the context file for the **active** phase, first.
+2. [`docs/ROADMAP.md`](docs/ROADMAP.md) — phases → versions → sessions, v0.1 → v1.0 (all shipped).
+3. [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) — how we work (branches, gates, commits).
+4. [`CHANGELOG.md`](CHANGELOG.md) — what landed in each version (better than the history below).
+5. [`docs/BACKLOG.md`](docs/BACKLOG.md) — the post-v1.0 candidates, **including the three tasks below**.
 
-## Next phase: v1.0 - Stabilization & release
+## Where the project is now: v1.0.0 shipped
 
-`v0.9` is the latest tagged release on `main`. The next version is **v1.0
-(Stabilization & release)** - product-quality hardening, packaging, documentation,
-release artifacts and distro-oriented testing. Per the methodology, the **first
-session writes the phase context file** (`docs/phases/phase-10-v1.0-release.md`)
-before any code; read `docs/ROADMAP.md` Phase 10 for the scope, then branch
-`release/v1.0` off `main`.
+**The v0.1 → v1.0 roadmap is complete.** `v1.0.0` is tagged on `main` and published as a
+GitHub Release (static musl binaries, `.deb`/`.rpm`, AUR, `install.sh`, checksums, SBOM,
+keyless cosign signature). v1.0 added per-distro integration tests, parser fuzzing, a
+large-log benchmark, a security review and packaging — see `CHANGELOG.md` and
+`docs/phases/phase-10-v1.0-release.md`. A security/quality audit
+([`docs/AUDIT-2026-05.md`](docs/AUDIT-2026-05.md)) found no vulnerabilities.
 
-The four intermediate v0.8.x phases are done and tagged (see Current state): v0.8.1
-in-TUI management, v0.8.2 UI redesign, v0.8.3 optimization, v0.8.4 prototype data
-parity. The approved UI prototype lives in
-[`docs/interfaz/`](docs/interfaz/) (Ratatui spec + the reference screenshots under
-`_extracted/screenshots/`).
+New work is now **v1.1+** (`docs/ROADMAP.md` "Out of scope until v1.1+").
+
+## What to build next (the three tasks)
+
+These are the three implementations to do well in a fresh session. Full notes in
+[`docs/BACKLOG.md`](docs/BACKLOG.md); concrete pointers here. The approved UI prototype is
+in [`docs/interfaz/`](docs/interfaz/) (Ratatui spec + screenshots under
+`_extracted/screenshots/`) — the first two tasks bring two tabs up to that prototype.
+
+**Read the prototype screenshots first**, then compare against the live tabs.
+
+### 1 & 2 — System and Processes tab UI parity
+
+Both tabs render far sparser than the prototype. **The data is already collected** — this
+is UI wiring, exactly like the v0.8.2 reskin / v0.8.4 data-parity work (match the
+prototype layout, **real data only, never mock**, omit panels with no real data).
+
+- **System tab** — today a single plain-text block: `systui-ui/src/ui.rs::system_text`
+  (dispatched at the `(Ready, Some(snap), Tab::System)` arm of `render`, ~line 376).
+  Rebuild as a multi-panel screen (hardware/identity, CPU/RAM/swap gauges, disks table,
+  load, logged-in users). All fields already exist on `SystemSnapshot` (`os`, `kernel`,
+  `uptime_secs`, `load`, `cpu`, `memory`, `swap`, `disks`, `users`).
+- **Processes tab** — today a flat top-20 table with **no detail panel**:
+  `ui.rs::render_processes` (~line 859). Add a **detail side panel** and optionally a
+  **tree** view, and scroll past 20. Model the layout on the existing
+  `render_service_detail` / `render_container_detail` / `render_database_detail`.
+  - **Non-obvious bit:** those detail panels render from data already in `App`. The
+    process detail (cmd/cwd/open files/ports) is **not** in `App` — it comes from a
+    separate async call `systui_collectors::process_detail(transport, pid)`, and the
+    tree from `build_process_tree`/`TreeRow`. So you must wire a fetch for the selected
+    PID (on selection, or fold it into the gather), going through the v0.8.3 background
+    refresh — don't block the UI thread.
+
+### 3 — Optional "expert console" (free-form shell), gated
+
+A tab to type raw commands. **This deliberately steps outside the core guarantee** (no
+free-form commands; everything via `CommandSpec` + the action engine). Only build it with
+the guardrails in `docs/BACKLOG.md`: **off by default**, **disabled in read-only mode**,
+**every command audited**, a clear "leaving the safe path" boundary, and a master
+password as an *access* gate only (store an argon2 **hash**, never plaintext — it is not
+the security mechanism). Keep it clearly separate from engine-mediated actions.
 
 ## Non-negotiable rules
 
@@ -95,161 +132,62 @@ crates/
 
 ```sh
 cargo build --workspace          # build everything
-cargo run --bin systui           # run the binary (scaffold today)
-cargo test --workspace           # run all tests
+cargo run --bin systui           # run the TUI locally (Hosts grid)
+cargo run --bin systui -- local  # inspect the local machine
+cargo test --workspace           # run all tests (≈360)
 ```
 
-The toolchain in use is Rust 1.95 (edition 2024, MSRV 1.85). The workspace builds
-offline once dependencies are cached.
+Edition 2024, MSRV 1.85 (`rust-version` in `Cargo.toml`). Builds offline once deps are
+cached. Per-distro integration tests are feature-gated (`-p systui-collectors --features
+integration`) and run in CI, not in the default workspace test run.
+
+## UI implementation notes (for the three tasks)
+
+The next work is UI-heavy, so know these conventions:
+
+- **`render` is a pure function of `App`** (`systui-ui/src/ui.rs::render`). It reads
+  state and draws; it must not fetch or mutate. New data must land in `App` first
+  (populated from the gather), then be rendered.
+- **Tab → renderer dispatch** is a `match` in `render` (~line 370). Each tab has its own
+  `render_*` fn; detail panels (`render_service_detail`, `render_container_detail`,
+  `render_database_detail`) are the pattern to copy for a Processes detail panel.
+- **All colour comes from `theme.rs` tokens** (`app.theme.fg`, `.accent`, `.critical`,
+  `.high`/`.medium`/`.low`, `.border`, …). **No inline `Color::Rgb` in screens** — this
+  is enforced by the v0.8.2 design and reviewers will reject inline colours.
+- **Render tests use `TestBackend`** (`ui.rs` tests, ~line 2956). Add/refresh a render
+  test for each tab you change so the layout stays pinned.
+- **Real data only.** If a panel has no real collected data, omit it — never mock
+  (the v0.8.2/v0.8.4 contract). For the new tasks the data exists (`SystemSnapshot`,
+  `process_detail`, `build_process_tree`); wire it, don't fake it.
+- **Don't block the UI thread.** Any new fetch (e.g. process detail for the selected
+  PID) goes through the v0.8.3 **background refresh** (worker + channel), not a sync call
+  inside render or the event loop.
 
 ## Current state
 
-Source of truth is `git log` and the active phase context file — check them, this
-snapshot may lag.
+`v0.1` → `v1.0` are all complete and tagged on `main`; `v1.0.0` is the latest release.
+The per-version detail that used to live here is now in [`CHANGELOG.md`](CHANGELOG.md)
+(authoritative) and the per-phase context files in [`docs/phases/`](docs/phases/). Always
+cross-check `git log` and `CHANGELOG.md` — this file is a map, not the source of truth.
 
-- **`v0.9` is the latest tag on `main`.** Each version is built on
-  `release/vX.Y` from `main`, then merged `--no-ff` + tagged at the end of its phase.
-  `v0.1` through `v0.9` are tagged on `main`.
-- **Phase 0 (Foundation) complete**: workspace, contracts, Local/Mock transports,
-  CLI + config + tracing, TUI shell, async/sync bridge.
-- **Phase 1 / v0.1 complete**: dashboard with health score + findings,
-  system/processes/services/logs views, threshold checks, auto-refresh, Markdown report.
-- **Phase 2 / v0.2 complete** (S2.1–S2.7): full systemd + process collectors/detail,
-  service + signal actions, log filters + incremental search, the **action engine**
-  (guardrail → read-only → risk → preview → confirm → execute → verify), the **audit
-  log**, and UI action invocation (select + `a` → confirm → run → audited).
-- **Phase 3 / v0.3 (Network & security) complete** (S3.1–S3.8): network collectors
-  (`ip`/`ss`/resolv.conf → `NetworkSnapshot`), port→process→systemd-unit correlation
-  (via `/proc/<pid>/cgroup`), the **exposure map** (risk-ranked listeners with evidence),
-  connectivity tools (ping/DNS/TCP connect), the shared `core::Finding` model +
-  `systui-security` posture checks (SSH, sudo, failed logins, firewall, file perms,
-  docker socket, SUID, exposed ports) via `security_scan`, certificate checks (local +
-  remote `host:443` over `openssl`), and the **Network/Security TUI tabs** + dashboard
-  security summary. Core enabler added: `CommandSpec::stdin` (pipe without a shell).
-- **Phase 4 / v0.4 (Docker & crons) complete** (S4.1–S4.7): Docker collectors
-  (`DockerCollector`, `container_stats`, `inspect_container` → `InspectSummary`),
-  Docker ops (`DockerAction` start/stop/restart/remove + `container_logs`), Docker
-  risk checks (`docker_findings`: privileged, docker.sock/dangerous mounts, sensitive
-  published ports via reused `exposure_map`, unhealthy, restart loops, `latest`, no
-  mem limit), cron sources (`cron.rs`: `parse_crontab` + `collect_cron_entries`),
-  timers & a self-built cron evaluator (`parse_schedule`/`CronSchedule` with
-  `describe`/`next_after`/`upcoming`, `collect_timers`/`SystemdTimer`), **cron risk
-  checks** (`systui-security::cron`: missing/non-exec script, world-writable or
-  `/tmp` root script, no logging, invalid schedule, high frequency, duplicates), and
-  the **Docker + Crons TUI tabs** (container list + detail/risks; cron jobs with NL
-  schedule/next-run + timers + warnings) with **dashboard Docker/Crons hooks**.
-  Docker + cron findings are merged into the shared findings list; `a` on the Docker
-  tab plans a state-aware lifecycle action through the engine.
-- **Phase 5 / v0.5 (Remote SSH) complete** (S5.1–S5.5): **`SshTransport`** over the
-  system OpenSSH client implementing the full `Transport` contract (key/agent auth,
-  custom port, timeouts, stdin forwarding) with a single fixture-tested POSIX
-  shell-quoting layer at the SSH boundary and error mapping mirroring
-  `LocalTransport`; `Config::resolve_target` (inventory id or `user@host`) wiring
-  `systui ssh <target>` to the same TUI as local, honouring per-host `read_only`;
-  **`HostCapabilities`/`probe_capabilities`** (root/sudo detection) that degrade
-  `Privileged → SafeActions` for a non-privileged user and label the title bar.
-  Parity audit confirmed every module runs over SSH unchanged (all host access is
-  via the `Transport`); the UI is identical local vs remote apart from the host
-  label. Note: v0.5 requires non-interactive auth (`BatchMode`); a native Rust SSH
-  backend remains deferred but enabled by the trait boundary.
-- **Phase 6 / v0.6 (Reports) complete** (S6.1–S6.5): a serializable **`Report`**
-  model + **`gather_report`** (the headless equivalent of the dashboard refresh over
-  any `Transport`) in `systui-report`, with three pure renderers — **`to_json`**
-  (full structured model), **`to_markdown`** and **`to_html`** (a single
-  self-contained, escaped, printable file) — covering executive summary, health,
-  security findings (evidence + recommendations), open ports, docker, failed
-  services, crons, host inventory, recommendations and notes. A **`ReportScope`**
-  powers `--security`. The **`report` CLI** (`systui report [--host <id|user@host>]
-  --format markdown|json|html [--security] [-o FILE] [--note TEXT]…`) runs locally or
-  over the v0.5 SSH transport, honouring per-host `read_only`. All host-derived text
-  is HTML-escaped.
-- **Phase 7 / v0.7 (Databases) complete** (S7.1–S7.4): database discovery and
-  operational visibility for PostgreSQL, Redis, MySQL/MariaDB and MongoDB over the
-  shared `Transport`: service/unit state, listeners, process ownership, version,
-  exposure classification, safe credential-source labels (local sockets, `.pgpass`,
-  `mysql_config_editor`, redacted env presence) and best-effort operational signals
-  (connections, sizes, replication, locks/blocked clients and recent errors).
-  Database findings (`db.*`) cover public exposure, Redis auth risk when no
-  credential source is detected, blocked work, broken replication and recent
-  errors. The TUI includes a **Databases** tab; JSON/Markdown/HTML reports include a
-  Databases section. No database password is stored or rendered.
-- **Phase 8 / v0.8 (Fleet) complete** (S8.1–S8.5): the inventory becomes a fleet.
-  `systui-core::fleet` selects hosts by tag (OR) / favorites with a deterministic
-  order. `systui fleet` gathers the selection **concurrently** over SSH (a bounded
-  `Semaphore` + per-host `timeout`, full per-host error isolation) into a
-  `FleetReview` that keeps each host's full `Report`; the worst-first `FleetOverview`
-  is derived from it. On a terminal it opens a read-only **fleet TUI**
-  (`systui-ui::fleet`, selectable table, `r` refresh, `Enter` to **drill into** a
-  host's per-host TUI over SSH), and prints a table when piped. From the same single
-  gather: **global search** (`--search`, by port or service substring), **host
-  comparison** (`--compare A B`, side-by-side + ports/services **drift** deltas via
-  `HostFacts`/`HostComparison`), and a **fleet report** (`--format json|markdown|html
-  [-o FILE]`) — JSON is the full model, MD/HTML a digest, escaped and self-contained.
-  Inspection & reporting only — no mass destructive actions. (Host-vs-snapshot drift
-  deferred to phase 9.)
-- **Phase 8.5 / v0.8.1 (In-TUI management & UX polish) complete** on
-  `release/v0.8.1` (an intermediate phase before Policies; see
-  `docs/phases/phase-08-1-v0.8.1-management-ux.md`). Complete:
-  - **S8b.2** — config persistence: `systui-storage::save_host[_to]` /
-    `remove_host[_from]` edit only the `[hosts.<id>]` table via `toml_edit`
-    (preserving comments/other tables, atomic temp+rename); `Config::upsert_host` /
-    `remove_host` in-memory.
-  - **S8b.3** — host management in the fleet TUI: reusable `systui-ui::form` modal;
-    `a` add / `e` edit (id fixed, policy preserved) / `d` delete inventory hosts,
-    validated, persisted, mirrored in-memory, re-gathered without leaving the screen;
-    disabled in read-only mode. `run_fleet` now takes `&mut Config` + config path.
-  - **S8b.4** — `systui-actions::cron::CronAction` (add/edit/delete/enable/disable on
-    the **user crontab**) through the engine: schedule validated in `preview`, prior
-    crontab backed up to `/tmp/systui-crontab.bak` via `tee`, installed via
-    `crontab -` piping content through `CommandSpec::stdin`. Pure transforms tested.
-  - **S8b.5** — cron management in the Crons tab: `a` add, `e` edit, `d` delete,
-    `x` enable/disable for **user crontab** entries only, all routed through the
-    action engine (preview/confirm/audit) with refresh after execution. Disabled
-    user-crontab lines are collected as disabled entries so they can be re-enabled.
-  - **S8b.6** — TUI layout polish: clearer Crons-tab action/status hints,
-    enabled/disabled state badges, updated help/footer text, disabled-entry report
-    rendering, and the existing shared header/status, bordered content, severity
-    badges and loading/empty/error states kept centralised.
-- **Phase 8.6 / v0.8.2 (UI redesign) complete** on `release/v0.8.2`: adopted the
-  approved truecolor design from `docs/interfaz/` — single-source `theme.rs` tokens
-  (no inline `Color::Rgb` in screens), a 3-row chrome (host pill + health gauge +
-  mode badge), numbered tabs with count badges, and multi-panel screens matching the
-  prototype. Reskin only — collectors/actions/safety unchanged, render still a pure
-  function of `App`. SSH connection multiplexing also landed here.
-- **Phase 8.7 / v0.8.3 (Optimization) complete** on `release/v0.8.3`: the refresh
-  runs **off the UI thread** (worker + channel, refresh indicator), independent
-  collectors gather **concurrently**, slow-changing tiers are cached, and a per-
-  collector **timeout** degrades to partial data — the TUI never freezes, locally or
-  over SSH. Plus fat-LTO release profile. No behaviour/visual change.
-- **Phase 8.8 / v0.8.4 (Prototype data parity) complete** on `release/v0.8.4` (see
-  `docs/phases/phase-08-4-v0.8.4-prototype-data-parity.md`): filled in the panels the
-  v0.8.2 reskin omitted, all backed by **real data**. Services `ALL/FAILED/RUNNING/
-  INACTIVE/ENABLED` filters (full unit list + `list-unit-files`); Network
-  **Connectivity tests** (on-demand ping/DNS, background) and a **Firewall** panel
-  (`FirewallCollector`: manager + nft/iptables ruleset counts); Docker **Compose
-  projects** + **Image hygiene** panels and a `DockerPruneAction` (`p`); a packages
-  collector → Dashboard **UPDATES** tile; **anacron** in Crons and a cron **run-now**
-  action (`n`); and a versioned local **state store** (`systui-storage::store`)
-  powering Dashboard/Security **trends** (`was N 7d ago`), per-host **Session notes**
-  (`n` on Dashboard), and **Saved searches** (`S`/Enter) in Logs. Deferred (by the
-  real-data contract): finding-state buttons (→ v0.9), apply-fix (→ v1.1+), backups
-  tile and per-source log byte-rates, and the command palette.
-- **Phase 9 / v0.9 (Policies & expected state) complete** on `release/v0.9` (see
-  `docs/phases/phase-09-v0.9-policies.md`): expected-state policy schema in config
-  with explicit host assignment plus deterministic tag fallback; policy evaluation
-  produces stable `policy.*` findings for missing policy definitions, ports, services,
-  thresholds and Docker/container drift; unavailable fact areas are explicit
-  `policy.partial.*` findings rather than silent compliance. Policy drift is wired
-  into TUI refresh, reports and fleet through per-host reports. Finding lifecycle
-  states (`open`, `accepted`, `ignored`, `fixed`, `false-positive`) persist in the
-  local state store per host + finding id, are shown in TUI/Markdown/HTML/JSON, and
-  non-open findings stay auditable but no longer count as active risk.
-- **Next: Phase 10 / v1.0 - Stabilization & release.** Start with the phase context
-  file (`docs/phases/phase-10-v1.0-release.md`) before any code, per the methodology.
-  Read `docs/ROADMAP.md` for the v1.0 scope.
+Highlights worth knowing before touching the code: the action engine and its safety
+pipeline (`systui-actions`), the three transports (`Local`/`Ssh`/`Mock`), the truecolor
+`theme.rs` + 3-row chrome + multi-panel screens (v0.8.2), the off-thread tiered refresh
+with per-collector timeouts (v0.8.3), the local state store for trends/notes/saved
+searches (v0.8.4), expected-state policies with `policy.*`/`policy.partial.*` findings
+and persisted finding lifecycle states (v0.9).
 
 ## Starting a session
 
-Confirm the session plan before writing code, then: implement → run the three
-quality gates → commit (Conventional Commits, no assistant mention) → update the
-phase context file's session status.
+The formal version phases (with a `docs/phases/` context file per phase) ran through
+v1.0. Post-v1.0 work is feature-driven from [`docs/BACKLOG.md`](docs/BACKLOG.md):
+
+1. Pick a task (e.g. one of the three above) and confirm the plan before writing code.
+2. Branch off `main` (e.g. `feat/system-tab-parity`); don't commit straight to `main`.
+3. For UI work, read the prototype screenshot for that tab and the *UI implementation
+   notes* above before changing `ui.rs`.
+4. Implement → run the three quality gates → commit (Conventional Commits, **no
+   assistant mention**, no co-author trailers).
+5. Update `CHANGELOG.md` (and tick the item in `docs/BACKLOG.md`). For a user-facing
+   release, bump the version and tag `vX.Y.Z` (full semver, like `v1.0.0`); the tag
+   triggers `.github/workflows/release.yml`.

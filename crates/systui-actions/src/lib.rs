@@ -12,7 +12,7 @@ pub mod process;
 pub mod service;
 
 pub use cron::{CronAction, CronOp};
-pub use docker::{DockerAction, DockerOp};
+pub use docker::{DockerAction, DockerOp, DockerPruneAction};
 pub use engine::{ActionDecision, ActionEngine};
 pub use process::{Signal, SignalAction};
 pub use service::{ServiceAction, ServiceOp};

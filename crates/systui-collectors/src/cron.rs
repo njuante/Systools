@@ -24,6 +24,8 @@ pub enum CronSource {
     CronD,
     /// A script in a `/etc/cron.{hourly,daily,weekly,monthly}` directory.
     Periodic,
+    /// A job from `/etc/anacrontab` (period-based, runs after boot if missed).
+    Anacron,
 }
 
 /// A single scheduled job.
@@ -174,6 +176,9 @@ pub async fn collect_cron_entries(transport: &dyn Transport) -> Vec<CronEntry> {
             }
         }
     }
+    if let Some(text) = read_text(transport, "/etc/anacrontab").await {
+        entries.extend(parse_anacrontab(&text));
+    }
     for (dir, schedule) in PERIODIC_DIRS {
         if let Ok(list) = transport.list_dir(dir).await {
             for entry in list {
@@ -192,6 +197,47 @@ pub async fn collect_cron_entries(transport: &dyn Transport) -> Vec<CronEntry> {
     }
 
     entries
+}
+
+/// Parse `/etc/anacrontab`. Each job line is `period delay job-id command…`.
+/// Environment assignments (`NAME=value`) and comments are skipped. The period
+/// (days, or an `@macro`) is mapped to the nearest cron `@macro` so the schedule
+/// reads sensibly; the command keeps its job-id stripped off.
+pub fn parse_anacrontab(text: &str) -> Vec<CronEntry> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') || is_env_assignment(line) {
+                return None;
+            }
+            let tokens: Vec<&str> = line.split_whitespace().collect();
+            // period, delay, job-id, then the command.
+            if tokens.len() < 4 {
+                return None;
+            }
+            let command = tokens[3..].join(" ");
+            Some(CronEntry {
+                schedule: anacron_period_to_macro(tokens[0]),
+                user: Some("root".to_owned()),
+                command,
+                source: CronSource::Anacron,
+                origin: "/etc/anacrontab".to_owned(),
+                enabled: true,
+            })
+        })
+        .collect()
+}
+
+/// Map an anacron period to a cron `@macro` where it corresponds cleanly
+/// (`1`→`@daily`, `7`→`@weekly`, `30`/`31`→`@monthly`, `@macro` passed through);
+/// otherwise keep the raw period so nothing is misrepresented.
+fn anacron_period_to_macro(period: &str) -> String {
+    match period {
+        "1" => "@daily".to_owned(),
+        "7" => "@weekly".to_owned(),
+        "30" | "31" => "@monthly".to_owned(),
+        other => other.to_owned(),
+    }
 }
 
 /// run-parts ignores names containing a dot and the conventional placeholders.
@@ -608,6 +654,19 @@ mod tests {
         assert_eq!(entries[0].schedule, "*/5 * * * *");
         assert_eq!(entries[0].command, "/opt/poll.sh");
         assert!(!entries[0].enabled);
+    }
+
+    #[test]
+    fn parses_anacrontab_jobs() {
+        let entries = parse_anacrontab(include_str!("../fixtures/anacrontab.txt"));
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].schedule, "@daily"); // period 1
+        assert_eq!(entries[0].command, "run-parts --report /etc/cron.daily");
+        assert_eq!(entries[0].source, CronSource::Anacron);
+        assert_eq!(entries[1].schedule, "@weekly"); // period 7
+        assert_eq!(entries[2].schedule, "@monthly"); // @monthly passthrough
+        // The job-id column is stripped; SHELL=/PATH= assignments are skipped.
+        assert!(entries.iter().all(|e| !e.command.contains("cron.daily\t")));
     }
 
     #[test]

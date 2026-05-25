@@ -23,9 +23,10 @@ use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use systui_actions::ActionEngine;
 use systui_core::{AuditContext, Config, CoreError, ExecutionMode, Result, Transport};
-use systui_storage::AuditLog;
+use systui_storage::{AuditLog, StateStore};
 use tokio::runtime::Runtime;
 
+use crate::app::ConnectivityResult;
 use crate::data::RefreshOutcome;
 
 /// How often the event loop wakes to poll for input and check the refresh timer.
@@ -50,6 +51,11 @@ pub fn run(
     let mut app = App::new(host_label, mode);
     app.thresholds = config.thresholds.clone();
     app.cert_warning_days = config.security.cert_expiry_warning_days;
+    // Load persisted local state (trends, notes, saved searches); best-effort.
+    let state_store = StateStore::at_default_location().ok();
+    if let Some(store) = &state_store {
+        app.state = store.load();
+    }
     let refresh_interval = Duration::from_secs(config.general.default_refresh_seconds);
 
     // Probe what the connected user can do (once), then degrade the mode to match:
@@ -69,6 +75,12 @@ pub fn run(
         refresh_interval,
     );
     let _ = ratatui::try_restore();
+    // Flush accumulated local state (snapshots/notes/searches) on exit.
+    if let Some(store) = &state_store
+        && app.state_dirty
+    {
+        let _ = store.save(&app.state);
+    }
     result
 }
 
@@ -109,6 +121,31 @@ fn spawn_refresh(
     true
 }
 
+/// Spawn the on-demand connectivity probes in the background, posting the
+/// results to `tx`. No-op if a run is already in flight or there are no targets.
+/// Probes never touch host state, so they bypass the action engine.
+fn spawn_connectivity(
+    runtime: &Runtime,
+    transport: &Arc<dyn Transport>,
+    app: &mut App,
+    tx: &Sender<Vec<ConnectivityResult>>,
+) {
+    if app.connectivity_running {
+        return;
+    }
+    let targets = app.connectivity_targets();
+    if targets.is_empty() {
+        return;
+    }
+    app.connectivity_running = true;
+    let transport = transport.clone();
+    let tx = tx.clone();
+    runtime.spawn(async move {
+        let results = data::run_connectivity(transport.as_ref(), targets).await;
+        let _ = tx.send(results);
+    });
+}
+
 fn event_loop(
     terminal: &mut DefaultTerminal,
     app: &mut App,
@@ -117,6 +154,7 @@ fn event_loop(
     refresh_interval: Duration,
 ) -> Result<()> {
     let (tx, rx) = mpsc::channel::<RefreshOutcome>();
+    let (conn_tx, conn_rx) = mpsc::channel::<Vec<ConnectivityResult>>();
     // Kick off the first gather in the background; the loop draws a "refreshing"
     // frame until it lands rather than freezing on startup.
     spawn_refresh(runtime, transport, app, &tx);
@@ -127,6 +165,11 @@ fn event_loop(
         while let Ok(outcome) = rx.try_recv() {
             data::apply_refresh(app, outcome);
             app.clamp_selections();
+        }
+        // Fold in finished connectivity probe runs (non-blocking).
+        while let Ok(results) = conn_rx.try_recv() {
+            app.connectivity = results;
+            app.connectivity_running = false;
         }
 
         terminal.draw(|frame| ui::render(frame, app))?;
@@ -156,6 +199,11 @@ fn event_loop(
             // A log filter changed: re-collect only the logs.
             app.logs_reload_requested = false;
             data::reload_logs_blocking(runtime, transport.as_ref(), app);
+        }
+
+        if app.connectivity_requested {
+            app.connectivity_requested = false;
+            spawn_connectivity(runtime, transport, app, &conn_tx);
         }
     }
     Ok(())

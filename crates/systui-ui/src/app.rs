@@ -2,15 +2,17 @@
 
 use chrono::{Local, NaiveDateTime};
 use systui_actions::{
-    ActionDecision, CronAction, DockerAction, DockerOp, ServiceAction, ServiceOp, Signal,
-    SignalAction,
+    ActionDecision, CronAction, DockerAction, DockerOp, DockerPruneAction, ServiceAction,
+    ServiceOp, Signal, SignalAction,
 };
 use systui_collectors::{
-    Container, ContainerStats, CronEntry, CronSource, DatabaseSnapshot, ExposureEntry,
-    HealthReport, HostCapabilities, InspectSummary, LogEntry, LogQuery, NetworkSnapshot, Process,
-    ServiceUnit, SystemSnapshot, SystemdTimer, parse_schedule,
+    ComposeProject, Container, ContainerStats, CronEntry, CronSource, DatabaseSnapshot,
+    ExposureEntry, FirewallSnapshot, HealthReport, HostCapabilities, ImageHygiene, InspectSummary,
+    LogEntry, LogQuery, NetworkSnapshot, PackageUpdates, Process, ServiceUnit, SystemSnapshot,
+    SystemdTimer, parse_schedule,
 };
 use systui_core::{Action, ExecutionMode, Finding, ModuleId, Severity, Thresholds};
+use systui_storage::PersistentState;
 
 use crate::form::{Field, Form};
 use crate::theme::Theme;
@@ -22,6 +24,7 @@ pub enum PendingAction {
     Service(ServiceAction),
     Signal(SignalAction),
     Docker(DockerAction),
+    DockerPrune(DockerPruneAction),
     Cron(CronAction),
 }
 
@@ -31,6 +34,7 @@ impl PendingAction {
             PendingAction::Service(a) => a,
             PendingAction::Signal(a) => a,
             PendingAction::Docker(a) => a,
+            PendingAction::DockerPrune(a) => a,
             PendingAction::Cron(a) => a,
         }
     }
@@ -209,6 +213,49 @@ impl ProcessSort {
     }
 }
 
+/// Which subset of systemd units the Services screen shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceFilter {
+    All,
+    Failed,
+    Running,
+    Inactive,
+    Enabled,
+}
+
+impl ServiceFilter {
+    /// All filters, in display (cycle) order.
+    pub const ALL: [ServiceFilter; 5] = [
+        ServiceFilter::All,
+        ServiceFilter::Failed,
+        ServiceFilter::Running,
+        ServiceFilter::Inactive,
+        ServiceFilter::Enabled,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ServiceFilter::All => "ALL",
+            ServiceFilter::Failed => "FAILED",
+            ServiceFilter::Running => "RUNNING",
+            ServiceFilter::Inactive => "INACTIVE",
+            ServiceFilter::Enabled => "ENABLED",
+        }
+    }
+}
+
+/// One reachability probe result shown in the Network → Connectivity panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectivityResult {
+    /// The probed host/address.
+    pub target: String,
+    /// Where the target came from (`gateway`, `dns`).
+    pub label: String,
+    pub reachable: bool,
+    /// Human summary, e.g. `0.4ms avg · 0% loss` or `no reply`.
+    pub detail: String,
+}
+
 /// Whether keystrokes drive navigation or the log search box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputMode {
@@ -241,8 +288,21 @@ pub struct App {
     pub processes: Vec<Process>,
     pub process_sort: ProcessSort,
     pub failed_units: Vec<ServiceUnit>,
+    /// Full service unit list (slow-tier), backing the Services screen filters.
+    pub all_units: Vec<ServiceUnit>,
+    /// Names of units enabled at boot, from `list-unit-files`.
+    pub enabled_units: Vec<String>,
+    pub service_filter: ServiceFilter,
     pub network: Option<NetworkSnapshot>,
     pub exposures: Vec<ExposureEntry>,
+    /// On-demand reachability probes (Network tab, run on `c`).
+    pub connectivity: Vec<ConnectivityResult>,
+    /// A connectivity probe run was requested; the loop spawns it in background.
+    pub connectivity_requested: bool,
+    /// A background connectivity run is in flight (drives the indicator and
+    /// coalesces requests).
+    pub connectivity_running: bool,
+    pub firewall: FirewallSnapshot,
     pub findings: Vec<Finding>,
     pub databases: DatabaseSnapshot,
     pub cert_warning_days: u32,
@@ -250,9 +310,12 @@ pub struct App {
     pub container_inspects: Vec<InspectSummary>,
     pub container_stats: Vec<ContainerStats>,
     pub docker_available: bool,
+    pub compose_projects: Vec<ComposeProject>,
+    pub image_hygiene: ImageHygiene,
     pub containers_selected: usize,
     pub crons: Vec<CronEntry>,
     pub timers: Vec<SystemdTimer>,
+    pub packages: PackageUpdates,
     pub crons_selected: usize,
     pub databases_selected: usize,
     /// Reference time for cron next-run previews, refreshed each collection.
@@ -281,6 +344,14 @@ pub struct App {
     pub cpu_history: Vec<u64>,
     /// Recent RAM used% samples for the dashboard sparkline (oldest first).
     pub mem_history: Vec<u64>,
+    /// Persisted local state (health/finding snapshots, notes, saved searches).
+    pub state: PersistentState,
+    /// `true` when [`state`] changed and should be flushed to disk.
+    pub state_dirty: bool,
+    /// In-progress session note being typed (Dashboard); `None` when not entering.
+    pub note_draft: Option<String>,
+    /// Selected saved search on the Logs tab.
+    pub saved_search_selected: usize,
 }
 
 /// How many samples the dashboard sparklines retain.
@@ -300,8 +371,15 @@ impl App {
             processes: Vec::new(),
             process_sort: ProcessSort::Cpu,
             failed_units: Vec::new(),
+            all_units: Vec::new(),
+            enabled_units: Vec::new(),
+            service_filter: ServiceFilter::All,
             network: None,
             exposures: Vec::new(),
+            connectivity: Vec::new(),
+            connectivity_requested: false,
+            connectivity_running: false,
+            firewall: FirewallSnapshot::default(),
             findings: Vec::new(),
             databases: DatabaseSnapshot::default(),
             cert_warning_days: 30,
@@ -309,9 +387,12 @@ impl App {
             container_inspects: Vec::new(),
             container_stats: Vec::new(),
             docker_available: false,
+            compose_projects: Vec::new(),
+            image_hygiene: ImageHygiene::default(),
             containers_selected: 0,
             crons: Vec::new(),
             timers: Vec::new(),
+            packages: PackageUpdates::default(),
             crons_selected: 0,
             databases_selected: 0,
             now: Local::now().naive_local(),
@@ -335,6 +416,10 @@ impl App {
             action_exec_requested: false,
             cpu_history: Vec::new(),
             mem_history: Vec::new(),
+            state: PersistentState::default(),
+            state_dirty: false,
+            note_draft: None,
+            saved_search_selected: 0,
         }
     }
 
@@ -374,6 +459,88 @@ impl App {
         }
     }
 
+    // --- Session notes (Dashboard) ----------------------------------------
+
+    /// Begin typing a session note for the current host.
+    pub fn open_note(&mut self) {
+        self.note_draft = Some(String::new());
+    }
+
+    pub fn note_push_char(&mut self, c: char) {
+        if let Some(draft) = &mut self.note_draft {
+            draft.push(c);
+        }
+    }
+
+    pub fn note_pop_char(&mut self) {
+        if let Some(draft) = &mut self.note_draft {
+            draft.pop();
+        }
+    }
+
+    pub fn cancel_note(&mut self) {
+        self.note_draft = None;
+    }
+
+    /// Save the in-progress note to the persistent store (no-op if empty).
+    pub fn submit_note(&mut self) {
+        let Some(draft) = self.note_draft.take() else {
+            return;
+        };
+        let text = draft.trim();
+        if text.is_empty() {
+            return;
+        }
+        let at = self.now.format("%Y-%m-%d %H:%M").to_string();
+        self.state.add_note(&self.host_label, &at, text);
+        self.state_dirty = true;
+    }
+
+    // --- Saved log searches (Logs) ----------------------------------------
+
+    /// Persist the current log search query as a saved search.
+    pub fn save_current_search(&mut self) {
+        if self.log_search.trim().is_empty() {
+            return;
+        }
+        self.state.add_search(&self.log_search);
+        self.state_dirty = true;
+        self.saved_search_selected = 0;
+    }
+
+    /// Apply the selected saved search to the log filter and reload.
+    pub fn apply_saved_search(&mut self) {
+        if let Some(search) = self.state.saved_searches.get(self.saved_search_selected) {
+            self.log_search = search.query.clone();
+            self.logs_reload_requested = true;
+        }
+    }
+
+    /// Move the saved-search selection (Logs tab).
+    pub fn saved_search_down(&mut self) {
+        let len = self.state.saved_searches.len();
+        if len > 0 && self.saved_search_selected + 1 < len {
+            self.saved_search_selected += 1;
+        }
+    }
+
+    pub fn saved_search_up(&mut self) {
+        self.saved_search_selected = self.saved_search_selected.saturating_sub(1);
+    }
+
+    /// Record a health/finding snapshot for today into the persistent store
+    /// (deduped per day). Called after each refresh.
+    pub fn record_health_snapshot(&mut self) {
+        let Some(health) = &self.health else {
+            return;
+        };
+        let [crit, high, med, ..] = self.finding_counts();
+        let date = self.now.format("%Y-%m-%d").to_string();
+        self.state
+            .record_snapshot(&self.host_label, &date, health.score, crit, high, med);
+        self.state_dirty = true;
+    }
+
     /// Toggle the help overlay.
     pub fn toggle_help(&mut self) {
         self.show_help = !self.show_help;
@@ -382,6 +549,37 @@ impl App {
     /// Ask the event loop to re-run collectors on its next tick.
     pub fn request_refresh(&mut self) {
         self.refresh_requested = true;
+    }
+
+    /// Ask the loop to run connectivity probes in the background.
+    pub fn request_connectivity(&mut self) {
+        self.connectivity_requested = true;
+    }
+
+    /// Targets to probe: the default gateway and each configured DNS server,
+    /// derived from the current network snapshot. De-duplicated, in a stable
+    /// order. Empty when there is no network data yet. Deliberately limited to
+    /// the host's own gateway/resolvers — never arbitrary external hosts.
+    pub fn connectivity_targets(&self) -> Vec<(String, String)> {
+        let mut targets: Vec<(String, String)> = Vec::new();
+        let mut push = |addr: &str, label: &str| {
+            if !addr.is_empty() && !targets.iter().any(|(t, _)| t == addr) {
+                targets.push((addr.to_owned(), label.to_owned()));
+            }
+        };
+        if let Some(net) = &self.network {
+            for route in &net.routes {
+                if route.dst == "default"
+                    && let Some(gw) = &route.gateway
+                {
+                    push(gw, "gateway");
+                }
+            }
+            for ns in &net.dns.nameservers {
+                push(ns, "dns");
+            }
+        }
+        targets
     }
 
     /// Switch the process list ordering between CPU and memory.
@@ -448,6 +646,43 @@ impl App {
         self.logs_reload_requested = true;
     }
 
+    /// Units shown on the Services screen under the active filter. Falls back to
+    /// the live `failed_units` when the full list has not been gathered yet (so
+    /// the screen is never blank on the first frames), and always for the FAILED
+    /// filter (the freshest signal).
+    pub fn visible_units(&self) -> Vec<&ServiceUnit> {
+        if self.service_filter == ServiceFilter::Failed || self.all_units.is_empty() {
+            return self.failed_units.iter().collect();
+        }
+        self.all_units
+            .iter()
+            .filter(|u| match self.service_filter {
+                ServiceFilter::All => true,
+                ServiceFilter::Failed => u.is_failed(),
+                ServiceFilter::Running => u.sub == "running",
+                ServiceFilter::Inactive => u.active == "inactive",
+                ServiceFilter::Enabled => self.enabled_units.iter().any(|n| n == &u.name),
+            })
+            .collect()
+    }
+
+    /// The unit currently selected on the Services screen, under the active filter.
+    pub fn selected_service(&self) -> Option<ServiceUnit> {
+        self.visible_units()
+            .get(self.services_selected)
+            .map(|u| (*u).clone())
+    }
+
+    /// Cycle the Services screen filter and reset the selection to the top.
+    pub fn cycle_service_filter(&mut self) {
+        let current = ServiceFilter::ALL
+            .iter()
+            .position(|f| *f == self.service_filter)
+            .unwrap_or(0);
+        self.service_filter = ServiceFilter::ALL[(current + 1) % ServiceFilter::ALL.len()];
+        self.services_selected = 0;
+    }
+
     /// Processes in display order (sorted by the current key).
     pub fn visible_processes(&self) -> Vec<&Process> {
         let mut procs: Vec<&Process> = self.processes.iter().collect();
@@ -489,7 +724,7 @@ impl App {
 
     fn selection_len(&self) -> usize {
         match self.current_tab() {
-            Tab::Services => self.failed_units.len(),
+            Tab::Services => self.visible_units().len(),
             Tab::Processes => self.processes.len(),
             Tab::Docker => self.containers.len(),
             Tab::Crons => self.crons.len(),
@@ -553,7 +788,7 @@ impl App {
     pub fn clamp_selections(&mut self) {
         self.services_selected = self
             .services_selected
-            .min(self.failed_units.len().saturating_sub(1));
+            .min(self.visible_units().len().saturating_sub(1));
         self.processes_selected = self
             .processes_selected
             .min(self.processes.len().saturating_sub(1));
@@ -570,8 +805,7 @@ impl App {
     pub fn request_action(&mut self) {
         let pending = match self.current_tab() {
             Tab::Services => self
-                .failed_units
-                .get(self.services_selected)
+                .selected_service()
                 .map(|u| PendingAction::Service(ServiceAction::new(ServiceOp::Restart, &u.name))),
             Tab::Processes => {
                 let procs = self.visible_processes();
@@ -595,6 +829,18 @@ impl App {
             self.pending = Some(pending);
             self.action_plan_requested = true;
         }
+    }
+
+    /// Queue a "prune dangling images" mutation for the engine (Docker tab).
+    pub fn request_prune_images(&mut self) {
+        if self.mode == ExecutionMode::ReadOnly {
+            self.set_decision(ActionDecision::Rejected(
+                "image prune is disabled in read-only mode".to_owned(),
+            ));
+            return;
+        }
+        self.pending = Some(PendingAction::DockerPrune(DockerPruneAction::new()));
+        self.action_plan_requested = true;
     }
 
     /// Open a form for adding a user-crontab entry.
@@ -645,6 +891,21 @@ impl App {
         } else {
             self.set_decision(ActionDecision::Rejected(
                 "select a user crontab entry to delete".to_owned(),
+            ));
+        }
+    }
+
+    /// Run the selected user-crontab entry's command immediately, via the engine.
+    pub fn request_run_cron(&mut self) {
+        if let Some(action) = self
+            .selected_user_cron()
+            .map(|entry| CronAction::run_now(entry.schedule.clone(), entry.command.clone()))
+        {
+            self.pending = Some(PendingAction::Cron(action));
+            self.action_plan_requested = true;
+        } else {
+            self.set_decision(ActionDecision::Rejected(
+                "select a user crontab entry to run".to_owned(),
             ));
         }
     }
@@ -850,6 +1111,37 @@ mod tests {
             }
             other => panic!("expected a service action, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn connectivity_targets_from_gateway_and_dns() {
+        use systui_collectors::{DnsConfig, NetworkSnapshot, Route};
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        assert!(app.connectivity_targets().is_empty()); // no network yet
+        app.network = Some(NetworkSnapshot {
+            interfaces: Vec::new(),
+            routes: vec![Route {
+                dst: "default".to_owned(),
+                gateway: Some("10.0.0.1".to_owned()),
+                dev: "eth0".to_owned(),
+                prefsrc: None,
+            }],
+            dns: DnsConfig {
+                nameservers: vec!["1.1.1.1".to_owned(), "10.0.0.1".to_owned()],
+                search: Vec::new(),
+            },
+            listeners: Vec::new(),
+            connections: Vec::new(),
+        });
+        let targets = app.connectivity_targets();
+        // gateway first, then DNS; the duplicate 10.0.0.1 is de-duplicated.
+        assert_eq!(
+            targets,
+            vec![
+                ("10.0.0.1".to_owned(), "gateway".to_owned()),
+                ("1.1.1.1".to_owned(), "dns".to_owned()),
+            ]
+        );
     }
 
     #[test]

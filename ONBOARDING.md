@@ -20,35 +20,19 @@ document; everything else is English).
 3. [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) — how we work (branches, sessions, gates).
 4. [`docs/phases/`](docs/phases/) — the context file for the **active** phase, first.
 
-## ▶ Active phase: v0.8.3 — Optimization (pure performance)
+## ▶ Next phase: v0.9 — Policies & expected state
 
-You are picking this up in a fresh chat. **Branch: `release/v0.8.3`** (off `main` at
-tag `v0.8.2`). Authoritative scope:
-[`docs/phases/phase-08-3-v0.8.3-optimization.md`](docs/phases/phase-08-3-v0.8.3-optimization.md)
-— read it end to end before coding.
+`v0.8.4` is the latest tagged release on `main`. The next version is **v0.9
+(Policies & expected state)** — validate configuration against an expected state and
+report drift. Per the methodology, the **first session writes the phase context file**
+(`docs/phases/phase-09-v0.9-policies.md`) before any code; read `docs/ROADMAP.md`
+§Phase 9 for the scope, then branch `release/v0.9` off `main`.
 
-**Goal:** make the TUI fast and **never freeze**, locally and over SSH. No new
-features, no visual changes — performance only. Behaviour, screens, keymaps and the
-safety model stay identical; render stays a pure function of `App`.
-
-**The problems (measured in v0.8.2):**
-1. **Refresh is synchronous on the UI thread.** `crates/systui-ui/src/lib.rs`
-   `event_loop` calls `data::refresh_blocking` (`crates/systui-ui/src/data.rs`)
-   inline (`runtime.block_on(...)`), so the UI freezes for the whole gather; the
-   auto-refresh timer makes it freeze periodically. → Move the gather to a worker +
-   channel; keep the loop drawing/handling input with a "refreshing…" indicator.
-2. **Collectors run sequentially** (system → network+security → docker+crons). → Run
-   independent ones concurrently, preserving real dependencies and deterministic,
-   worst-first findings.
-3. **Every tick re-collects everything**, including slow-changing data (OS/kernel/
-   capabilities/interfaces). → Tiered refresh + caching.
-4. Plus: command batching (fewer round-trips), cancellation/timeouts (partial data,
-   never a stall), and release-profile tuning. **Already done in v0.8.2:** SSH
-   connection multiplexing in `crates/systui-transport/src/ssh.rs` (don't redo).
-
-**First step (S8d.1):** add a timing harness (refresh + per-collector cost, behind
-`SYSTUI_LOG`/a flag), capture local + SSH baselines into the phase notes, then do
-background refresh (S8d.2). Sessions S8d.1–S8d.6 are listed in the phase file.
+The four intermediate v0.8.x phases are done and tagged (see Current state): v0.8.1
+in-TUI management, v0.8.2 UI redesign, v0.8.3 optimization, v0.8.4 prototype data
+parity. The approved UI prototype lives in
+[`docs/interfaz/`](docs/interfaz/) (Ratatui spec + the reference screenshots under
+`_extracted/screenshots/`).
 
 ## Non-negotiable rules
 
@@ -122,9 +106,9 @@ offline once dependencies are cached.
 Source of truth is `git log` and the active phase context file — check them, this
 snapshot may lag.
 
-- **`v0.8` complete and tagged on `main`.** Each version is built on
+- **`v0.8.4` is the latest tag on `main`.** Each version is built on
   `release/vX.Y` from `main`, then merged `--no-ff` + tagged at the end of its phase.
-  `v0.1` through `v0.8` are tagged on `main`.
+  `v0.1` through `v0.8.4` are tagged on `main`.
 - **Phase 0 (Foundation) complete**: workspace, contracts, Local/Mock transports,
   CLI + config + tracing, TUI shell, async/sync bridge.
 - **Phase 1 / v0.1 complete**: dashboard with health score + findings,
@@ -225,9 +209,33 @@ snapshot may lag.
     enabled/disabled state badges, updated help/footer text, disabled-entry report
     rendering, and the existing shared header/status, bordered content, severity
     badges and loading/empty/error states kept centralised.
-- **Next: Phase 9 / v0.9 — Policies & expected state** (after v0.8.1 is tagged).
-  Start with the phase context file (`docs/phases/`) before any code, per the
-  methodology. Read `docs/ROADMAP.md` for the v0.9 scope.
+- **Phase 8.6 / v0.8.2 (UI redesign) complete** on `release/v0.8.2`: adopted the
+  approved truecolor design from `docs/interfaz/` — single-source `theme.rs` tokens
+  (no inline `Color::Rgb` in screens), a 3-row chrome (host pill + health gauge +
+  mode badge), numbered tabs with count badges, and multi-panel screens matching the
+  prototype. Reskin only — collectors/actions/safety unchanged, render still a pure
+  function of `App`. SSH connection multiplexing also landed here.
+- **Phase 8.7 / v0.8.3 (Optimization) complete** on `release/v0.8.3`: the refresh
+  runs **off the UI thread** (worker + channel, refresh indicator), independent
+  collectors gather **concurrently**, slow-changing tiers are cached, and a per-
+  collector **timeout** degrades to partial data — the TUI never freezes, locally or
+  over SSH. Plus fat-LTO release profile. No behaviour/visual change.
+- **Phase 8.8 / v0.8.4 (Prototype data parity) complete** on `release/v0.8.4` (see
+  `docs/phases/phase-08-4-v0.8.4-prototype-data-parity.md`): filled in the panels the
+  v0.8.2 reskin omitted, all backed by **real data**. Services `ALL/FAILED/RUNNING/
+  INACTIVE/ENABLED` filters (full unit list + `list-unit-files`); Network
+  **Connectivity tests** (on-demand ping/DNS, background) and a **Firewall** panel
+  (`FirewallCollector`: manager + nft/iptables ruleset counts); Docker **Compose
+  projects** + **Image hygiene** panels and a `DockerPruneAction` (`p`); a packages
+  collector → Dashboard **UPDATES** tile; **anacron** in Crons and a cron **run-now**
+  action (`n`); and a versioned local **state store** (`systui-storage::store`)
+  powering Dashboard/Security **trends** (`was N 7d ago`), per-host **Session notes**
+  (`n` on Dashboard), and **Saved searches** (`S`/Enter) in Logs. Deferred (by the
+  real-data contract): finding-state buttons (→ v0.9), apply-fix (→ v1.1+), backups
+  tile and per-source log byte-rates, and the command palette.
+- **Next: Phase 9 / v0.9 — Policies & expected state.** Start with the phase context
+  file (`docs/phases/phase-09-v0.9-policies.md`) before any code, per the methodology.
+  Read `docs/ROADMAP.md` for the v0.9 scope.
 
 ## Starting a session
 

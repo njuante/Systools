@@ -47,16 +47,18 @@ pub async fn gather_report(
     );
 
     let host = host?;
-    let (network, exposures, security_findings) = net;
+    let (network, exposures, security_findings, _firewall) = net;
     let (databases, database_findings_v) = dbs;
-    let (containers, container_inspects, container_stats_data, docker_available, docker_findings_v) =
-        docker;
+    let docker_available = docker.available;
+    let containers = docker.containers;
+    let container_inspects = docker.inspects;
+    let container_stats_data = docker.stats;
     let (crons, cron_findings_v) = crons_group;
 
     let findings = merge_findings(
         security_findings,
         database_findings_v,
-        docker_findings_v,
+        docker.findings,
         cron_findings_v,
     );
     tracing::info!(

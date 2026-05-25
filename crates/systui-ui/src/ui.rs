@@ -11,11 +11,11 @@ use ratatui::widgets::{
 use regex::RegexBuilder;
 use systui_collectors::{
     BindScope, Container, CronEntry, CronSource, DatabaseInstance, LogEntry, NetworkSnapshot,
-    SystemSnapshot, parse_schedule,
+    ServiceUnit, SystemSnapshot, parse_schedule,
 };
 use systui_core::{Finding, ModuleId, Severity};
 
-use crate::app::{ActionStage, App, InputMode, Tab, ViewState};
+use crate::app::{ActionStage, App, InputMode, ServiceFilter, Tab, ViewState};
 use crate::form::render_form;
 use crate::theme::Theme;
 
@@ -50,6 +50,34 @@ pub fn render(frame: &mut Frame, app: &App) {
     if let Some(state) = &app.cron_form {
         render_form(frame, &state.form, &app.theme);
     }
+    if let Some(draft) = &app.note_draft {
+        render_note_input(frame, app, draft);
+    }
+}
+
+/// Single-line input overlay for a new session note.
+fn render_note_input(frame: &mut Frame, app: &App, draft: &str) {
+    let t = app.theme;
+    let area = centered_rect(60, 20, frame.area());
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(t.accent))
+        .title(" New session note ");
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  {draft}_"),
+            Style::new().fg(t.fg_strong),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Enter save · Esc cancel",
+            Style::new().fg(t.fg_dim),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn render_action_modal(frame: &mut Frame, app: &App) {
@@ -379,10 +407,52 @@ fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
     let cols =
         Layout::horizontal([Constraint::Percentage(68), Constraint::Percentage(32)]).split(area);
     render_log_tail(frame, app, &filtered, cols[0]);
-    let right =
-        Layout::vertical([Constraint::Percentage(58), Constraint::Percentage(42)]).split(cols[1]);
+    let right = Layout::vertical([
+        Constraint::Percentage(46),
+        Constraint::Percentage(30),
+        Constraint::Percentage(24),
+    ])
+    .split(cols[1]);
     render_log_fingerprints(frame, app, &filtered, right[0]);
     render_log_sources(frame, app, &filtered, right[1]);
+    render_saved_searches(frame, app, right[2]);
+}
+
+/// Persisted log searches. `S` saves the current query; ↑/↓ select and Enter
+/// applies one.
+fn render_saved_searches(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Saved searches");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let searches = &app.state.saved_searches;
+    if searches.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "none — S saves the current search",
+                Style::new().fg(t.fg_dim),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let lines: Vec<Line> = searches
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let selected = i == app.saved_search_selected;
+            let marker = if selected { "→ " } else { "  " };
+            let style = if selected {
+                Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(t.fg_muted)
+            };
+            Line::from(Span::styled(format!("{marker}{}", s.query), style))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn render_log_tail(frame: &mut Frame, app: &App, filtered: &[&LogEntry], area: Rect) {
@@ -626,38 +696,90 @@ fn log_matches(entry: &LogEntry, query: &str, regex: Option<&regex::Regex>) -> b
 }
 
 fn render_services(frame: &mut Frame, app: &App, area: Rect) {
-    if app.failed_units.is_empty() {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                "✓ no failed units — all healthy",
-                Style::new().fg(app.theme.accent),
-            ))
-            .alignment(Alignment::Center),
-            area,
-        );
-        return;
-    }
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    render_service_filter_bar(frame, app, rows[0]);
 
     let cols =
-        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).split(area);
+        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).split(rows[1]);
     render_service_list(frame, app, cols[0]);
     render_service_detail(frame, app, cols[1]);
 }
 
+fn render_service_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let mut spans = vec![Span::styled("filter ", Style::new().fg(t.fg_muted))];
+    for filter in ServiceFilter::ALL {
+        let style = if filter == app.service_filter {
+            Style::new()
+                .fg(t.bg)
+                .bg(t.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(t.fg_dim)
+        };
+        spans.push(Span::styled(format!(" {} ", filter.label()), style));
+        spans.push(Span::raw(" "));
+    }
+    spans.push(Span::styled("· f cycle", Style::new().fg(t.fg_dim)));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Dot colour for a unit's state: failed=critical, running=accent, inactive=dim,
+/// anything else (activating/reloading/…) = amber.
+fn unit_dot_color(t: &Theme, u: &ServiceUnit) -> ratatui::style::Color {
+    if u.is_failed() {
+        t.critical
+    } else if u.sub == "running" || u.active == "active" {
+        t.accent
+    } else if u.active == "inactive" {
+        t.fg_dim
+    } else {
+        t.high
+    }
+}
+
 fn render_service_list(frame: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, &format!("systemd · {} failed", app.failed_units.len()));
+    let units = app.visible_units();
+    let block = panel_block(
+        &t,
+        &format!("systemd · {} {}", units.len(), app.service_filter.label()),
+    );
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let header = Row::new(["", "UNIT", "ACTIVE", "SUB"])
+    if units.is_empty() {
+        let showing_failed =
+            app.service_filter == ServiceFilter::Failed || app.all_units.is_empty();
+        let (msg, color) = if showing_failed {
+            ("✓ no failed units — all healthy", t.accent)
+        } else {
+            ("no units match this filter", t.fg_dim)
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(msg, Style::new().fg(color))),
+            inner,
+        );
+        return;
+    }
+
+    let header = Row::new(["", "UNIT", "ACTIVE", "SUB", "EN"])
         .style(Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD));
-    let body = app.failed_units.iter().enumerate().map(|(i, u)| {
+    let body = units.iter().enumerate().map(|(i, u)| {
+        let active_color = if u.is_failed() { t.critical } else { t.fg };
+        let enabled = app.enabled_units.iter().any(|n| n == &u.name);
         let row = Row::new([
-            Cell::from(Span::styled("●", Style::new().fg(t.critical))),
+            Cell::from(Span::styled("●", Style::new().fg(unit_dot_color(&t, u)))),
             Cell::from(Span::styled(u.name.clone(), Style::new().fg(t.fg_strong))),
-            Cell::from(Span::styled(u.active.clone(), Style::new().fg(t.critical))),
+            Cell::from(Span::styled(
+                u.active.clone(),
+                Style::new().fg(active_color),
+            )),
             Cell::from(Span::styled(u.sub.clone(), Style::new().fg(t.fg_muted))),
+            Cell::from(Span::styled(
+                if enabled { "on" } else { "" },
+                Style::new().fg(t.accent),
+            )),
         ]);
         if i == app.services_selected {
             row.style(Style::new().bg(t.bg_sel).add_modifier(Modifier::BOLD))
@@ -670,6 +792,7 @@ fn render_service_list(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Min(16),
         Constraint::Length(8),
         Constraint::Length(10),
+        Constraint::Length(3),
     ];
     frame.render_widget(
         Table::new(body, widths)
@@ -681,7 +804,8 @@ fn render_service_list(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_service_detail(frame: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
-    let Some(u) = app.failed_units.get(app.services_selected) else {
+    let units = app.visible_units();
+    let Some(u) = units.get(app.services_selected) else {
         frame.render_widget(
             Paragraph::new(Span::styled("no unit selected", Style::new().fg(t.fg_dim)))
                 .block(panel_block(&t, "Unit")),
@@ -707,8 +831,17 @@ fn render_service_detail(frame: &mut Frame, app: &App, area: Rect) {
         )),
         Line::from(""),
         field("load", u.load.clone(), t.fg),
-        field("active", u.active.clone(), t.critical),
-        field("sub", u.sub.clone(), t.high),
+        field("active", u.active.clone(), unit_dot_color(&t, u)),
+        field("sub", u.sub.clone(), t.fg_muted),
+        field(
+            "enabled",
+            if app.enabled_units.iter().any(|n| n == &u.name) {
+                "yes".to_owned()
+            } else {
+                "no".to_owned()
+            },
+            t.fg,
+        ),
         Line::from(""),
     ];
     let hint = if app.mode == systui_core::ExecutionMode::ReadOnly {
@@ -825,16 +958,121 @@ fn render_network(frame: &mut Frame, app: &App, area: Rect) {
 
     let cols =
         Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).split(area);
-    render_exposure_panel(frame, app, cols[0]);
+    let left = Layout::vertical([Constraint::Min(0), Constraint::Length(7)]).split(cols[0]);
+    render_exposure_panel(frame, app, left[0]);
+    render_connectivity_panel(frame, app, left[1]);
     let right = Layout::vertical([
-        Constraint::Percentage(46),
+        Constraint::Percentage(32),
+        Constraint::Percentage(22),
+        Constraint::Percentage(16),
         Constraint::Percentage(30),
-        Constraint::Percentage(24),
     ])
     .split(cols[1]);
     render_net_interfaces(frame, app, net, right[0]);
     render_net_dns_routes(frame, app, net, right[1]);
     render_net_connections(frame, app, net, right[2]);
+    render_firewall_panel(frame, app, right[3]);
+}
+
+/// Firewall summary: the active manager/engine, table & chain names and the rule
+/// count, plus any caveats (e.g. that the listing needs privilege).
+fn render_firewall_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let fw = &app.firewall;
+    let badge = if fw.active {
+        fw.backend.as_str()
+    } else {
+        "off"
+    };
+    let block = panel_block(&t, "Firewall");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let (state_label, state_color) = if fw.active {
+        ("active", t.accent)
+    } else if fw.backend == "none" {
+        ("none", t.fg_dim)
+    } else {
+        ("inactive", t.high)
+    };
+    let field = |key: &str, value: String, color| {
+        Line::from(vec![
+            Span::styled(format!("{key:<8} "), Style::new().fg(t.fg_dim)),
+            Span::styled(value, Style::new().fg(color)),
+        ])
+    };
+    let mut lines = vec![field(
+        "backend",
+        format!("{} ({})", badge, state_label),
+        state_color,
+    )];
+    if !fw.tables.is_empty() {
+        lines.push(field("tables", fw.tables.join(" · "), t.fg_muted));
+    }
+    if !fw.chains.is_empty() {
+        lines.push(field("chains", fw.chains.join(" · "), t.fg_muted));
+    }
+    if fw.rule_count > 0 {
+        lines.push(field(
+            "rules",
+            format!("{} active", fw.rule_count),
+            t.fg_strong,
+        ));
+    }
+    for note in &fw.notes {
+        lines.push(Line::from(Span::styled(
+            format!("! {note}"),
+            Style::new().fg(t.high),
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+}
+
+/// On-demand reachability probes against the host's gateway and resolvers.
+/// Empty until the user runs them with `c` (they are active probes, not part of
+/// the passive refresh).
+fn render_connectivity_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let title = if app.connectivity_running {
+        "Connectivity tests · running…"
+    } else {
+        "Connectivity tests"
+    };
+    let block = panel_block(&t, title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.connectivity.is_empty() {
+        let msg = if app.connectivity_running {
+            "probing gateway · DNS…"
+        } else {
+            "press c to test reachability (gateway · DNS)"
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(msg, Style::new().fg(t.fg_dim))),
+            inner,
+        );
+        return;
+    }
+
+    let lines: Vec<Line> = app
+        .connectivity
+        .iter()
+        .map(|r| {
+            let (mark, color) = if r.reachable {
+                ("ok ", t.accent)
+            } else {
+                ("fail", t.critical)
+            };
+            Line::from(vec![
+                Span::styled(format!("→ {:<15} ", r.target), Style::new().fg(t.fg_strong)),
+                Span::styled(format!("{mark} "), Style::new().fg(color)),
+                Span::styled(format!("{:<8} ", r.label), Style::new().fg(t.fg_dim)),
+                Span::styled(r.detail.clone(), Style::new().fg(t.fg_muted)),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// The ranked exposure map: one row per listening socket, address colour-coded
@@ -1056,13 +1294,104 @@ fn render_docker(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let rows =
-        Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
+    let rows = Layout::vertical([
+        Constraint::Percentage(44),
+        Constraint::Percentage(34),
+        Constraint::Percentage(22),
+    ])
+    .split(area);
     render_container_table(frame, app, rows[0]);
-    let bottom =
+    let mid =
         Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)]).split(rows[1]);
-    render_docker_risks(frame, app, bottom[0]);
-    render_container_detail(frame, app, bottom[1]);
+    render_docker_risks(frame, app, mid[0]);
+    render_container_detail(frame, app, mid[1]);
+    let bottom =
+        Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)]).split(rows[2]);
+    render_compose_projects(frame, app, bottom[0]);
+    render_image_hygiene(frame, app, bottom[1]);
+}
+
+/// Discovered Compose projects (`docker compose ls`): name, service count and
+/// the config file backing each. Omitted-looking (an "(none)" line) when the
+/// Compose plugin is absent or no projects exist.
+fn render_compose_projects(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Compose projects");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.compose_projects.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("none discovered", Style::new().fg(t.fg_dim))),
+            inner,
+        );
+        return;
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+    for p in &app.compose_projects {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{:<16} ", p.name),
+                Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(p.config_files.clone(), Style::new().fg(t.fg_dim)),
+        ]));
+        lines.push(Line::from(Span::styled(
+            format!("  {} services · {}", p.service_count, p.status),
+            Style::new().fg(t.fg_muted),
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+}
+
+/// Image-store summary (`docker system df` + dangling count) with a prune hint.
+fn render_image_hygiene(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let h = &app.image_hygiene;
+    let block = panel_block(&t, "Image hygiene");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if h.total_images == 0 && h.dangling == 0 {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no image data", Style::new().fg(t.fg_dim))),
+            inner,
+        );
+        return;
+    }
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                format!("{} images", h.total_images),
+                Style::new().fg(t.fg_strong),
+            ),
+            Span::styled(
+                format!(" · {} total", h.total_size),
+                Style::new().fg(t.fg_muted),
+            ),
+        ]),
+        Line::from(Span::styled(
+            format!("{} dangling", h.dangling),
+            Style::new().fg(if h.dangling > 0 { t.high } else { t.fg_muted }),
+        )),
+    ];
+    if !h.reclaimable.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("{} reclaimable", h.reclaimable),
+            Style::new().fg(t.fg_muted),
+        )));
+    }
+    let hint = if app.mode == systui_core::ExecutionMode::ReadOnly {
+        Span::styled("read-only — prune disabled", Style::new().fg(t.fg_dim))
+    } else if h.dangling > 0 {
+        Span::styled("press p to prune dangling", Style::new().fg(t.accent))
+    } else {
+        Span::styled("nothing to prune", Style::new().fg(t.fg_dim))
+    };
+    lines.push(Line::from(hint));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 fn render_container_table(frame: &mut Frame, app: &App, area: Rect) {
@@ -1784,7 +2113,9 @@ fn render_security_header(frame: &mut Frame, app: &App, area: Rect) {
     let counts = app.finding_counts();
     let labels = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
     let colors = [t.critical, t.high, t.medium, t.low, t.fg_muted];
-    let cells = Layout::horizontal([Constraint::Ratio(1, 5); 5]).split(inner);
+
+    let split = Layout::horizontal([Constraint::Min(0), Constraint::Length(22)]).split(inner);
+    let cells = Layout::horizontal([Constraint::Ratio(1, 5); 5]).split(split[0]);
     for (i, label) in labels.iter().enumerate() {
         let n = counts[i];
         let count_color = if n > 0 { colors[i] } else { t.fg_dim };
@@ -1796,6 +2127,27 @@ fn render_security_header(frame: &mut Frame, app: &App, area: Rect) {
             Line::from(Span::styled(*label, Style::new().fg(t.fg_dim))),
         ];
         frame.render_widget(Paragraph::new(lines), cells[i]);
+    }
+
+    // Findings trend vs ~7 days ago, from the persisted snapshots.
+    if let Some(base) = app.state.baseline(&app.host_label, app.now.date(), 7) {
+        let now_total = counts[0] + counts[1] + counts[2];
+        let base_total = base.findings();
+        let (arrow, word, color) = match now_total.cmp(&base_total) {
+            std::cmp::Ordering::Less => ("↓", base_total - now_total, t.accent),
+            std::cmp::Ordering::Greater => ("↑", now_total - base_total, t.critical),
+            std::cmp::Ordering::Equal => ("=", 0, t.fg_dim),
+        };
+        let text = if word == 0 {
+            "no change vs last week".to_owned()
+        } else {
+            format!("{arrow}{word} from last week")
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(text, Style::new().fg(color))))
+                .alignment(Alignment::Right),
+            split[1],
+        );
     }
 }
 
@@ -1886,12 +2238,46 @@ fn render_dashboard(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: R
     let cols =
         Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).split(area);
     let left = Layout::vertical([Constraint::Length(8), Constraint::Min(0)]).split(cols[0]);
-    let right = Layout::vertical([Constraint::Length(12), Constraint::Min(0)]).split(cols[1]);
+    let right = Layout::vertical([
+        Constraint::Length(12),
+        Constraint::Min(0),
+        Constraint::Length(6),
+    ])
+    .split(cols[1]);
 
     render_metric_tiles(frame, app, snap, left[0]);
     render_findings_panel(frame, app, left[1]);
     render_health_panel(frame, app, right[0]);
     render_at_a_glance(frame, app, snap, right[1]);
+    render_session_notes(frame, app, right[2]);
+}
+
+/// Per-host session notes, persisted in the local state store. The newest notes
+/// are shown last; `n` starts a new note.
+fn render_session_notes(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Session notes");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let notes = app.state.notes(&app.host_label);
+    let mut lines: Vec<Line> = Vec::new();
+    if notes.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "no notes — press n to add one",
+            Style::new().fg(t.fg_dim),
+        )));
+    } else {
+        // Show the most recent few (the panel is short).
+        let start = notes.len().saturating_sub(4);
+        for note in &notes[start..] {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{} ", note.at), Style::new().fg(t.fg_dim)),
+                Span::styled(note.text.clone(), Style::new().fg(t.fg)),
+            ]));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 /// A rounded, titled panel block in the theme's surface style.
@@ -2062,17 +2448,22 @@ fn render_health_panel(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let color = score_color(app, health.score);
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled(
-                format!("{}", health.score),
-                Style::new().fg(color).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" /100  ", Style::new().fg(app.theme.fg_dim)),
-            Span::styled(gauge_bar(health.score as f64, 16), Style::new().fg(color)),
-        ]),
-        Line::from(""),
+    let mut score_line = vec![
+        Span::styled(
+            format!("{}", health.score),
+            Style::new().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" /100  ", Style::new().fg(app.theme.fg_dim)),
+        Span::styled(gauge_bar(health.score as f64, 16), Style::new().fg(color)),
     ];
+    // Trend vs ~7 days ago, from the persisted snapshots (fills over time).
+    if let Some(base) = app.state.baseline(&app.host_label, app.now.date(), 7) {
+        score_line.push(Span::styled(
+            format!("  was {} 7d ago", base.score),
+            Style::new().fg(app.theme.fg_dim),
+        ));
+    }
+    let mut lines = vec![Line::from(score_line), Line::from("")];
     if health.checks.is_empty() {
         lines.push(Line::from(Span::styled(
             "  no deductions — healthy",
@@ -2127,6 +2518,35 @@ fn render_findings_panel(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// At-a-glance grid: small headline stats in two columns (spec §14).
+/// The at-a-glance UPDATES cell: pending package count, security highlighted.
+fn updates_value(app: &App, t: Theme) -> Vec<Span<'static>> {
+    let p = &app.packages;
+    if !p.available {
+        return vec![Span::styled("n/a", Style::new().fg(t.fg_dim))];
+    }
+    let color = if p.security > 0 {
+        t.critical
+    } else if p.pending > 0 {
+        t.high
+    } else {
+        t.accent
+    };
+    let mut spans = vec![
+        Span::styled(
+            format!("{}", p.pending),
+            Style::new().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" pending", Style::new().fg(t.fg_muted)),
+    ];
+    if p.security > 0 {
+        spans.push(Span::styled(
+            format!(" · {} sec", p.security),
+            Style::new().fg(t.critical),
+        ));
+    }
+    spans
+}
+
 fn render_at_a_glance(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
     let block = panel_block(&app.theme, "At a glance");
     let inner = block.inner(area);
@@ -2191,6 +2611,7 @@ fn render_at_a_glance(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area:
             ],
         ),
         stat("CRONS", count(app.crons.len(), "jobs", t.high)),
+        stat("UPDATES", updates_value(app, t)),
         stat("LOGS", count(errors, "errors", t.critical)),
         stat("USERS", plain(format!("{} logged", snap.users.len()))),
         stat("UPTIME", plain(human_uptime(snap.uptime_secs))),
@@ -2364,6 +2785,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             ("e", "edit"),
             ("d", "delete"),
             ("x", "toggle"),
+            ("n", "run now"),
             ("?", "help"),
             ("q", "quit"),
         ],
@@ -2372,6 +2794,34 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             ("/", "search"),
             ("l", "level"),
             ("t", "window"),
+            ("S", "save search"),
+            ("↵", "apply"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
+        Tab::Dashboard => &[
+            ("r", "refresh"),
+            ("n", "add note"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
+        Tab::Services => &[
+            ("r", "refresh"),
+            ("f", "filter"),
+            ("a", "actions"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
+        Tab::Network => &[
+            ("r", "refresh"),
+            ("c", "connectivity"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
+        Tab::Docker => &[
+            ("r", "refresh"),
+            ("a", "actions"),
+            ("p", "prune images"),
             ("?", "help"),
             ("q", "quit"),
         ],
@@ -2432,8 +2882,14 @@ fn render_help(frame: &mut Frame, app: &App) {
         ("↑ / ↓", "move selection (services/processes/docker/crons)"),
         ("a", "act on selection; add cron job on Crons"),
         ("e / d / x", "edit, delete or toggle a user crontab entry"),
+        ("n", "run the selected user cron job now (Crons tab)"),
         ("r", "refresh"),
         ("s", "sort processes by CPU/memory"),
+        ("f", "cycle Services filter (all/failed/running/…)"),
+        ("c", "run connectivity probes (Network tab)"),
+        ("p", "prune dangling images (Docker tab)"),
+        ("n", "add a session note (Dashboard)"),
+        ("S / ↵", "save / apply a log search (Logs tab)"),
         ("/", "search logs (Esc to clear)"),
         ("l / t", "cycle log level / time window"),
         ("?", "toggle this help"),
@@ -2663,6 +3119,76 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_shows_health_trend_and_session_notes() {
+        use systui_collectors::HealthReport;
+        let mut app = App::new("prod-01", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.health = Some(HealthReport {
+            score: 78,
+            checks: Vec::new(),
+        });
+        app.now = chrono::NaiveDate::from_ymd_opt(2026, 5, 25)
+            .unwrap()
+            .and_hms_opt(14, 0, 0)
+            .unwrap();
+        // A snapshot 7 days ago provides the baseline; a note is persisted.
+        app.state
+            .record_snapshot("prod-01", "2026-05-18", 91, 0, 0, 0);
+        app.state
+            .add_note("prod-01", "2026-05-25 14:18", "reviewed nginx errors");
+        app.view_state = ViewState::Ready;
+
+        let out = render_to_string(&app, 120, 32);
+        assert!(out.contains("was 91 7d ago"));
+        assert!(out.contains("Session notes"));
+        assert!(out.contains("reviewed nginx errors"));
+    }
+
+    #[test]
+    fn note_input_overlay_shows_when_typing() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.view_state = ViewState::Ready;
+        app.open_note();
+        app.note_push_char('h');
+        app.note_push_char('i');
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("New session note"));
+        assert!(out.contains("hi_"));
+    }
+
+    #[test]
+    fn logs_tab_shows_saved_searches() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.view_state = ViewState::Ready;
+        app.select_tab(4); // Logs
+        app.state.add_search("nginx timeout");
+        let out = render_to_string(&app, 130, 30);
+        assert!(out.contains("Saved searches"));
+        assert!(out.contains("nginx timeout"));
+    }
+
+    #[test]
+    fn dashboard_at_a_glance_shows_pending_updates() {
+        use systui_collectors::PackageUpdates;
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.packages = PackageUpdates {
+            manager: "apt".to_owned(),
+            pending: 23,
+            security: 2,
+            available: true,
+        };
+        app.view_state = ViewState::Ready;
+
+        let out = render_to_string(&app, 120, 30);
+        assert!(out.contains("UPDATES"));
+        assert!(out.contains("23 pending"));
+        assert!(out.contains("2 sec"));
+    }
+
+    #[test]
     fn dashboard_shows_failed_unit_count() {
         use systui_collectors::ServiceUnit;
         let mut app = App::new("local", ExecutionMode::ReadOnly);
@@ -2676,7 +3202,9 @@ mod tests {
         }];
         app.view_state = ViewState::Ready;
 
-        let out = render_to_string(&app, 100, 24);
+        // The multi-panel dashboard (incl. the session-notes panel) targets a
+        // tall terminal like the prototype's; render at a realistic height.
+        let out = render_to_string(&app, 120, 36);
         assert!(out.contains("SERVICES"));
         assert!(out.contains("1 failed"));
     }
@@ -2710,6 +3238,40 @@ mod tests {
 
         let out = render_to_string(&app, 100, 24);
         assert!(out.contains("no failed units"));
+    }
+
+    #[test]
+    fn services_tab_shows_full_list_and_filter_bar() {
+        use crate::app::ServiceFilter;
+        let unit = |name: &str, active: &str, sub: &str| ServiceUnit {
+            name: name.to_owned(),
+            load: "loaded".to_owned(),
+            active: active.to_owned(),
+            sub: sub.to_owned(),
+            description: String::new(),
+        };
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.view_state = ViewState::Ready;
+        app.select_tab(3); // Services
+        app.all_units = vec![
+            unit("nginx.service", "active", "running"),
+            unit("bluetooth.service", "inactive", "dead"),
+        ];
+        app.enabled_units = vec!["nginx.service".to_owned()];
+
+        let out = render_to_string(&app, 100, 24);
+        // Filter bar labels and the full list (not just failed) are shown.
+        assert!(out.contains("ALL"));
+        assert!(out.contains("ENABLED"));
+        assert!(out.contains("nginx.service"));
+        assert!(out.contains("bluetooth.service"));
+
+        // Cycling to the INACTIVE filter narrows the list to dead units.
+        app.service_filter = ServiceFilter::Inactive;
+        let out = render_to_string(&app, 100, 24);
+        assert!(out.contains("bluetooth.service"));
+        assert!(!out.contains("nginx.service"));
     }
 
     #[test]
@@ -2801,6 +3363,64 @@ mod tests {
         assert!(out.contains("CRIT")); // redis on 0.0.0.0:6379
         assert!(out.contains("6379"));
         assert!(out.contains("redis.service"));
+    }
+
+    #[test]
+    fn network_tab_shows_firewall_panel() {
+        use systui_collectors::FirewallSnapshot;
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.network = Some(sample_network());
+        app.firewall = FirewallSnapshot {
+            backend: "nftables".to_owned(),
+            active: true,
+            tables: vec!["inet filter".to_owned()],
+            chains: vec!["input".to_owned(), "forward".to_owned()],
+            rule_count: 6,
+            notes: Vec::new(),
+        };
+        app.view_state = ViewState::Ready;
+        app.select_tab(5); // Network
+
+        let out = render_to_string(&app, 130, 30);
+        assert!(out.contains("Firewall"));
+        assert!(out.contains("nftables"));
+        assert!(out.contains("6 active"));
+    }
+
+    #[test]
+    fn network_tab_shows_connectivity_panel() {
+        use crate::app::ConnectivityResult;
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.network = Some(sample_network());
+        app.view_state = ViewState::Ready;
+        app.select_tab(5); // Network
+
+        // Before running, the panel invites the user to probe.
+        let out = render_to_string(&app, 130, 30);
+        assert!(out.contains("Connectivity tests"));
+        assert!(out.contains("press c to test"));
+
+        // After a run, results are listed with their reachability.
+        app.connectivity = vec![
+            ConnectivityResult {
+                target: "192.168.1.1".to_owned(),
+                label: "gateway".to_owned(),
+                reachable: true,
+                detail: "0.4ms avg · 0% loss".to_owned(),
+            },
+            ConnectivityResult {
+                target: "1.1.1.1".to_owned(),
+                label: "dns".to_owned(),
+                reachable: false,
+                detail: "no reply".to_owned(),
+            },
+        ];
+        let out = render_to_string(&app, 130, 30);
+        assert!(out.contains("192.168.1.1"));
+        assert!(out.contains("gateway"));
+        assert!(out.contains("no reply"));
     }
 
     #[test]
@@ -2998,6 +3618,40 @@ mod tests {
         // The privileged container surfaces in the detail panel and as a RISK badge.
         assert!(out.contains("privileged"));
         assert!(out.contains("RISK"));
+    }
+
+    #[test]
+    fn docker_tab_shows_compose_and_image_hygiene() {
+        use systui_collectors::{ComposeProject, ImageHygiene};
+        let mut app = App::new("local", ExecutionMode::Privileged);
+        app.snapshot = Some(sample_snapshot());
+        app.docker_available = true;
+        app.containers = vec![sample_container()];
+        app.container_inspects = vec![sample_inspect()];
+        app.compose_projects = vec![ComposeProject {
+            name: "acme-stack".to_owned(),
+            status: "running(5)".to_owned(),
+            config_files: "/srv/acme/docker-compose.yml".to_owned(),
+            service_count: 5,
+        }];
+        app.image_hygiene = ImageHygiene {
+            total_images: 23,
+            total_size: "9.4GB".to_owned(),
+            reclaimable: "2.1GB (22%)".to_owned(),
+            dangling: 2,
+        };
+        app.view_state = ViewState::Ready;
+        app.select_tab(6); // Docker
+
+        let out = render_to_string(&app, 120, 36);
+        assert!(out.contains("Compose projects"));
+        assert!(out.contains("acme-stack"));
+        assert!(out.contains("5 services"));
+        assert!(out.contains("Image hygiene"));
+        assert!(out.contains("23 images"));
+        assert!(out.contains("2 dangling"));
+        // A writable mode invites the prune.
+        assert!(out.contains("press p to prune"));
     }
 
     #[test]

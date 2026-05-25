@@ -46,6 +46,18 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Note entry captures typing for the session note (Dashboard).
+    if app.note_draft.is_some() {
+        match key.code {
+            KeyCode::Esc => app.cancel_note(),
+            KeyCode::Enter => app.submit_note(),
+            KeyCode::Backspace => app.note_pop_char(),
+            KeyCode::Char(c) => app.note_push_char(c),
+            _ => {}
+        }
+        return;
+    }
+
     // Search mode captures typing for the log filter.
     if app.input_mode == InputMode::Search {
         match key.code {
@@ -87,6 +99,15 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('e') if app.current_tab() == Tab::Crons => app.open_edit_cron_form(),
         KeyCode::Char('d') if app.current_tab() == Tab::Crons => app.request_delete_cron(),
         KeyCode::Char('x') if app.current_tab() == Tab::Crons => app.request_toggle_cron(),
+        KeyCode::Char('n') if app.current_tab() == Tab::Crons => app.request_run_cron(),
+        KeyCode::Char('f') if app.current_tab() == Tab::Services => app.cycle_service_filter(),
+        KeyCode::Char('c') if app.current_tab() == Tab::Network => app.request_connectivity(),
+        KeyCode::Char('p') if app.current_tab() == Tab::Docker => app.request_prune_images(),
+        KeyCode::Char('n') if app.current_tab() == Tab::Dashboard => app.open_note(),
+        KeyCode::Char('S') if app.current_tab() == Tab::Logs => app.save_current_search(),
+        KeyCode::Up if app.current_tab() == Tab::Logs => app.saved_search_up(),
+        KeyCode::Down if app.current_tab() == Tab::Logs => app.saved_search_down(),
+        KeyCode::Enter if app.current_tab() == Tab::Logs => app.apply_saved_search(),
         KeyCode::Up => app.select_up(),
         KeyCode::Down => app.select_down(),
         KeyCode::Tab | KeyCode::Right => app.next_tab(),

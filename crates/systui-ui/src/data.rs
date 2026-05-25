@@ -10,18 +10,19 @@ use std::time::Instant;
 
 use chrono::{Local, NaiveDateTime};
 use systui_collectors::{
-    Container, ContainerStats, CronEntry, DatabaseSnapshot, ExposureEntry, HealthReport,
-    HostStatics, InspectSummary, LogEntry, LogQuery, LogsCollector, NetStatics, NetworkSnapshot,
-    Process, ServiceUnit, SystemSnapshot, SystemdTimer, timing,
+    ComposeProject, Container, ContainerStats, CronEntry, DatabaseSnapshot, ExposureEntry,
+    FirewallSnapshot, HealthReport, HostStatics, ImageHygiene, InspectSummary, LogEntry, LogQuery,
+    LogsCollector, NetStatics, NetworkSnapshot, PackageUpdates, Process, ServiceUnit,
+    SystemSnapshot, SystemdTimer, timing,
 };
 use systui_core::{Collector, CoreError, Finding, Thresholds, Transport};
 use systui_report::collect::{
-    gather_crons, gather_databases, gather_docker, gather_network, gather_timers,
-    host_report_within_timeout, merge_findings,
+    gather_crons, gather_databases, gather_docker, gather_network, gather_packages,
+    gather_services, gather_timers, host_report_within_timeout, merge_findings,
 };
 use tokio::runtime::Runtime;
 
-use crate::app::{App, ViewState};
+use crate::app::{App, ConnectivityResult, ViewState};
 
 /// A complete, self-contained result of one refresh gather. The background task
 /// produces it off the UI thread; [`apply_refresh`] folds it into `App` on the
@@ -31,17 +32,23 @@ pub struct RefreshResult {
     pub snapshot: SystemSnapshot,
     pub processes: Vec<Process>,
     pub failed_units: Vec<ServiceUnit>,
+    pub all_units: Vec<ServiceUnit>,
+    pub enabled_units: Vec<String>,
     pub logs: Vec<LogEntry>,
     pub health: HealthReport,
     pub network: Option<NetworkSnapshot>,
     pub exposures: Vec<ExposureEntry>,
+    pub firewall: FirewallSnapshot,
     pub databases: DatabaseSnapshot,
     pub containers: Vec<Container>,
     pub container_inspects: Vec<InspectSummary>,
     pub container_stats: Vec<ContainerStats>,
     pub docker_available: bool,
+    pub compose_projects: Vec<ComposeProject>,
+    pub image_hygiene: ImageHygiene,
     pub crons: Vec<CronEntry>,
     pub timers: Vec<SystemdTimer>,
+    pub packages: PackageUpdates,
     pub now: NaiveDateTime,
     pub findings: Vec<Finding>,
 }
@@ -73,26 +80,27 @@ pub async fn gather(
     // the total. host_report's failure fails the whole refresh. The slow-changing
     // tiers (`host_statics`/`net_statics`) are reused when present so the tick
     // skips re-reading them.
-    let (report, net, dbs, docker, crons_group, timers) = tokio::join!(
+    let (report, net, dbs, docker, crons_group, timers, services, packages) = tokio::join!(
         host_report_within_timeout(transport, thresholds, log_query, host_statics),
         gather_network(transport, cert_warning_days, net_statics),
         gather_databases(transport),
         gather_docker(transport),
         gather_crons(transport),
         gather_timers(transport),
+        gather_services(transport),
+        gather_packages(transport),
     );
 
     let report = report?;
-    let (network, exposures, security_findings) = net;
+    let (network, exposures, security_findings, firewall) = net;
     let (databases, database_findings_v) = dbs;
-    let (containers, container_inspects, container_stats_data, docker_available, docker_findings_v) =
-        docker;
     let (crons, cron_findings_v) = crons_group;
+    let (all_units, enabled_units) = services;
 
     let findings = merge_findings(
         security_findings,
         database_findings_v,
-        docker_findings_v,
+        docker.findings,
         cron_findings_v,
     );
 
@@ -106,17 +114,23 @@ pub async fn gather(
         snapshot: report.snapshot,
         processes: report.processes,
         failed_units: report.failed_units,
+        all_units,
+        enabled_units,
         logs: report.logs,
         health: report.health,
         network,
         exposures,
+        firewall,
         databases,
-        containers,
-        container_inspects,
-        container_stats: container_stats_data,
-        docker_available,
+        containers: docker.containers,
+        container_inspects: docker.inspects,
+        container_stats: docker.stats,
+        docker_available: docker.available,
+        compose_projects: docker.compose,
+        image_hygiene: docker.hygiene,
         crons,
         timers,
+        packages,
         now: Local::now().naive_local(),
         findings,
     })
@@ -137,19 +151,26 @@ pub fn apply_refresh(app: &mut App, outcome: RefreshOutcome) {
             app.snapshot = Some(result.snapshot);
             app.processes = result.processes;
             app.failed_units = result.failed_units;
+            app.all_units = result.all_units;
+            app.enabled_units = result.enabled_units;
             app.logs = result.logs;
             app.health = Some(result.health);
             app.network = result.network;
             app.exposures = result.exposures;
+            app.firewall = result.firewall;
             app.databases = result.databases;
             app.containers = result.containers;
             app.container_inspects = result.container_inspects;
             app.container_stats = result.container_stats;
             app.docker_available = result.docker_available;
+            app.compose_projects = result.compose_projects;
+            app.image_hygiene = result.image_hygiene;
             app.crons = result.crons;
             app.timers = result.timers;
+            app.packages = result.packages;
             app.now = result.now;
             app.findings = result.findings;
+            app.record_health_snapshot();
             app.view_state = ViewState::Ready;
         }
         Err(err) => apply_error(app, err),
@@ -180,6 +201,48 @@ pub fn cached_statics(app: &App) -> (Option<HostStatics>, Option<NetStatics>) {
     let host = app.snapshot.as_ref().map(HostStatics::from_snapshot);
     let net = app.network.as_ref().map(NetStatics::from_snapshot);
     (host, net)
+}
+
+/// Probe each target's reachability with a short ping. Pure with respect to
+/// `App` so it can run on a background task; the caller folds the results in.
+/// Targets are probed sequentially — this runs off the UI thread, so the loop
+/// stays responsive while it completes.
+pub async fn run_connectivity(
+    transport: &dyn Transport,
+    targets: Vec<(String, String)>,
+) -> Vec<ConnectivityResult> {
+    use std::time::Duration;
+    let mut results = Vec::with_capacity(targets.len());
+    for (target, label) in targets {
+        let result =
+            match systui_collectors::ping(transport, &target, 3, Duration::from_secs(3)).await {
+                Ok(p) => {
+                    let reachable = p.received > 0;
+                    let detail = if reachable {
+                        match p.rtt_avg_ms {
+                            Some(rtt) => format!("{rtt:.1}ms avg · {:.0}% loss", p.loss_percent),
+                            None => format!("{:.0}% loss", p.loss_percent),
+                        }
+                    } else {
+                        "no reply".to_owned()
+                    };
+                    ConnectivityResult {
+                        target,
+                        label,
+                        reachable,
+                        detail,
+                    }
+                }
+                Err(err) => ConnectivityResult {
+                    target,
+                    label,
+                    reachable: false,
+                    detail: err.to_string(),
+                },
+            };
+        results.push(result);
+    }
+    results
 }
 
 /// Re-collect only the logs, using the current log query (best-effort).

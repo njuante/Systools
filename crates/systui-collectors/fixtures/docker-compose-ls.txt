@@ -1,0 +1,1 @@
+[{"Name":"acme-stack","Status":"running(5)","ConfigFiles":"/srv/acme/docker-compose.yml"},{"Name":"monitoring","Status":"running(2), exited(1)","ConfigFiles":"/srv/monitoring/compose.yml"}]

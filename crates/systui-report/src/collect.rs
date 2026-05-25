@@ -12,10 +12,12 @@ use std::future::Future;
 use std::time::{Duration, Instant};
 
 use systui_collectors::{
-    Container, ContainerStats, CronEntry, DatabaseCollector, DatabaseSnapshot, DockerCollector,
-    ExposureEntry, HostReport, HostStatics, InspectSummary, LogQuery, NetStatics, NetworkCollector,
-    NetworkSnapshot, SystemdTimer, collect_cron_entries, collect_host_report, collect_timers,
-    container_stats, exposure_map, inspect_container, timing,
+    ComposeProject, Container, ContainerStats, CronEntry, DatabaseCollector, DatabaseSnapshot,
+    DockerCollector, ExposureEntry, FirewallCollector, FirewallSnapshot, HostReport, HostStatics,
+    ImageHygiene, InspectSummary, LogQuery, NetStatics, NetworkCollector, NetworkSnapshot,
+    PackageUpdates, PackagesCollector, ServiceCollector, ServiceUnit, SystemdTimer,
+    UnitFilesCollector, collect_cron_entries, collect_host_report, collect_timers,
+    compose_projects, container_stats, exposure_map, image_hygiene, inspect_container, timing,
 };
 use systui_core::{Collector, CoreError, Finding, Result, Thresholds, Transport};
 use systui_security::{cron_findings, database_findings, docker_findings, security_scan};
@@ -65,10 +67,15 @@ pub async fn gather_network(
     transport: &dyn Transport,
     cert_warning_days: u32,
     net_statics: Option<NetStatics>,
-) -> (Option<NetworkSnapshot>, Vec<ExposureEntry>, Vec<Finding>) {
+) -> (
+    Option<NetworkSnapshot>,
+    Vec<ExposureEntry>,
+    Vec<Finding>,
+    FirewallSnapshot,
+) {
     within_timeout(
         "network_group",
-        (None, Vec::new(), Vec::new()),
+        (None, Vec::new(), Vec::new(), FirewallSnapshot::default()),
         async move {
             let network = timing::timed(
                 "network",
@@ -80,12 +87,18 @@ pub async fn gather_network(
                 .as_ref()
                 .map(|net| exposure_map(&net.listeners))
                 .unwrap_or_default();
-            let findings = timing::timed(
-                "security_scan",
-                security_scan(transport, &exposures, cert_warning_days, &[]),
-            )
-            .await;
-            (network, exposures, findings)
+            // The security scan depends on the exposures; the firewall read is
+            // independent, so overlap them instead of running back-to-back.
+            let firewall_collector = FirewallCollector::new();
+            let (findings, firewall) = tokio::join!(
+                timing::timed(
+                    "security_scan",
+                    security_scan(transport, &exposures, cert_warning_days, &[]),
+                ),
+                timing::timed("firewall", firewall_collector.collect(transport)),
+            );
+            let firewall = firewall.unwrap_or_default();
+            (network, exposures, findings, firewall)
         },
     )
     .await
@@ -110,44 +123,56 @@ pub async fn gather_databases(transport: &dyn Transport) -> (DatabaseSnapshot, V
 /// Docker containers → per-container inspect → stats, plus risk findings. An
 /// unreachable daemon yields an empty, unavailable view. The returned bool is
 /// whether Docker is available.
-pub async fn gather_docker(
-    transport: &dyn Transport,
-) -> (
-    Vec<Container>,
-    Vec<InspectSummary>,
-    Vec<ContainerStats>,
-    bool,
-    Vec<Finding>,
-) {
-    within_timeout(
-        "docker_group",
-        (Vec::new(), Vec::new(), Vec::new(), false, Vec::new()),
-        async move {
-            match timing::timed("docker", DockerCollector::new().collect(transport)).await {
-                Ok(containers) => {
-                    let inspect_start = Instant::now();
-                    let mut inspects: Vec<InspectSummary> = Vec::new();
-                    for c in &containers {
-                        if let Ok(Some(summary)) = inspect_container(transport, &c.id).await {
-                            inspects.push(summary);
-                        }
+pub async fn gather_docker(transport: &dyn Transport) -> DockerGather {
+    within_timeout("docker_group", DockerGather::default(), async move {
+        match timing::timed("docker", DockerCollector::new().collect(transport)).await {
+            Ok(containers) => {
+                let inspect_start = Instant::now();
+                let mut inspects: Vec<InspectSummary> = Vec::new();
+                for c in &containers {
+                    if let Ok(Some(summary)) = inspect_container(transport, &c.id).await {
+                        inspects.push(summary);
                     }
-                    tracing::info!(
-                        target: timing::PERF_TARGET,
-                        collector = "docker_inspects",
-                        elapsed_ms = inspect_start.elapsed().as_secs_f64() * 1000.0,
-                    );
-                    let findings = docker_findings(&inspects);
-                    let stats = timing::timed("container_stats", container_stats(transport))
-                        .await
-                        .unwrap_or_default();
-                    (containers, inspects, stats, true, findings)
                 }
-                Err(_) => (Vec::new(), Vec::new(), Vec::new(), false, Vec::new()),
+                tracing::info!(
+                    target: timing::PERF_TARGET,
+                    collector = "docker_inspects",
+                    elapsed_ms = inspect_start.elapsed().as_secs_f64() * 1000.0,
+                );
+                let findings = docker_findings(&inspects);
+                // Stats, compose projects and image hygiene are independent of
+                // each other; overlap them instead of running back-to-back.
+                let (stats, compose, hygiene) = tokio::join!(
+                    timing::timed("container_stats", container_stats(transport)),
+                    timing::timed("compose_projects", compose_projects(transport)),
+                    timing::timed("image_hygiene", image_hygiene(transport)),
+                );
+                DockerGather {
+                    containers,
+                    inspects,
+                    stats: stats.unwrap_or_default(),
+                    available: true,
+                    findings,
+                    compose: compose.unwrap_or_default(),
+                    hygiene: hygiene.unwrap_or_default(),
+                }
             }
-        },
-    )
+            Err(_) => DockerGather::default(),
+        }
+    })
     .await
+}
+
+/// The collected Docker view shared by the dashboard refresh and the report.
+#[derive(Debug, Default)]
+pub struct DockerGather {
+    pub containers: Vec<Container>,
+    pub inspects: Vec<InspectSummary>,
+    pub stats: Vec<ContainerStats>,
+    pub available: bool,
+    pub findings: Vec<Finding>,
+    pub compose: Vec<ComposeProject>,
+    pub hygiene: ImageHygiene,
 }
 
 /// Cron entries → cron risk findings (the findings depend on the entries).
@@ -157,6 +182,46 @@ pub async fn gather_crons(transport: &dyn Transport) -> (Vec<CronEntry>, Vec<Fin
         let findings = timing::timed("cron_findings", cron_findings(transport, &crons)).await;
         (crons, findings)
     })
+    .await
+}
+
+/// Full service unit list + the set of unit names enabled at boot. The
+/// `--failed` fast path (in the host report) stays the live health signal; this
+/// group backs the Services screen's ALL/RUNNING/INACTIVE/ENABLED filters. Both
+/// reads run concurrently and degrade to empty.
+pub async fn gather_services(transport: &dyn Transport) -> (Vec<ServiceUnit>, Vec<String>) {
+    within_timeout("services_group", (Vec::new(), Vec::new()), async move {
+        let service_collector = ServiceCollector::new();
+        let unit_files_collector = UnitFilesCollector::new();
+        let (units, files) = tokio::join!(
+            timing::timed("service_units", service_collector.collect(transport)),
+            timing::timed("unit_files", unit_files_collector.collect(transport)),
+        );
+        let units = units.unwrap_or_default();
+        let enabled = files
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|f| f.is_enabled())
+            .map(|f| f.name)
+            .collect();
+        (units, enabled)
+    })
+    .await
+}
+
+/// Pending package updates (apt/dnf/pacman/zypper), cache-only and best-effort.
+/// Slow-changing, so it shares the concurrent gather but never blocks it.
+pub async fn gather_packages(transport: &dyn Transport) -> PackageUpdates {
+    within_timeout(
+        "packages",
+        PackageUpdates::default(),
+        timing::timed("packages", async {
+            PackagesCollector::new()
+                .collect(transport)
+                .await
+                .unwrap_or_default()
+        }),
+    )
     .await
 }
 

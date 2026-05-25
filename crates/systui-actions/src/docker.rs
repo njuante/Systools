@@ -149,6 +149,79 @@ impl Action for DockerAction {
     }
 }
 
+/// Prune dangling (untagged, unreferenced) images via `docker image prune -f`.
+/// Host-scoped, not tied to a single container; running containers and tagged
+/// images are unaffected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DockerPruneAction;
+
+impl DockerPruneAction {
+    pub fn new() -> Self {
+        Self
+    }
+
+    fn command(&self) -> CommandSpec {
+        CommandSpec::new("docker")
+            .args(["image", "prune", "-f"])
+            .privileged()
+    }
+}
+
+#[async_trait]
+impl Action for DockerPruneAction {
+    fn module(&self) -> ModuleId {
+        ModuleId::Docker
+    }
+
+    fn risk(&self) -> RiskLevel {
+        // Only dangling images are removed; tagged images and running
+        // containers are untouched, so the blast radius is small.
+        RiskLevel::Medium
+    }
+
+    fn requires_privilege(&self) -> bool {
+        true
+    }
+
+    fn target(&self) -> String {
+        "dangling images".to_owned()
+    }
+
+    async fn preview(&self, _transport: &dyn Transport) -> Result<ActionPreview> {
+        Ok(ActionPreview {
+            summary: "Prune dangling images".to_owned(),
+            details: vec![
+                "Removes unreferenced (dangling) images to reclaim disk space.".to_owned(),
+                "Tagged images and running containers are unaffected.".to_owned(),
+            ],
+            command: Some(self.command()),
+            reversible: false,
+            creates_backup: false,
+        })
+    }
+
+    async fn execute(&self, transport: &dyn Transport) -> Result<ActionOutcome> {
+        let output = transport.run(&self.command()).await?;
+        if !output.success() {
+            return Ok(ActionOutcome {
+                success: false,
+                message: format!("prune failed: {}", output.stderr.trim()),
+            });
+        }
+        // `docker image prune` prints a "Total reclaimed space: …" trailer.
+        let reclaimed = output
+            .stdout
+            .lines()
+            .find(|l| l.contains("Total reclaimed space"))
+            .map(|l| l.trim().to_owned())
+            .unwrap_or_else(|| "dangling images pruned".to_owned());
+        Ok(ActionOutcome {
+            success: true,
+            message: reclaimed,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,6 +235,26 @@ mod tests {
             stderr: String::new(),
             duration: std::time::Duration::ZERO,
         }
+    }
+
+    #[tokio::test]
+    async fn prune_previews_and_reports_reclaimed() {
+        let action = DockerPruneAction::new();
+        let preview = action.preview(&MockTransport::new()).await.unwrap();
+        assert_eq!(
+            preview.command.unwrap().to_string(),
+            "docker image prune -f"
+        );
+        assert!(!preview.reversible);
+        assert_eq!(action.risk(), RiskLevel::Medium);
+
+        let transport = MockTransport::new().with_command(
+            "docker image prune -f",
+            ok("Deleted Images:\nTotal reclaimed space: 1.2GB\n"),
+        );
+        let outcome = action.execute(&transport).await.unwrap();
+        assert!(outcome.success);
+        assert!(outcome.message.contains("1.2GB"));
     }
 
     #[test]

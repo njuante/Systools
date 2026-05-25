@@ -20,13 +20,14 @@ document; everything else is English).
 3. [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) — how we work (branches, sessions, gates).
 4. [`docs/phases/`](docs/phases/) — the context file for the **active** phase, first.
 
-## ▶ Next phase: v0.9 — Policies & expected state
+## Next phase: v1.0 - Stabilization & release
 
-`v0.8.4` is the latest tagged release on `main`. The next version is **v0.9
-(Policies & expected state)** — validate configuration against an expected state and
-report drift. Per the methodology, the **first session writes the phase context file**
-(`docs/phases/phase-09-v0.9-policies.md`) before any code; read `docs/ROADMAP.md`
-§Phase 9 for the scope, then branch `release/v0.9` off `main`.
+`v0.9` is the latest tagged release on `main`. The next version is **v1.0
+(Stabilization & release)** - product-quality hardening, packaging, documentation,
+release artifacts and distro-oriented testing. Per the methodology, the **first
+session writes the phase context file** (`docs/phases/phase-10-v1.0-release.md`)
+before any code; read `docs/ROADMAP.md` Phase 10 for the scope, then branch
+`release/v1.0` off `main`.
 
 The four intermediate v0.8.x phases are done and tagged (see Current state): v0.8.1
 in-TUI management, v0.8.2 UI redesign, v0.8.3 optimization, v0.8.4 prototype data
@@ -106,9 +107,9 @@ offline once dependencies are cached.
 Source of truth is `git log` and the active phase context file — check them, this
 snapshot may lag.
 
-- **`v0.8.4` is the latest tag on `main`.** Each version is built on
+- **`v0.9` is the latest tag on `main`.** Each version is built on
   `release/vX.Y` from `main`, then merged `--no-ff` + tagged at the end of its phase.
-  `v0.1` through `v0.8.4` are tagged on `main`.
+  `v0.1` through `v0.9` are tagged on `main`.
 - **Phase 0 (Foundation) complete**: workspace, contracts, Local/Mock transports,
   CLI + config + tracing, TUI shell, async/sync bridge.
 - **Phase 1 / v0.1 complete**: dashboard with health score + findings,
@@ -233,9 +234,19 @@ snapshot may lag.
   (`n` on Dashboard), and **Saved searches** (`S`/Enter) in Logs. Deferred (by the
   real-data contract): finding-state buttons (→ v0.9), apply-fix (→ v1.1+), backups
   tile and per-source log byte-rates, and the command palette.
-- **Next: Phase 9 / v0.9 — Policies & expected state.** Start with the phase context
-  file (`docs/phases/phase-09-v0.9-policies.md`) before any code, per the methodology.
-  Read `docs/ROADMAP.md` for the v0.9 scope.
+- **Phase 9 / v0.9 (Policies & expected state) complete** on `release/v0.9` (see
+  `docs/phases/phase-09-v0.9-policies.md`): expected-state policy schema in config
+  with explicit host assignment plus deterministic tag fallback; policy evaluation
+  produces stable `policy.*` findings for missing policy definitions, ports, services,
+  thresholds and Docker/container drift; unavailable fact areas are explicit
+  `policy.partial.*` findings rather than silent compliance. Policy drift is wired
+  into TUI refresh, reports and fleet through per-host reports. Finding lifecycle
+  states (`open`, `accepted`, `ignored`, `fixed`, `false-positive`) persist in the
+  local state store per host + finding id, are shown in TUI/Markdown/HTML/JSON, and
+  non-open findings stay auditable but no longer count as active risk.
+- **Next: Phase 10 / v1.0 - Stabilization & release.** Start with the phase context
+  file (`docs/phases/phase-10-v1.0-release.md`) before any code, per the methodology.
+  Read `docs/ROADMAP.md` for the v1.0 scope.
 
 ## Starting a session
 

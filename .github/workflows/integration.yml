@@ -27,10 +27,10 @@ jobs:
         include:
           - distro: debian
             image: debian:stable
-            install: apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gcc procps iproute2 coreutils
+            install: apt-get update && apt-get install -y --no-install-recommends curl ca-certificates build-essential procps iproute2 coreutils
           - distro: ubuntu
             image: ubuntu:latest
-            install: apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gcc procps iproute2 coreutils
+            install: apt-get update && apt-get install -y --no-install-recommends curl ca-certificates build-essential procps iproute2 coreutils
           - distro: arch
             image: archlinux:latest
             install: pacman -Sy --noconfirm gcc procps-ng iproute2 coreutils curl
@@ -39,7 +39,9 @@ jobs:
             install: dnf install -y gcc procps-ng iproute findutils util-linux coreutils curl
           - distro: almalinux
             image: almalinux:9
-            install: dnf install -y gcc procps-ng iproute findutils util-linux coreutils curl
+            # coreutils/curl already present as -single/-minimal; installing the full
+            # variants conflicts, so rely on what the base image ships.
+            install: dnf install -y gcc procps-ng iproute findutils util-linux
           - distro: alpine
             image: alpine:latest
             optional: true

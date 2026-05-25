@@ -27,6 +27,8 @@ contents:
     dst: /usr/share/doc/systui/LICENSE-MIT
   - src: ./LICENSE-APACHE
     dst: /usr/share/doc/systui/LICENSE-APACHE
+  - src: ./README.md
+    dst: /usr/share/doc/systui/README.md
   - src: ./packaging/systui.1
     dst: /usr/share/man/man1/systui.1
     file_info:

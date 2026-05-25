@@ -56,7 +56,7 @@ jobs:
           name="systui-$ver-${{ matrix.target }}"
           mkdir -p stage
           cp "target/${{ matrix.target }}/release/systui" stage/
-          cp LICENSE-MIT LICENSE-APACHE packaging/systui.1 stage/
+          cp LICENSE-MIT LICENSE-APACHE README.md packaging/systui.1 stage/
           tar -C stage -czf "$name.tar.gz" .
         env:
           TAG: ${{ github.event.inputs.tag || github.ref_name }}

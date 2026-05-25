@@ -152,6 +152,14 @@ version is bumped from the placeholder `0.1.0` to `1.0.0`.
 - **S10.6 - Docs & launch**: man page, README, examples, demo GIF, changelog, version
   bump to `1.0.0`, release CI/CD; final gates, merge `--no-ff` into `main` and tag
   `v1.0`.
+  **In progress.** Added the project `README.md` and `CHANGELOG.md` (per-version
+  history mapped to phases), bumped the workspace version to `1.0.0` (verified
+  `systui --version` → `1.0.0`), and included the README in the packages and release
+  tarball. The man page and release CI/CD landed in S10.5. Final gates green at 1.0.0
+  (fmt, clippy, 360 tests). **Remaining (held for explicit confirmation):** the
+  consequential close — merge `--no-ff` into `main`, tag `v1.0` (which triggers the
+  public release workflow), and push. A demo GIF/asciinema is the one optional docs item
+  still outstanding and is not a release blocker.
 
 ## Definition of Done
 

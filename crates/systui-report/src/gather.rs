@@ -8,10 +8,11 @@ use systui_collectors::{LogQuery, probe_capabilities, timing};
 use systui_core::{Config, ExecutionMode, Result, Transport};
 
 use crate::collect::{
-    gather_crons, gather_databases, gather_docker, gather_network, gather_timers,
+    gather_crons, gather_databases, gather_docker, gather_network, gather_services, gather_timers,
     host_report_within_timeout, merge_findings,
 };
 use crate::model::{Report, ReportMeta};
+use systui_security::{PolicyFacts, PolicySelection, policy_findings};
 
 /// Gather a full [`Report`] for a host over `transport`.
 ///
@@ -37,13 +38,14 @@ pub async fn gather_report(
     // One-shot gather: no session cache, so the slow-changing tiers are always
     // read fresh (`None`).
     let log_query = LogQuery::default();
-    let (host, net, dbs, docker, crons_group, timers) = tokio::join!(
+    let (host, net, dbs, docker, crons_group, timers, services) = tokio::join!(
         host_report_within_timeout(transport, &config.thresholds, &log_query, None),
         gather_network(transport, config.security.cert_expiry_warning_days, None),
         gather_databases(transport),
         gather_docker(transport),
         gather_crons(transport),
         gather_timers(transport),
+        gather_services(transport),
     );
 
     let host = host?;
@@ -54,12 +56,28 @@ pub async fn gather_report(
     let container_inspects = docker.inspects;
     let container_stats_data = docker.stats;
     let (crons, cron_findings_v) = crons_group;
+    let (all_units, _enabled_units) = services;
+    let host_label = host_label.into();
+    let policy_selection = PolicySelection::for_host(config, &host_label);
 
     let findings = merge_findings(
         security_findings,
         database_findings_v,
         docker.findings,
         cron_findings_v,
+        policy_findings(
+            &policy_selection,
+            PolicyFacts {
+                host_label: &host_label,
+                snapshot: &host.snapshot,
+                network: network.as_ref(),
+                exposures: &exposures,
+                services: &all_units,
+                containers: &containers,
+                container_inspects: &container_inspects,
+                docker_available,
+            },
+        ),
     );
     tracing::info!(
         target: timing::PERF_TARGET,
@@ -69,7 +87,7 @@ pub async fn gather_report(
 
     Ok(Report {
         meta: ReportMeta {
-            host_label: host_label.into(),
+            host_label,
             generated_at: generated_at.into(),
             mode: effective_mode,
             capabilities: Some(capabilities),
@@ -154,5 +172,43 @@ mod tests {
         )
         .await;
         assert!(report.is_err());
+    }
+
+    #[tokio::test]
+    async fn report_includes_policy_findings() {
+        let mut config = Config::default();
+        config.hosts.insert(
+            "prod-01".to_owned(),
+            systui_core::config::Host {
+                host: "10.0.0.10".to_owned(),
+                user: None,
+                port: 22,
+                tags: Vec::new(),
+                read_only: false,
+                favorite: false,
+                policy: Some("prod-web".to_owned()),
+            },
+        );
+        config.policies.insert(
+            "prod-web".to_owned(),
+            systui_core::Policy {
+                expected_ports: vec![443],
+                ..systui_core::Policy::default()
+            },
+        );
+
+        let report = gather_report(
+            &minimal_host(),
+            &config,
+            "prod-01",
+            ExecutionMode::ReadOnly,
+            "2026-05-24 10:00:00",
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+
+        let ids: Vec<&str> = report.findings.iter().map(|f| f.id.as_str()).collect();
+        assert!(ids.contains(&"policy.port.missing.prod-web.443"));
     }
 }

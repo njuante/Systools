@@ -219,8 +219,9 @@ fn security_findings(out: &mut String, report: &Report) {
         let _ = writeln!(out, "<div class=\"finding\">");
         let _ = writeln!(
             out,
-            "{} <b>{}</b>",
+            "{} <span class=\"muted\">[{}]</span> <b>{}</b>",
             badge(finding.severity),
+            esc(finding.status.label()),
             esc(&finding.title)
         );
         if let Some(evidence) = finding.evidence.first() {

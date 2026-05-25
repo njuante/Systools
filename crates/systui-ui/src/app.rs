@@ -11,7 +11,8 @@ use systui_collectors::{
     LogEntry, LogQuery, NetworkSnapshot, PackageUpdates, Process, ServiceUnit, SystemSnapshot,
     SystemdTimer, parse_schedule,
 };
-use systui_core::{Action, ExecutionMode, Finding, ModuleId, Severity, Thresholds};
+use systui_core::{Action, ExecutionMode, Finding, FindingStatus, ModuleId, Severity, Thresholds};
+use systui_security::PolicySelection;
 use systui_storage::PersistentState;
 
 use crate::form::{Field, Form};
@@ -318,6 +319,7 @@ pub struct App {
     pub packages: PackageUpdates,
     pub crons_selected: usize,
     pub databases_selected: usize,
+    pub security_selected: usize,
     /// Reference time for cron next-run previews, refreshed each collection.
     pub now: NaiveDateTime,
     pub logs: Vec<LogEntry>,
@@ -326,6 +328,8 @@ pub struct App {
     pub input_mode: InputMode,
     pub health: Option<HealthReport>,
     pub thresholds: Thresholds,
+    /// Expected-state policy selected for this host, if any.
+    pub policy_selection: PolicySelection,
     pub services_selected: usize,
     pub processes_selected: usize,
     pub action: Option<ActionModal>,
@@ -395,6 +399,7 @@ impl App {
             packages: PackageUpdates::default(),
             crons_selected: 0,
             databases_selected: 0,
+            security_selected: 0,
             now: Local::now().naive_local(),
             logs: Vec::new(),
             log_query: LogQuery::default(),
@@ -402,6 +407,7 @@ impl App {
             input_mode: InputMode::Normal,
             health: None,
             thresholds: Thresholds::default(),
+            policy_selection: PolicySelection::default(),
             services_selected: 0,
             processes_selected: 0,
             action: None,
@@ -538,6 +544,31 @@ impl App {
         let date = self.now.format("%Y-%m-%d").to_string();
         self.state
             .record_snapshot(&self.host_label, &date, health.score, crit, high, med);
+        self.state_dirty = true;
+    }
+
+    /// Apply persisted lifecycle states to the freshly collected findings.
+    pub fn apply_finding_states(&mut self) {
+        self.state
+            .apply_finding_states(&self.host_label, &mut self.findings);
+    }
+
+    pub fn selected_finding(&self) -> Option<&Finding> {
+        self.findings.get(self.security_selected)
+    }
+
+    pub fn set_selected_finding_status(&mut self, status: FindingStatus) {
+        let Some(finding_id) = self.selected_finding().map(|f| f.id.clone()) else {
+            return;
+        };
+        let at = self.now.format("%Y-%m-%d %H:%M").to_string();
+        self.state
+            .set_finding_status(&self.host_label, &finding_id, status, &at);
+        if let Some(finding) = self.findings.iter_mut().find(|f| f.id == finding_id) {
+            finding.status = status;
+        }
+        self.state
+            .apply_finding_states(&self.host_label, &mut self.findings);
         self.state_dirty = true;
     }
 
@@ -702,6 +733,9 @@ impl App {
     pub fn finding_counts(&self) -> [usize; 5] {
         let mut counts = [0usize; 5];
         for finding in &self.findings {
+            if !finding.status.is_active() {
+                continue;
+            }
             let idx = match finding.severity {
                 Severity::Critical => 0,
                 Severity::High => 1,
@@ -729,6 +763,7 @@ impl App {
             Tab::Docker => self.containers.len(),
             Tab::Crons => self.crons.len(),
             Tab::Databases => self.databases.instances.len(),
+            Tab::Security => self.findings.len(),
             _ => 0,
         }
     }
@@ -740,6 +775,7 @@ impl App {
             Tab::Docker => Some(&mut self.containers_selected),
             Tab::Crons => Some(&mut self.crons_selected),
             Tab::Databases => Some(&mut self.databases_selected),
+            Tab::Security => Some(&mut self.security_selected),
             _ => None,
         }
     }
@@ -799,6 +835,9 @@ impl App {
         self.databases_selected = self
             .databases_selected
             .min(self.databases.instances.len().saturating_sub(1));
+        self.security_selected = self
+            .security_selected
+            .min(self.findings.len().saturating_sub(1));
     }
 
     /// Build the default action for the selected item and request planning.

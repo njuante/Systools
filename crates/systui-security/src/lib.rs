@@ -12,6 +12,7 @@ pub mod certs;
 pub mod cron;
 pub mod database;
 pub mod docker;
+pub mod policy;
 pub mod ports;
 pub mod ssh;
 pub mod sudo;
@@ -24,6 +25,7 @@ pub use certs::{
 pub use cron::{check_crons, cron_findings, script_path};
 pub use database::database_findings;
 pub use docker::{check_container, docker_findings};
+pub use policy::{PolicyFacts, PolicySelection, policy_findings};
 pub use ports::check_exposed_ports;
 pub use ssh::{check_failed_logins, check_sshd_config, count_failed_logins};
 pub use sudo::{SudoEntry, check_sudo, parse_sudoers};

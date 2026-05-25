@@ -62,6 +62,9 @@ impl Report {
         use systui_core::Severity;
         let mut counts = [0usize; 5];
         for finding in &self.findings {
+            if !finding.status.is_active() {
+                continue;
+            }
             let idx = match finding.severity {
                 Severity::Critical => 0,
                 Severity::High => 1,

@@ -20,6 +20,7 @@ use systui_report::collect::{
     gather_crons, gather_databases, gather_docker, gather_network, gather_packages,
     gather_services, gather_timers, host_report_within_timeout, merge_findings,
 };
+use systui_security::{PolicyFacts, PolicySelection, policy_findings};
 use tokio::runtime::Runtime;
 
 use crate::app::{App, ConnectivityResult, ViewState};
@@ -68,6 +69,7 @@ pub async fn gather(
     thresholds: &Thresholds,
     log_query: &LogQuery,
     cert_warning_days: u32,
+    policy_selection: &PolicySelection,
     host_statics: Option<HostStatics>,
     net_statics: Option<NetStatics>,
 ) -> RefreshOutcome {
@@ -102,6 +104,19 @@ pub async fn gather(
         database_findings_v,
         docker.findings,
         cron_findings_v,
+        policy_findings(
+            policy_selection,
+            PolicyFacts {
+                host_label: &report.snapshot.hostname,
+                snapshot: &report.snapshot,
+                network: network.as_ref(),
+                exposures: &exposures,
+                services: &all_units,
+                containers: &docker.containers,
+                container_inspects: &docker.inspects,
+                docker_available: docker.available,
+            },
+        ),
     );
 
     tracing::info!(
@@ -170,6 +185,7 @@ pub fn apply_refresh(app: &mut App, outcome: RefreshOutcome) {
             app.packages = result.packages;
             app.now = result.now;
             app.findings = result.findings;
+            app.apply_finding_states();
             app.record_health_snapshot();
             app.view_state = ViewState::Ready;
         }
@@ -188,6 +204,7 @@ pub fn refresh_blocking(runtime: &Runtime, transport: &dyn Transport, app: &mut 
         &app.thresholds,
         &app.log_query,
         app.cert_warning_days,
+        &app.policy_selection,
         host_statics,
         net_statics,
     ));
@@ -332,5 +349,23 @@ mod tests {
         assert!(matches!(app.view_state, ViewState::Error(_)));
         assert!(app.snapshot.is_some());
         assert_eq!(app.snapshot.as_ref().unwrap().hostname, "prod-01");
+    }
+
+    #[test]
+    fn refresh_includes_policy_findings() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.policy_selection = PolicySelection::Matched {
+            name: "local-policy".to_owned(),
+            policy: Box::new(systui_core::Policy {
+                expected_ports: vec![443],
+                ..systui_core::Policy::default()
+            }),
+            source: systui_core::PolicySource::ExplicitHost,
+        };
+
+        refresh_blocking(&runtime(), &ready_transport(), &mut app);
+
+        let ids: Vec<&str> = app.findings.iter().map(|f| f.id.as_str()).collect();
+        assert!(ids.contains(&"policy.port.missing.local-policy.443"));
     }
 }

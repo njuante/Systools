@@ -80,6 +80,7 @@ pub fn unique_recommendations(findings: &[systui_core::Finding]) -> Vec<String> 
     let mut seen = std::collections::HashSet::new();
     findings
         .iter()
+        .filter(|f| f.status.is_active())
         .filter(|f| !f.recommendation.is_empty())
         .filter(|f| seen.insert(f.recommendation.clone()))
         .map(|f| f.recommendation.clone())

@@ -1,0 +1,28 @@
+# Maintainer: njuante <njuante@users.noreply.github.com>
+# Prebuilt-binary AUR package. The release workflow fills in pkgver and the
+# per-arch sha256sums when publishing a tag; `updpkgsums` regenerates them.
+pkgname=systui-bin
+_pkgname=systui
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Fast, agentless TUI for Linux server administration"
+arch=('x86_64' 'aarch64')
+url="https://github.com/njuante/Systools"
+license=('MIT' 'Apache-2.0')
+provides=('systui')
+conflicts=('systui')
+options=('!strip')
+
+_base="$url/releases/download/v$pkgver"
+source_x86_64=("$_pkgname-$pkgver-x86_64.tar.gz::$_base/$_pkgname-$pkgver-x86_64-unknown-linux-musl.tar.gz")
+source_aarch64=("$_pkgname-$pkgver-aarch64.tar.gz::$_base/$_pkgname-$pkgver-aarch64-unknown-linux-musl.tar.gz")
+# Replaced per release by `updpkgsums` / the release workflow.
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+    install -Dm755 "$srcdir/$_pkgname" "$pkgdir/usr/bin/$_pkgname"
+    install -Dm644 "$srcdir/LICENSE-MIT" "$pkgdir/usr/share/licenses/$_pkgname/LICENSE-MIT"
+    install -Dm644 "$srcdir/LICENSE-APACHE" "$pkgdir/usr/share/licenses/$_pkgname/LICENSE-APACHE"
+    install -Dm644 "$srcdir/$_pkgname.1" "$pkgdir/usr/share/man/man1/$_pkgname.1"
+}

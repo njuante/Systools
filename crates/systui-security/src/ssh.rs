@@ -108,6 +108,23 @@ pub fn check_failed_logins(count: usize) -> Option<Finding> {
 }
 
 #[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+    use systui_testkit::fuzz::messy_output;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(400))]
+
+        #[test]
+        fn ssh_parsers_never_panic(s in messy_output()) {
+            let _ = check_sshd_config(&s);
+            let _ = count_failed_logins(&s);
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

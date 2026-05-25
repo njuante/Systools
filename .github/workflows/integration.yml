@@ -1,0 +1,89 @@
+name: Integration
+
+# Heavy, per-distro integration tests. Kept off the fast push gate (ci.yml) and run
+# on PRs to main, on release-branch pushes, and on demand. The collectors run over a
+# real transport inside each distro container; a separate job exercises real systemd
+# and local/SSH parity on the runner (where systemd is PID 1).
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, "release/**"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  distro-matrix:
+    name: collectors @ ${{ matrix.distro }}
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.image }}
+    continue-on-error: ${{ matrix.optional || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: debian
+            image: debian:stable
+            install: apt-get update && apt-get install -y --no-install-recommends curl ca-certificates build-essential procps iproute2 coreutils
+          - distro: ubuntu
+            image: ubuntu:latest
+            install: apt-get update && apt-get install -y --no-install-recommends curl ca-certificates build-essential procps iproute2 coreutils
+          - distro: arch
+            image: archlinux:latest
+            install: pacman -Sy --noconfirm gcc procps-ng iproute2 coreutils curl
+          - distro: fedora
+            image: fedora:latest
+            install: dnf install -y gcc procps-ng iproute findutils util-linux coreutils curl
+          - distro: almalinux
+            image: almalinux:9
+            # coreutils/curl already present as -single/-minimal; installing the full
+            # variants conflicts, so rely on what the base image ships.
+            install: dnf install -y gcc procps-ng iproute findutils util-linux
+          - distro: alpine
+            image: alpine:latest
+            optional: true
+            install: apk add --no-cache build-base procps iproute2 coreutils curl
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the distro tools the collectors call
+        run: ${{ matrix.install }}
+
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Integration tests (universal collectors)
+        run: cargo test -p systui-collectors --features integration --test integration
+
+  systemd-and-ssh:
+    name: systemd + SSH parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Configure passwordless SSH to localhost
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
+          cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
+          chmod 700 ~/.ssh
+          chmod 600 ~/.ssh/authorized_keys
+          printf 'Host localhost\n  HostName 127.0.0.1\n  User %s\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' "$USER" >> ~/.ssh/config
+          chmod 600 ~/.ssh/config
+          sudo systemctl start ssh || sudo systemctl start sshd
+          ssh -o BatchMode=yes localhost true
+
+      - name: Integration tests (strict systemd + local/SSH parity)
+        env:
+          SYSTUI_HAS_SYSTEMD: "1"
+          SYSTUI_SSH_TARGET: localhost
+        run: cargo test -p systui-collectors --features integration --test integration

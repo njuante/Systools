@@ -1,0 +1,96 @@
+.TH SYSTUI 1 "2026" "systui" "User Commands"
+.SH NAME
+systui \- fast, agentless TUI for Linux server administration
+.SH SYNOPSIS
+.B systui
+[\fIGLOBAL OPTIONS\fR] [\fICOMMAND\fR] [\fIARGS\fR]
+.SH DESCRIPTION
+.B systui
+is a terminal user interface for inspecting and safely operating Linux servers,
+locally or over SSH. It detects, explains and correlates system, service, log,
+network, docker, cron, security, certificate, database and policy state, and
+mediates every change through a confirmation/backup/audit safety engine. It is
+agentless (nothing is installed on the remote host) and read-only by default.
+.PP
+With no subcommand,
+.B systui
+opens the Hosts grid \(em the local machine plus the SSH inventory \(em from which
+you drill into a single host.
+.SH GLOBAL OPTIONS
+.TP
+.BR \-\-read\-only
+Force read-only mode: never modify the host, regardless of other settings.
+.TP
+.BR \-\-config " " \fIFILE\fR
+Use an alternate configuration file instead of the default location.
+.TP
+.BR \-h ", " \-\-help
+Print help.
+.TP
+.BR \-V ", " \-\-version
+Print version.
+.SH COMMANDS
+.TP
+.B local
+Inspect the local machine. This is the default when no subcommand is given.
+.TP
+.B ssh \fITARGET\fR
+Connect to a remote host over SSH.
+.I TARGET
+is a
+.RI \(lq user@host \(rq
+or a host id from the inventory. Host-key verification and authentication are
+delegated to the system ssh client (known_hosts, ~/.ssh/config, ssh-agent).
+.TP
+.B fleet \fR[\fIOPTIONS\fR]
+Operate on a fleet of inventory hosts (inspection only). Options:
+.RS
+.TP
+.BR \-\-tag " " \fITAG\fR
+Restrict to hosts carrying this tag. Repeat for "any of".
+.TP
+.BR \-\-favorites
+Restrict to hosts flagged as favorites.
+.TP
+.BR \-\-search " " \fITERM\fR
+List hosts whose services or ports match TERM, then exit.
+.TP
+.BR \-\-compare " " \fIA\ B\fR
+Compare two inventory hosts side by side.
+.TP
+.BR \-\-format " " \fIFORMAT\fR
+Render a fleet report instead of the overview: markdown, json or html.
+.TP
+.BR \-o ", " \-\-output " " \fIFILE\fR
+Write the fleet report to a file instead of stdout.
+.RE
+.TP
+.B report \fR[\fIOPTIONS\fR]
+Generate a report of a host's state (local, or remote with \fB\-\-host\fR). Options:
+.RS
+.TP
+.BR \-\-host " " \fIHOST\fR
+Host to report on: an inventory id or user@host. Omit for local.
+.TP
+.BR \-\-format " " \fIFORMAT\fR
+Output format: markdown (default), json or html.
+.TP
+.BR \-\-security
+Produce a security-focused report.
+.TP
+.BR \-o ", " \-\-output " " \fIFILE\fR
+Write the report to a file instead of stdout.
+.TP
+.BR \-\-note " " \fITEXT\fR
+Add a review note to the report (may be repeated).
+.RE
+.SH ENVIRONMENT
+.TP
+.B SYSTUI_LOG
+Log verbosity to stderr (e.g. \fBdebug\fR, \fBinfo\fR, \fBwarn\fR). Defaults to \fBwarn\fR.
+.SH EXIT STATUS
+Returns 0 on success and non-zero on error.
+.SH SEE ALSO
+Project home: https://github.com/njuante/Systools
+.SH AUTHOR
+njuante

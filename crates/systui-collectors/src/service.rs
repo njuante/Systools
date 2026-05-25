@@ -219,6 +219,27 @@ fn parse_show(s: &str) -> UnitDetail {
 }
 
 #[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+    use systui_testkit::fuzz::messy_output;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(400))]
+
+        #[test]
+        fn service_parsers_never_panic(s in messy_output()) {
+            let _ = parse_units(&s);
+            let _ = parse_unit_files(&s);
+            let _ = parse_show(&s);
+            for line in s.lines() {
+                let _ = parse_unit_line(line);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use systui_transport::MockTransport;

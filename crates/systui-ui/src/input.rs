@@ -87,6 +87,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('e') if app.current_tab() == Tab::Crons => app.open_edit_cron_form(),
         KeyCode::Char('d') if app.current_tab() == Tab::Crons => app.request_delete_cron(),
         KeyCode::Char('x') if app.current_tab() == Tab::Crons => app.request_toggle_cron(),
+        KeyCode::Char('n') if app.current_tab() == Tab::Crons => app.request_run_cron(),
         KeyCode::Char('f') if app.current_tab() == Tab::Services => app.cycle_service_filter(),
         KeyCode::Char('c') if app.current_tab() == Tab::Network => app.request_connectivity(),
         KeyCode::Char('p') if app.current_tab() == Tab::Docker => app.request_prune_images(),

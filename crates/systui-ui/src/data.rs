@@ -12,13 +12,13 @@ use chrono::{Local, NaiveDateTime};
 use systui_collectors::{
     ComposeProject, Container, ContainerStats, CronEntry, DatabaseSnapshot, ExposureEntry,
     FirewallSnapshot, HealthReport, HostStatics, ImageHygiene, InspectSummary, LogEntry, LogQuery,
-    LogsCollector, NetStatics, NetworkSnapshot, Process, ServiceUnit, SystemSnapshot, SystemdTimer,
-    timing,
+    LogsCollector, NetStatics, NetworkSnapshot, PackageUpdates, Process, ServiceUnit,
+    SystemSnapshot, SystemdTimer, timing,
 };
 use systui_core::{Collector, CoreError, Finding, Thresholds, Transport};
 use systui_report::collect::{
-    gather_crons, gather_databases, gather_docker, gather_network, gather_services, gather_timers,
-    host_report_within_timeout, merge_findings,
+    gather_crons, gather_databases, gather_docker, gather_network, gather_packages,
+    gather_services, gather_timers, host_report_within_timeout, merge_findings,
 };
 use tokio::runtime::Runtime;
 
@@ -48,6 +48,7 @@ pub struct RefreshResult {
     pub image_hygiene: ImageHygiene,
     pub crons: Vec<CronEntry>,
     pub timers: Vec<SystemdTimer>,
+    pub packages: PackageUpdates,
     pub now: NaiveDateTime,
     pub findings: Vec<Finding>,
 }
@@ -79,7 +80,7 @@ pub async fn gather(
     // the total. host_report's failure fails the whole refresh. The slow-changing
     // tiers (`host_statics`/`net_statics`) are reused when present so the tick
     // skips re-reading them.
-    let (report, net, dbs, docker, crons_group, timers, services) = tokio::join!(
+    let (report, net, dbs, docker, crons_group, timers, services, packages) = tokio::join!(
         host_report_within_timeout(transport, thresholds, log_query, host_statics),
         gather_network(transport, cert_warning_days, net_statics),
         gather_databases(transport),
@@ -87,6 +88,7 @@ pub async fn gather(
         gather_crons(transport),
         gather_timers(transport),
         gather_services(transport),
+        gather_packages(transport),
     );
 
     let report = report?;
@@ -128,6 +130,7 @@ pub async fn gather(
         image_hygiene: docker.hygiene,
         crons,
         timers,
+        packages,
         now: Local::now().naive_local(),
         findings,
     })
@@ -164,6 +167,7 @@ pub fn apply_refresh(app: &mut App, outcome: RefreshOutcome) {
             app.image_hygiene = result.image_hygiene;
             app.crons = result.crons;
             app.timers = result.timers;
+            app.packages = result.packages;
             app.now = result.now;
             app.findings = result.findings;
             app.view_state = ViewState::Ready;

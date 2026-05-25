@@ -15,9 +15,9 @@ use systui_collectors::{
     ComposeProject, Container, ContainerStats, CronEntry, DatabaseCollector, DatabaseSnapshot,
     DockerCollector, ExposureEntry, FirewallCollector, FirewallSnapshot, HostReport, HostStatics,
     ImageHygiene, InspectSummary, LogQuery, NetStatics, NetworkCollector, NetworkSnapshot,
-    ServiceCollector, ServiceUnit, SystemdTimer, UnitFilesCollector, collect_cron_entries,
-    collect_host_report, collect_timers, compose_projects, container_stats, exposure_map,
-    image_hygiene, inspect_container, timing,
+    PackageUpdates, PackagesCollector, ServiceCollector, ServiceUnit, SystemdTimer,
+    UnitFilesCollector, collect_cron_entries, collect_host_report, collect_timers,
+    compose_projects, container_stats, exposure_map, image_hygiene, inspect_container, timing,
 };
 use systui_core::{Collector, CoreError, Finding, Result, Thresholds, Transport};
 use systui_security::{cron_findings, database_findings, docker_findings, security_scan};
@@ -206,6 +206,22 @@ pub async fn gather_services(transport: &dyn Transport) -> (Vec<ServiceUnit>, Ve
             .collect();
         (units, enabled)
     })
+    .await
+}
+
+/// Pending package updates (apt/dnf/pacman/zypper), cache-only and best-effort.
+/// Slow-changing, so it shares the concurrent gather but never blocks it.
+pub async fn gather_packages(transport: &dyn Transport) -> PackageUpdates {
+    within_timeout(
+        "packages",
+        PackageUpdates::default(),
+        timing::timed("packages", async {
+            PackagesCollector::new()
+                .collect(transport)
+                .await
+                .unwrap_or_default()
+        }),
+    )
     .await
 }
 

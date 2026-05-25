@@ -34,6 +34,9 @@ pub enum CronOp {
     Enable,
     /// Comment out a job (keeps it in the crontab, stops it running).
     Disable,
+    /// Run the job's command immediately, outside its schedule. Does not modify
+    /// the crontab.
+    RunNow,
 }
 
 /// An action on a single user-crontab entry, identified by its schedule + command.
@@ -79,6 +82,21 @@ impl CronAction {
         }
     }
 
+    pub fn run_now(schedule: impl Into<String>, command: impl Into<String>) -> Self {
+        Self {
+            op: CronOp::RunNow,
+            schedule: schedule.into(),
+            command: command.into(),
+        }
+    }
+
+    /// The command to run immediately for [`CronOp::RunNow`]. The job's command
+    /// is a shell line (it may contain redirections/pipes), so it is run through
+    /// `sh -c` exactly as cron would — never re-parsed or interpolated by us.
+    fn run_now_command(&self) -> CommandSpec {
+        CommandSpec::new("sh").args(["-c", &self.command])
+    }
+
     pub fn edit(
         schedule: impl Into<String>,
         command: impl Into<String>,
@@ -102,6 +120,7 @@ impl CronAction {
             CronOp::Delete => "Delete",
             CronOp::Enable => "Enable",
             CronOp::Disable => "Disable",
+            CronOp::RunNow => "Run",
         }
     }
 
@@ -114,7 +133,7 @@ impl CronAction {
         match &self.op {
             CronOp::Add => Some(&self.schedule),
             CronOp::Edit { new_schedule, .. } => Some(new_schedule),
-            CronOp::Delete | CronOp::Enable | CronOp::Disable => None,
+            CronOp::Delete | CronOp::Enable | CronOp::Disable | CronOp::RunNow => None,
         }
     }
 
@@ -135,6 +154,8 @@ impl CronAction {
                 new_schedule,
                 new_command,
             ),
+            // RunNow never rewrites the crontab; execute() handles it directly.
+            CronOp::RunNow => Err("run-now does not modify the crontab".to_owned()),
         }
     }
 
@@ -158,7 +179,9 @@ impl Action for CronAction {
         match self.op {
             // Re-enabling restores a job the user already authored: low risk.
             CronOp::Enable => RiskLevel::Low,
-            CronOp::Delete => RiskLevel::High,
+            // Delete is destructive; running a job executes arbitrary side
+            // effects immediately — both warrant a typed confirmation.
+            CronOp::Delete | CronOp::RunNow => RiskLevel::High,
             _ => RiskLevel::Medium,
         }
     }
@@ -173,6 +196,19 @@ impl Action for CronAction {
     }
 
     async fn preview(&self, _transport: &dyn Transport) -> Result<ActionPreview> {
+        if self.op == CronOp::RunNow {
+            return Ok(ActionPreview {
+                summary: "Run cron job now".to_owned(),
+                details: vec![
+                    format!("command: {}", self.command),
+                    "Runs the command immediately via `sh -c`, outside its schedule.".to_owned(),
+                    "The crontab is not modified.".to_owned(),
+                ],
+                command: Some(self.run_now_command()),
+                reversible: false,
+                creates_backup: false,
+            });
+        }
         // Validate the schedule up front so an invalid expression never reaches the
         // crontab.
         if let Some(schedule) = self.schedule_to_validate() {
@@ -207,6 +243,26 @@ impl Action for CronAction {
     }
 
     async fn execute(&self, transport: &dyn Transport) -> Result<ActionOutcome> {
+        if self.op == CronOp::RunNow {
+            let output = transport.run(&self.run_now_command()).await?;
+            let trimmed = output.stderr.trim();
+            return Ok(ActionOutcome {
+                success: output.success(),
+                message: if output.success() {
+                    format!("ran: {}", self.command)
+                } else {
+                    format!(
+                        "run failed: {}",
+                        if trimmed.is_empty() {
+                            "non-zero exit"
+                        } else {
+                            trimmed
+                        }
+                    )
+                },
+            });
+        }
+
         let current = self.read_crontab(transport).await;
 
         let new_text = match self.apply(&current) {
@@ -508,6 +564,23 @@ mod tests {
         let outcome = action.execute(&transport).await.unwrap();
         assert!(!outcome.success);
         assert!(outcome.message.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn run_now_executes_via_shell() {
+        let action = CronAction::run_now("0 3 * * *", "/backup.sh --full");
+        let preview = action.preview(&MockTransport::new()).await.unwrap();
+        assert_eq!(
+            preview.command.unwrap().to_string(),
+            "sh -c /backup.sh --full"
+        );
+        assert!(!preview.reversible);
+        assert_eq!(action.risk(), RiskLevel::High);
+
+        let transport = MockTransport::new().with_command("sh -c /backup.sh --full", ok("done\n"));
+        let outcome = action.execute(&transport).await.unwrap();
+        assert!(outcome.success, "{}", outcome.message);
+        assert!(outcome.message.contains("/backup.sh"));
     }
 
     #[test]

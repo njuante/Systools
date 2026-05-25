@@ -8,8 +8,8 @@ use systui_actions::{
 use systui_collectors::{
     ComposeProject, Container, ContainerStats, CronEntry, CronSource, DatabaseSnapshot,
     ExposureEntry, FirewallSnapshot, HealthReport, HostCapabilities, ImageHygiene, InspectSummary,
-    LogEntry, LogQuery, NetworkSnapshot, Process, ServiceUnit, SystemSnapshot, SystemdTimer,
-    parse_schedule,
+    LogEntry, LogQuery, NetworkSnapshot, PackageUpdates, Process, ServiceUnit, SystemSnapshot,
+    SystemdTimer, parse_schedule,
 };
 use systui_core::{Action, ExecutionMode, Finding, ModuleId, Severity, Thresholds};
 
@@ -314,6 +314,7 @@ pub struct App {
     pub containers_selected: usize,
     pub crons: Vec<CronEntry>,
     pub timers: Vec<SystemdTimer>,
+    pub packages: PackageUpdates,
     pub crons_selected: usize,
     pub databases_selected: usize,
     /// Reference time for cron next-run previews, refreshed each collection.
@@ -382,6 +383,7 @@ impl App {
             containers_selected: 0,
             crons: Vec::new(),
             timers: Vec::new(),
+            packages: PackageUpdates::default(),
             crons_selected: 0,
             databases_selected: 0,
             now: Local::now().naive_local(),
@@ -794,6 +796,21 @@ impl App {
         } else {
             self.set_decision(ActionDecision::Rejected(
                 "select a user crontab entry to delete".to_owned(),
+            ));
+        }
+    }
+
+    /// Run the selected user-crontab entry's command immediately, via the engine.
+    pub fn request_run_cron(&mut self) {
+        if let Some(action) = self
+            .selected_user_cron()
+            .map(|entry| CronAction::run_now(entry.schedule.clone(), entry.command.clone()))
+        {
+            self.pending = Some(PendingAction::Cron(action));
+            self.action_plan_requested = true;
+        } else {
+            self.set_decision(ActionDecision::Rejected(
+                "select a user crontab entry to run".to_owned(),
             ));
         }
     }

@@ -2386,6 +2386,35 @@ fn render_findings_panel(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// At-a-glance grid: small headline stats in two columns (spec §14).
+/// The at-a-glance UPDATES cell: pending package count, security highlighted.
+fn updates_value(app: &App, t: Theme) -> Vec<Span<'static>> {
+    let p = &app.packages;
+    if !p.available {
+        return vec![Span::styled("n/a", Style::new().fg(t.fg_dim))];
+    }
+    let color = if p.security > 0 {
+        t.critical
+    } else if p.pending > 0 {
+        t.high
+    } else {
+        t.accent
+    };
+    let mut spans = vec![
+        Span::styled(
+            format!("{}", p.pending),
+            Style::new().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" pending", Style::new().fg(t.fg_muted)),
+    ];
+    if p.security > 0 {
+        spans.push(Span::styled(
+            format!(" · {} sec", p.security),
+            Style::new().fg(t.critical),
+        ));
+    }
+    spans
+}
+
 fn render_at_a_glance(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
     let block = panel_block(&app.theme, "At a glance");
     let inner = block.inner(area);
@@ -2450,6 +2479,7 @@ fn render_at_a_glance(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area:
             ],
         ),
         stat("CRONS", count(app.crons.len(), "jobs", t.high)),
+        stat("UPDATES", updates_value(app, t)),
         stat("LOGS", count(errors, "errors", t.critical)),
         stat("USERS", plain(format!("{} logged", snap.users.len()))),
         stat("UPTIME", plain(human_uptime(snap.uptime_secs))),
@@ -2623,6 +2653,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             ("e", "edit"),
             ("d", "delete"),
             ("x", "toggle"),
+            ("n", "run now"),
             ("?", "help"),
             ("q", "quit"),
         ],
@@ -2711,6 +2742,7 @@ fn render_help(frame: &mut Frame, app: &App) {
         ("↑ / ↓", "move selection (services/processes/docker/crons)"),
         ("a", "act on selection; add cron job on Crons"),
         ("e / d / x", "edit, delete or toggle a user crontab entry"),
+        ("n", "run the selected user cron job now (Crons tab)"),
         ("r", "refresh"),
         ("s", "sort processes by CPU/memory"),
         ("f", "cycle Services filter (all/failed/running/…)"),
@@ -2942,6 +2974,25 @@ mod tests {
         let node_at = out.find("node").unwrap();
         let systemd_at = out.find("systemd").unwrap();
         assert!(node_at < systemd_at);
+    }
+
+    #[test]
+    fn dashboard_at_a_glance_shows_pending_updates() {
+        use systui_collectors::PackageUpdates;
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.packages = PackageUpdates {
+            manager: "apt".to_owned(),
+            pending: 23,
+            security: 2,
+            available: true,
+        };
+        app.view_state = ViewState::Ready;
+
+        let out = render_to_string(&app, 120, 30);
+        assert!(out.contains("UPDATES"));
+        assert!(out.contains("23 pending"));
+        assert!(out.contains("2 sec"));
     }
 
     #[test]

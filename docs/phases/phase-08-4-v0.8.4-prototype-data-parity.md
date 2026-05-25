@@ -176,6 +176,21 @@ The omitted panels, audited against the current code, fall into four buckets:
   action/parser unit tests added; gates green.
 - **S8e.5 — Packages & Anacron**: packages/updates collector → Dashboard **UPDATES**
   tile (+ Packages view if it fits); anacron source in Crons; cron **run now** action.
+  **Done.** New `PackagesCollector` detects the package manager and counts
+  pending updates **cache-only** (`apt list --upgradable`, `dnf --cacheonly
+  check-update`, `pacman -Qu`, `zypper list-updates`) — never refreshing
+  metadata or taking a lock; apt also yields a security-pocket count, others
+  report 0 rather than guessing. It joins the concurrent gather (`gather_packages`,
+  own timeout) and feeds a new at-a-glance **UPDATES** tile (pending, security
+  highlighted; "n/a" when no manager). `/etc/anacrontab` is now parsed into
+  `CronEntry`s (`CronSource::Anacron`, period→`@daily`/`@weekly`/`@monthly`
+  mapping, job-id stripped) and shown in the Crons table; they stay read-only
+  (only `CronSource::User` entries are editable). A new `CronOp::RunNow` runs a
+  user job's command immediately via `sh -c` through the action engine (High
+  risk → typed confirmation, no crontab change), triggered by `n` on the Crons
+  tab and blocked in read-only. Status-bar/help hints, render tests and
+  parser/action unit tests added; gates green. A dedicated Packages *view* was
+  not needed — the UPDATES tile covers the prototype's at-a-glance cell.
 - **S8e.6 — Persistence-backed panels**: the local store for health/finding-count
   snapshots (Dashboard + Security **trend** lines), per-host **Session notes**, and
   **Saved searches** in Logs.

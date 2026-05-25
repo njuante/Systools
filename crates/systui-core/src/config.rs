@@ -143,6 +143,51 @@ pub struct ResolvedHost {
     pub policy: Option<String>,
 }
 
+/// How a host was matched to an expected-state policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicySource {
+    /// The host explicitly set `policy = "name"`.
+    ExplicitHost,
+    /// The host matched a policy's `match_tags` fallback.
+    TagFallback,
+}
+
+/// Borrowed policy selected for a host.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PolicyRef<'a> {
+    pub name: &'a str,
+    pub policy: &'a Policy,
+    pub source: PolicySource,
+}
+
+/// Result of resolving a host's expected-state policy.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PolicyResolution<'a> {
+    Matched(PolicyRef<'a>),
+    /// The host asked for a policy name that is not present in `[policies]`.
+    MissingExplicit {
+        name: &'a str,
+    },
+    None,
+}
+
+impl<'a> PolicyResolution<'a> {
+    pub fn name(self) -> Option<&'a str> {
+        match self {
+            Self::Matched(policy) => Some(policy.name),
+            Self::MissingExplicit { name } => Some(name),
+            Self::None => None,
+        }
+    }
+
+    pub fn policy(self) -> Option<PolicyRef<'a>> {
+        match self {
+            Self::Matched(policy) => Some(policy),
+            Self::MissingExplicit { .. } | Self::None => None,
+        }
+    }
+}
+
 impl Config {
     /// Insert or replace an inventory host. Returns `true` if it replaced an
     /// existing entry, `false` if it was newly added.
@@ -167,7 +212,7 @@ impl Config {
                 user: host.user.clone(),
                 port: host.port,
                 read_only: host.read_only,
-                policy: host.policy.clone(),
+                policy: self.resolve_policy_for_host(host).name().map(str::to_owned),
             };
         }
 
@@ -187,18 +232,100 @@ impl Config {
             policy: None,
         }
     }
+
+    /// Resolve the policy for an inventory host. An explicit host policy always
+    /// wins; otherwise policies with `match_tags` are considered. Tag fallback is
+    /// deterministic: the most specific policy (most matching tags) wins, with
+    /// the policy name as the final tie-breaker.
+    pub fn resolve_policy_for_host<'a>(&'a self, host: &'a Host) -> PolicyResolution<'a> {
+        if let Some(name) = host.policy.as_deref() {
+            return match self.policies.get(name) {
+                Some(policy) => PolicyResolution::Matched(PolicyRef {
+                    name,
+                    policy,
+                    source: PolicySource::ExplicitHost,
+                }),
+                None => PolicyResolution::MissingExplicit { name },
+            };
+        }
+
+        self.policies
+            .iter()
+            .filter(|(_, policy)| policy.matches_tags(&host.tags))
+            .max_by(|(left_name, left), (right_name, right)| {
+                left.match_tags
+                    .len()
+                    .cmp(&right.match_tags.len())
+                    .then_with(|| right_name.cmp(left_name))
+            })
+            .map_or(PolicyResolution::None, |(name, policy)| {
+                PolicyResolution::Matched(PolicyRef {
+                    name,
+                    policy,
+                    source: PolicySource::TagFallback,
+                })
+            })
+    }
 }
 
 /// Expected-state policy for a host or group (`Product.md` §4.15, §13).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Policy {
+    /// Schema version for this policy entry. v0.9 starts at 1.
+    #[serde(default = "default_policy_version")]
+    pub version: u16,
+    /// Tags used as a fallback matcher when a host has no explicit `policy`.
+    /// All listed tags must be present on the host.
+    pub match_tags: Vec<String>,
     pub expected_ports: Vec<u16>,
     pub forbidden_ports: Vec<u16>,
     pub expected_services: Vec<String>,
     pub forbidden_services: Vec<String>,
     pub disk_warning: Option<u8>,
     pub disk_critical: Option<u8>,
+    pub ram_warning: Option<u8>,
+    pub load_warning_multiplier: Option<f64>,
+    pub expected_sudo_users: Vec<String>,
+    pub forbidden_users: Vec<String>,
+    pub expected_certs: Vec<ExpectedCertificate>,
+    pub expected_containers: Vec<ExpectedContainer>,
+    pub forbidden_containers: Vec<String>,
+    pub forbidden_images: Vec<String>,
+}
+
+impl Policy {
+    fn matches_tags(&self, host_tags: &[String]) -> bool {
+        !self.match_tags.is_empty()
+            && self
+                .match_tags
+                .iter()
+                .all(|wanted| host_tags.iter().any(|tag| tag == wanted))
+    }
+}
+
+fn default_policy_version() -> u16 {
+    1
+}
+
+/// Certificate expectation used by the policy evaluator.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ExpectedCertificate {
+    /// Host or endpoint label the certificate should be checked against.
+    pub host: String,
+    /// Accepted DNS names for the certificate.
+    pub names: Vec<String>,
+    /// Minimum allowed days remaining before expiry.
+    pub min_days_remaining: Option<u32>,
+}
+
+/// Container expectation used by the policy evaluator.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ExpectedContainer {
+    pub name: String,
+    pub image: Option<String>,
 }
 
 #[cfg(test)]
@@ -234,6 +361,7 @@ policy = "production-web"
 expected_ports = [22, 80, 443]
 forbidden_ports = [3306, 5432, 6379, 27017]
 expected_services = ["sshd", "nginx"]
+forbidden_services = ["redis"]
 "#;
         let cfg: Config = toml::from_str(src).unwrap();
         assert_eq!(cfg.general.default_refresh_seconds, 5);
@@ -247,8 +375,60 @@ expected_services = ["sshd", "nginx"]
         assert_eq!(host.policy.as_deref(), Some("production-web"));
 
         let policy = &cfg.policies["production-web"];
+        assert_eq!(policy.version, 1);
         assert_eq!(policy.expected_ports, [22, 80, 443]);
         assert!(policy.forbidden_ports.contains(&6379));
+        assert_eq!(policy.forbidden_services, ["redis"]);
+    }
+
+    #[test]
+    fn parses_full_policy_schema() {
+        let src = r#"
+[policies.production-web]
+version = 1
+match_tags = ["prod", "web"]
+expected_ports = [22, 80, 443]
+forbidden_ports = [3306, 5432, 6379, 27017]
+expected_services = ["sshd", "nginx"]
+forbidden_services = ["redis", "mongodb"]
+disk_warning = 80
+disk_critical = 90
+ram_warning = 85
+load_warning_multiplier = 2.0
+expected_sudo_users = ["admin"]
+forbidden_users = ["old-admin"]
+forbidden_containers = ["debug-shell"]
+forbidden_images = ["redis:latest"]
+
+[[policies.production-web.expected_certs]]
+host = "web.example.com:443"
+names = ["web.example.com"]
+min_days_remaining = 30
+
+[[policies.production-web.expected_containers]]
+name = "nginx"
+image = "nginx:1.25"
+"#;
+        let cfg: Config = toml::from_str(src).unwrap();
+        let policy = &cfg.policies["production-web"];
+
+        assert_eq!(policy.match_tags, ["prod", "web"]);
+        assert_eq!(policy.disk_warning, Some(80));
+        assert_eq!(policy.disk_critical, Some(90));
+        assert_eq!(policy.ram_warning, Some(85));
+        assert_eq!(policy.load_warning_multiplier, Some(2.0));
+        assert_eq!(policy.expected_sudo_users, ["admin"]);
+        assert_eq!(policy.forbidden_users, ["old-admin"]);
+        assert_eq!(policy.forbidden_containers, ["debug-shell"]);
+        assert_eq!(policy.forbidden_images, ["redis:latest"]);
+        assert_eq!(policy.expected_certs[0].host, "web.example.com:443");
+        assert_eq!(policy.expected_certs[0].names, ["web.example.com"]);
+        assert_eq!(policy.expected_certs[0].min_days_remaining, Some(30));
+        assert_eq!(policy.expected_containers[0].name, "nginx");
+        assert_eq!(
+            policy.expected_containers[0].image.as_deref(),
+            Some("nginx:1.25")
+        );
     }
 
     #[test]
@@ -282,6 +462,121 @@ policy = "production-web"
         assert_eq!(resolved.user.as_deref(), Some("admin"));
         assert_eq!(resolved.port, 2222);
         assert!(resolved.read_only);
+        assert_eq!(resolved.policy.as_deref(), Some("production-web"));
+    }
+
+    #[test]
+    fn explicit_host_policy_wins_over_tag_fallback() {
+        let cfg: Config = toml::from_str(
+            r#"
+[hosts.prod-01]
+host = "192.168.1.20"
+tags = ["prod", "web"]
+policy = "explicit"
+
+[policies.explicit]
+expected_ports = [22]
+
+[policies.tagged]
+match_tags = ["prod", "web"]
+expected_ports = [443]
+"#,
+        )
+        .unwrap();
+
+        let resolution = cfg.resolve_policy_for_host(&cfg.hosts["prod-01"]);
+        let policy = resolution.policy().unwrap();
+        assert_eq!(policy.name, "explicit");
+        assert_eq!(policy.source, PolicySource::ExplicitHost);
+        assert_eq!(policy.policy.expected_ports, [22]);
+    }
+
+    #[test]
+    fn missing_explicit_policy_is_reported() {
+        let cfg: Config = toml::from_str(
+            r#"
+[hosts.prod-01]
+host = "192.168.1.20"
+policy = "missing"
+"#,
+        )
+        .unwrap();
+
+        let resolution = cfg.resolve_policy_for_host(&cfg.hosts["prod-01"]);
+        assert!(matches!(
+            resolution,
+            PolicyResolution::MissingExplicit { name: "missing" }
+        ));
+        assert_eq!(resolution.name(), Some("missing"));
+        assert!(resolution.policy().is_none());
+    }
+
+    #[test]
+    fn tag_fallback_picks_the_most_specific_policy() {
+        let cfg: Config = toml::from_str(
+            r#"
+[hosts.prod-01]
+host = "192.168.1.20"
+tags = ["prod", "web"]
+
+[policies.a-prod]
+match_tags = ["prod"]
+expected_ports = [22]
+
+[policies.z-prod-web]
+match_tags = ["prod", "web"]
+expected_ports = [443]
+"#,
+        )
+        .unwrap();
+
+        let resolution = cfg.resolve_policy_for_host(&cfg.hosts["prod-01"]);
+        let policy = resolution.policy().unwrap();
+        assert_eq!(policy.name, "z-prod-web");
+        assert_eq!(policy.source, PolicySource::TagFallback);
+        assert_eq!(policy.policy.expected_ports, [443]);
+    }
+
+    #[test]
+    fn tag_fallback_ties_break_by_policy_name() {
+        let cfg: Config = toml::from_str(
+            r#"
+[hosts.prod-01]
+host = "192.168.1.20"
+tags = ["prod"]
+
+[policies.alpha]
+match_tags = ["prod"]
+expected_ports = [22]
+
+[policies.beta]
+match_tags = ["prod"]
+expected_ports = [443]
+"#,
+        )
+        .unwrap();
+
+        let resolution = cfg.resolve_policy_for_host(&cfg.hosts["prod-01"]);
+        let policy = resolution.policy().unwrap();
+        assert_eq!(policy.name, "alpha");
+        assert_eq!(policy.policy.expected_ports, [22]);
+    }
+
+    #[test]
+    fn resolve_target_uses_tag_fallback_policy_name() {
+        let cfg: Config = toml::from_str(
+            r#"
+[hosts.prod-01]
+host = "192.168.1.20"
+tags = ["prod", "web"]
+
+[policies.production-web]
+match_tags = ["prod", "web"]
+"#,
+        )
+        .unwrap();
+
+        let resolved = cfg.resolve_target("prod-01");
         assert_eq!(resolved.policy.as_deref(), Some("production-web"));
     }
 

@@ -90,6 +90,16 @@ do not introduce automatic remediation. By the end of the phase, a web host can 
 - **S9.2 - Policy schema**: add config policy definitions and host policy resolution;
   cover expected/forbidden ports and services, thresholds, sudo users, expected
   certificates and containers with serialization/unit tests.
+  **Done.** Expanded the existing `[policies.<name>]` config model into a versioned,
+  typed expected-state schema: explicit/forbidden ports and services, disk/RAM/load
+  thresholds, expected sudo users, forbidden users, expected certificate targets,
+  expected containers, forbidden containers and forbidden images. Hosts can still set
+  `policy = "name"` explicitly; when they do not, `match_tags = [...]` provides a
+  deterministic fallback (most matching tags wins, then policy name). `Config`,
+  `ResolvedHost` and `FleetHost` now expose the resolved policy name, and
+  `resolve_policy_for_host` reports explicit missing policies separately so the later
+  evaluator can turn invalid config into isolated per-host drift instead of failing a
+  whole fleet run. Serialization and resolution behavior are covered by unit tests.
 - **S9.3 - Policy evaluation engine + drift findings**: evaluate gathered host facts
   against policies, produce stable `policy.*` findings, wire results into Security,
   dashboard health, reports and fleet output.

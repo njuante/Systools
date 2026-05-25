@@ -70,7 +70,7 @@ impl Config {
                 tags: host.tags.clone(),
                 read_only: host.read_only,
                 favorite: host.favorite,
-                policy: host.policy.clone(),
+                policy: self.resolve_policy_for_host(host).name().map(str::to_owned),
             })
             .collect();
         // `hosts` is a BTreeMap, so iteration is already id-sorted; a stable sort
@@ -185,5 +185,23 @@ policy = "production-web"
         assert_eq!(host.port, 2222);
         assert!(host.read_only);
         assert_eq!(host.policy.as_deref(), Some("production-web"));
+    }
+
+    #[test]
+    fn fleet_host_carries_tag_fallback_policy() {
+        let cfg: Config = toml::from_str(
+            r#"
+[hosts.prod-01]
+host = "192.168.1.20"
+tags = ["prod", "web"]
+
+[policies.production-web]
+match_tags = ["prod", "web"]
+"#,
+        )
+        .unwrap();
+
+        let selected = cfg.select_fleet(&FleetFilter::all());
+        assert_eq!(selected[0].policy.as_deref(), Some("production-web"));
     }
 }

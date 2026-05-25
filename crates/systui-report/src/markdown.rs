@@ -184,8 +184,9 @@ fn security_findings(out: &mut String, report: &Report) {
     for finding in &report.findings {
         let _ = writeln!(
             out,
-            "- **[{}]** {}",
+            "- **[{}]** `[{}]` {}",
             severity_label(finding.severity),
+            finding.status.label(),
             finding.title
         );
         if let Some(evidence) = finding.evidence.first() {
@@ -576,7 +577,7 @@ mod tests {
         assert!(md.contains("/dev/sda1"));
         assert!(md.contains("**[CRITICAL]** / at 89%"));
         assert!(md.contains("## Security findings (1)"));
-        assert!(md.contains("**[HIGH]** SSH permits direct root login"));
+        assert!(md.contains("**[HIGH]** `[open]` SSH permits direct root login"));
         assert!(md.contains("_evidence:_ /etc/ssh/sshd_config: PermitRootLogin yes"));
         assert!(md.contains("## Open ports (0)"));
         assert!(md.contains("## Docker"));

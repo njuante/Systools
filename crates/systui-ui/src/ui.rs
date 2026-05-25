@@ -2161,19 +2161,32 @@ fn render_security_findings(frame: &mut Frame, app: &App, area: Rect) {
 
     let per_finding = 3;
     let max = (inner.height as usize / per_finding).max(1);
+    let start = app.security_selected.saturating_sub(max.saturating_sub(1));
     let mut lines: Vec<Line> = Vec::new();
-    for f in app.findings.iter().take(max) {
+    for (idx, f) in app.findings.iter().enumerate().skip(start).take(max) {
         let color = t.severity(f.severity);
+        let selected = idx == app.security_selected;
+        let marker = if selected { ">" } else { " " };
+        let title_style = if selected {
+            Style::new()
+                .fg(t.fg_strong)
+                .bg(t.bg_elev)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD)
+        };
         lines.push(Line::from(vec![
+            Span::styled(marker, Style::new().fg(t.accent)),
             Span::styled("▌ ", Style::new().fg(color)),
             Span::styled(
                 format!("{:<5} ", f.severity.to_string().to_uppercase()),
                 Style::new().fg(color).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                f.title.clone(),
-                Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD),
+                format!("[{}] ", f.status.label()),
+                Style::new().fg(t.fg_dim),
             ),
+            Span::styled(f.title.clone(), title_style),
             Span::styled(
                 format!("   {} · {}", f.id, f.module),
                 Style::new().fg(t.fg_dim),
@@ -2822,6 +2835,15 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             ("r", "refresh"),
             ("a", "actions"),
             ("p", "prune images"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
+        Tab::Security => &[
+            ("r", "refresh"),
+            ("a", "accept"),
+            ("i", "ignore"),
+            ("o", "open"),
+            ("f/v", "fixed/false"),
             ("?", "help"),
             ("q", "quit"),
         ],

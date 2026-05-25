@@ -25,6 +25,23 @@ pub enum FindingStatus {
     FalsePositive,
 }
 
+impl FindingStatus {
+    /// Whether this finding should count as active risk in summaries.
+    pub fn is_active(self) -> bool {
+        self == Self::Open
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Accepted => "accepted",
+            Self::Ignored => "ignored",
+            Self::Fixed => "fixed",
+            Self::FalsePositive => "false-positive",
+        }
+    }
+}
+
 /// A single prioritized issue with the evidence and remediation behind it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Finding {

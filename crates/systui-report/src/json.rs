@@ -105,8 +105,11 @@ mod tests {
 
     #[test]
     fn finding_counts_bucket_by_severity() {
-        let report = sample_report();
+        let mut report = sample_report();
         // One High finding.
         assert_eq!(report.finding_counts(), [0, 1, 0, 0, 0]);
+
+        report.findings[0].status = systui_core::FindingStatus::Accepted;
+        assert_eq!(report.finding_counts(), [0, 0, 0, 0, 0]);
     }
 }

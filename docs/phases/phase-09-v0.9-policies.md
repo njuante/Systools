@@ -118,6 +118,13 @@ do not introduce automatic remediation. By the end of the phase, a web host can 
   add TUI/report affordances for accepted/ignored/fixed/false-positive findings,
   refresh docs/tests/help text, run final gates, merge `--no-ff` into `main` and tag
   `v0.9`.
+  **Done.** Extended the local state store to persist lifecycle state overrides per
+  host + stable finding id (`accepted`, `ignored`, `fixed`, `false-positive`; `open`
+  removes the override). The TUI applies those states after every refresh, lets the
+  operator change the selected Security finding with keyboard shortcuts, and excludes
+  non-open findings from active severity counters while keeping the evidence visible.
+  CLI reports and fleet per-host reports apply the same persisted states; Markdown,
+  HTML and JSON expose the status so exceptions are auditable rather than hidden.
 
 ## Definition of Done
 

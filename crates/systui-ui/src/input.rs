@@ -1,6 +1,7 @@
 //! Keyboard input handling.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use systui_core::FindingStatus;
 
 use crate::app::{ActionStage, App, InputMode, Tab};
 
@@ -90,11 +91,25 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('l') => app.cycle_log_level(),
         KeyCode::Char('t') => app.cycle_log_window(),
         KeyCode::Char('a') => {
-            if app.current_tab() == Tab::Crons {
+            if app.current_tab() == Tab::Security {
+                app.set_selected_finding_status(FindingStatus::Accepted);
+            } else if app.current_tab() == Tab::Crons {
                 app.open_add_cron_form();
             } else {
                 app.request_action();
             }
+        }
+        KeyCode::Char('o') if app.current_tab() == Tab::Security => {
+            app.set_selected_finding_status(FindingStatus::Open);
+        }
+        KeyCode::Char('i') if app.current_tab() == Tab::Security => {
+            app.set_selected_finding_status(FindingStatus::Ignored);
+        }
+        KeyCode::Char('f') if app.current_tab() == Tab::Security => {
+            app.set_selected_finding_status(FindingStatus::Fixed);
+        }
+        KeyCode::Char('v') if app.current_tab() == Tab::Security => {
+            app.set_selected_finding_status(FindingStatus::FalsePositive);
         }
         KeyCode::Char('e') if app.current_tab() == Tab::Crons => app.open_edit_cron_form(),
         KeyCode::Char('d') if app.current_tab() == Tab::Crons => app.request_delete_cron(),
@@ -178,5 +193,26 @@ mod tests {
         handle_key(&mut app, press(KeyCode::Tab));
         // tab did not change because help intercepted the key
         assert_eq!(app.current_tab(), crate::app::Tab::Dashboard);
+    }
+
+    #[test]
+    fn security_keys_set_finding_state() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.select_tab(9);
+        app.findings = vec![systui_core::Finding::new(
+            "policy.port.forbidden.prod-web.6379",
+            systui_core::Severity::High,
+            systui_core::ModuleId::Security,
+            "Forbidden port 6379 is listening",
+        )];
+
+        handle_key(&mut app, press(KeyCode::Char('a')));
+        assert_eq!(app.findings[0].status, FindingStatus::Accepted);
+        assert_eq!(app.finding_counts(), [0, 0, 0, 0, 0]);
+        assert!(app.state_dirty);
+
+        handle_key(&mut app, press(KeyCode::Char('o')));
+        assert_eq!(app.findings[0].status, FindingStatus::Open);
+        assert_eq!(app.finding_counts(), [0, 1, 0, 0, 0]);
     }
 }

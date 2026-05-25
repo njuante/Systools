@@ -11,12 +11,12 @@ use std::path::PathBuf;
 
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
-use systui_core::{CoreError, Result};
+use systui_core::{CoreError, Finding, FindingStatus, Result};
 
 use crate::paths;
 
 /// Current on-disk schema version.
-pub const STATE_VERSION: u32 = 1;
+pub const STATE_VERSION: u32 = 2;
 
 /// How many daily health snapshots to keep per host (~3 months).
 const MAX_SNAPSHOTS: usize = 90;
@@ -57,6 +57,14 @@ pub struct SavedSearch {
     pub query: String,
 }
 
+/// Persisted lifecycle state for a stable finding id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FindingStateRecord {
+    pub status: FindingStatus,
+    /// Timestamp string (host-local), e.g. `2026-05-25 14:18`.
+    pub updated_at: String,
+}
+
 /// The whole persisted document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistentState {
@@ -70,6 +78,10 @@ pub struct PersistentState {
     /// Saved log searches (global, most-recent first).
     #[serde(default)]
     pub saved_searches: Vec<SavedSearch>,
+    /// host label -> finding id -> lifecycle state.
+    #[serde(default)]
+    pub finding_states:
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, FindingStateRecord>>,
 }
 
 impl Default for PersistentState {
@@ -79,6 +91,7 @@ impl Default for PersistentState {
             snapshots: Default::default(),
             notes: Default::default(),
             saved_searches: Vec::new(),
+            finding_states: Default::default(),
         }
     }
 }
@@ -165,6 +178,58 @@ impl PersistentState {
         );
         self.saved_searches.truncate(MAX_SEARCHES);
     }
+
+    /// Persist a lifecycle state for a finding id on a host. Setting `Open`
+    /// removes the override so new findings naturally default to open.
+    pub fn set_finding_status(
+        &mut self,
+        host: &str,
+        finding_id: &str,
+        status: FindingStatus,
+        updated_at: &str,
+    ) {
+        if status == FindingStatus::Open {
+            let mut remove_host = false;
+            if let Some(host_states) = self.finding_states.get_mut(host) {
+                host_states.remove(finding_id);
+                remove_host = host_states.is_empty();
+            }
+            if remove_host {
+                self.finding_states.remove(host);
+            }
+            return;
+        }
+
+        self.finding_states
+            .entry(host.to_owned())
+            .or_default()
+            .insert(
+                finding_id.to_owned(),
+                FindingStateRecord {
+                    status,
+                    updated_at: updated_at.to_owned(),
+                },
+            );
+    }
+
+    pub fn finding_status(&self, host: &str, finding_id: &str) -> Option<FindingStatus> {
+        self.finding_states
+            .get(host)?
+            .get(finding_id)
+            .map(|record| record.status)
+    }
+
+    /// Apply persisted states to a freshly collected finding list.
+    pub fn apply_finding_states(&self, host: &str, findings: &mut [Finding]) {
+        let Some(host_states) = self.finding_states.get(host) else {
+            return;
+        };
+        for finding in findings {
+            if let Some(record) = host_states.get(&finding.id) {
+                finding.status = record.status;
+            }
+        }
+    }
 }
 
 /// Reader/writer for the local state document.
@@ -192,7 +257,9 @@ impl StateStore {
         let Ok(bytes) = std::fs::read(&self.path) else {
             return PersistentState::default();
         };
-        serde_json::from_slice(&bytes).unwrap_or_default()
+        let mut state: PersistentState = serde_json::from_slice(&bytes).unwrap_or_default();
+        state.version = STATE_VERSION;
+        state
     }
 
     /// Persist the state as pretty JSON, creating the parent directory if needed.
@@ -259,6 +326,49 @@ mod tests {
         assert_eq!(reloaded.notes("prod-01")[0].text, "reviewed nginx errors");
         assert_eq!(reloaded.saved_searches.len(), 2);
         assert_eq!(reloaded.saved_searches[0].query, "auth failures"); // most recent first
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn finding_states_round_trip_and_apply() {
+        let path = tmp_path();
+        let store = StateStore::with_path(&path);
+
+        let mut state = PersistentState::default();
+        state.set_finding_status(
+            "prod-01",
+            "policy.port.forbidden.prod-web.6379",
+            FindingStatus::Accepted,
+            "2026-05-25 14:18",
+        );
+        store.save(&state).unwrap();
+
+        let reloaded = store.load();
+        assert_eq!(
+            reloaded.finding_status("prod-01", "policy.port.forbidden.prod-web.6379"),
+            Some(FindingStatus::Accepted)
+        );
+
+        let mut findings = vec![Finding::new(
+            "policy.port.forbidden.prod-web.6379",
+            systui_core::Severity::High,
+            systui_core::ModuleId::Security,
+            "Forbidden port 6379 is listening",
+        )];
+        reloaded.apply_finding_states("prod-01", &mut findings);
+        assert_eq!(findings[0].status, FindingStatus::Accepted);
+
+        state.set_finding_status(
+            "prod-01",
+            "policy.port.forbidden.prod-web.6379",
+            FindingStatus::Open,
+            "2026-05-25 14:20",
+        );
+        assert_eq!(
+            state.finding_status("prod-01", "policy.port.forbidden.prod-web.6379"),
+            None
+        );
 
         std::fs::remove_file(&path).ok();
     }

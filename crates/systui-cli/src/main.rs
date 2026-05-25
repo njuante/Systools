@@ -452,7 +452,10 @@ async fn review_one_host(
     );
 
     let report = match tokio::time::timeout(FLEET_HOST_TIMEOUT, gather).await {
-        Ok(Ok(report)) => Ok(report),
+        Ok(Ok(mut report)) => {
+            apply_persisted_finding_states(&mut report);
+            Ok(report)
+        }
         Ok(Err(err)) => Err(err.to_string()),
         Err(_) => Err(format!("timed out after {}s", FLEET_HOST_TIMEOUT.as_secs())),
     };
@@ -593,7 +596,7 @@ fn run_report(
     let runtime = tokio::runtime::Runtime::new().context("failed to start async runtime")?;
     let generated_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    let report = match host {
+    let mut report = match host {
         Some(target) => {
             let resolved = config.resolve_target(&target);
             let mut transport =
@@ -637,6 +640,7 @@ fn run_report(
                 .context("failed to gather host report")?
         }
     };
+    apply_persisted_finding_states(&mut report);
 
     let scope = if security {
         systui_report::ReportScope::Security
@@ -659,4 +663,11 @@ fn run_report(
         None => print!("{rendered}"),
     }
     Ok(())
+}
+
+fn apply_persisted_finding_states(report: &mut systui_report::Report) {
+    if let Ok(store) = systui_storage::StateStore::at_default_location() {
+        let state = store.load();
+        state.apply_finding_states(&report.meta.host_label, &mut report.findings);
+    }
 }

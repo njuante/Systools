@@ -117,6 +117,25 @@ impl SshTransport {
         ]
     }
 
+    /// Reject a host/user that the `ssh` client would parse as an option rather
+    /// than a destination. OpenSSH has no `--` end-of-options marker, so a value
+    /// beginning with `-` (e.g. `-oProxyCommand=...`) is an argument-injection
+    /// vector that could run an arbitrary local command. Destinations come from
+    /// operator config, but a shared/templated inventory makes this worth blocking.
+    fn check_destination(&self) -> Result<()> {
+        for (field, value) in [
+            ("host", self.host.as_str()),
+            ("user", self.user.as_deref().unwrap_or("")),
+        ] {
+            if value.starts_with('-') {
+                return Err(CoreError::InvalidInput(format!(
+                    "refusing SSH {field} {value:?}: a leading '-' would be parsed as an ssh option"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Run a remote command string through `ssh`, optionally feeding `stdin` and
     /// honouring `timeout`. Returns the raw process output; SSH-level vs remote
     /// command failures are disambiguated by the caller via the exit code.
@@ -126,6 +145,7 @@ impl SshTransport {
         stdin: Option<&str>,
         timeout: Option<Duration>,
     ) -> Result<std::process::Output> {
+        self.check_destination()?;
         let mut cmd = Command::new("ssh");
         cmd.args(self.ssh_args(remote_command));
         cmd.kill_on_drop(true);
@@ -404,6 +424,27 @@ mod tests {
         assert_eq!(
             build_remote_command(&spec),
             "cat -- '/etc/passwd; rm -rf /'"
+        );
+    }
+
+    #[tokio::test]
+    async fn refuses_option_injecting_destination() {
+        // A host/user that ssh would read as an option must be rejected before
+        // any process is spawned (ssh has no `--` end-of-options marker).
+        let host = SshTransport::new("-oProxyCommand=touch /tmp/pwned");
+        let err = host.run(&CommandSpec::new("true")).await.unwrap_err();
+        assert!(matches!(err, CoreError::InvalidInput(_)));
+
+        let user = SshTransport::new("prod-01").user("-oProxyCommand=evil");
+        let err = user.read_file("/etc/hostname").await.unwrap_err();
+        assert!(matches!(err, CoreError::InvalidInput(_)));
+
+        // A normal destination is not affected.
+        assert!(
+            SshTransport::new("prod-01")
+                .user("admin")
+                .check_destination()
+                .is_ok()
         );
     }
 

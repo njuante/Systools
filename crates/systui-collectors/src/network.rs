@@ -574,6 +574,37 @@ fn parse_ss_process(field: &str) -> Option<ProcessRef> {
 }
 
 #[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+    use systui_testkit::fuzz::messy_output;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(400))]
+
+        #[test]
+        fn network_parsers_never_panic(s in messy_output()) {
+            let _ = parse_ip_addr_json(&s);
+            let _ = parse_ip_addr_text(&s);
+            let _ = parse_ip_route_json(&s);
+            let _ = parse_ip_route_text(&s);
+            let _ = parse_resolv_conf(&s);
+            let _ = parse_ss_listeners(&s);
+            let _ = parse_ss_connections(&s);
+            for line in s.lines() {
+                let _ = parse_ip_route_line(line);
+                let _ = parse_ss_listener_line(line);
+                let _ = parse_ss_connection_line(line);
+                let _ = parse_socket_addr(line);
+                let _ = parse_ss_process(line);
+                let _ = parse_cidr(line, AddrFamily::V4);
+                let _ = parse_cidr(line, AddrFamily::V6);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use systui_transport::MockTransport;

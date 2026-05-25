@@ -122,6 +122,19 @@ version is bumped from the placeholder `0.1.0` to `1.0.0`.
 - **S10.4 - Hardening**: parser fuzzing harness, large-log benchmarks, and a security
   review of the privileged/action/shell-out paths confirming the no-free-form-command
   invariant; fix what they surface.
+  **Done.** Added a shared property-based fuzzing harness in `systui-testkit::fuzz`
+  (arbitrary text incl. control bytes/newlines + table-shaped adversarial output) and
+  wired robustness tests (400 cases each, in the normal gate) into the parsers across
+  collectors (system/network/service/logs/packages/firewall/cron) and security
+  (certs/sshd/failed-logins/stat+iptables/sudoers) asserting the invariant *parsing
+  never panics*. No panics surfaced. Added a correctness-at-scale test (100k journal
+  entries) plus a criterion benchmark (`benches/log_parse.rs`) showing linear log-parse
+  throughput (~0.9M entries/s, ~220 ms for 200k lines). Wrote `docs/SECURITY-REVIEW.md`:
+  audited the execution paths and confirmed no `std::process::Command` outside the
+  transport, no shell escape hatch, centralized+tested SSH POSIX quoting, and engine-
+  enforced mode/guardrail/audit; the one `sh -c` (cron run-now) is the documented cron
+  execution model passed as a single argv element, not an injection path. No critical or
+  high findings.
 - **S10.5 - Packaging**: static `x86_64`/`aarch64` binaries, AUR, `.deb`, `.rpm`,
   `cargo install`, `install.sh`, and release artifacts (checksums, signatures, SBOM).
 - **S10.6 - Docs & launch**: man page, README, examples, demo GIF, changelog, version

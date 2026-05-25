@@ -20,3 +20,5 @@ chrono.workspace = true
 
 [dev-dependencies]
 systui-transport.workspace = true
+systui-testkit.workspace = true
+proptest.workspace = true

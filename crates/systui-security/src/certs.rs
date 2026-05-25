@@ -247,6 +247,26 @@ pub async fn certificate_findings(
 }
 
 #[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+    use systui_testkit::fuzz::messy_output;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(400))]
+
+        #[test]
+        fn cert_parsers_never_panic(s in messy_output()) {
+            let now = Utc::now();
+            let _ = parse_x509("fuzz", &s);
+            let _ = parse_openssl_date(&s);
+            let _ = days_until_expiry(&s, now);
+            let _ = extract_pem(&s);
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use chrono::TimeZone;

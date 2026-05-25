@@ -11,3 +11,4 @@ description = "SysTUI test kit: fixtures, golden files and mock helpers"
 workspace = true
 
 [dependencies]
+proptest.workspace = true

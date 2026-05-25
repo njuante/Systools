@@ -61,6 +61,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # CLI
 clap = { version = "4", features = ["derive"] }
 
+# Testing & hardening
+proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 unused_must_use = "deny"

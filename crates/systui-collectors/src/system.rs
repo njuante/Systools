@@ -494,6 +494,35 @@ fn parse_who_line(line: &str) -> Option<LoggedUser> {
 }
 
 #[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+    use systui_testkit::fuzz::messy_output;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(400))]
+
+        // The invariant: no system parser panics on adversarial input. Result/Option
+        // returns are intentionally ignored — degrading is fine, crashing is not.
+        #[test]
+        fn system_parsers_never_panic(s in messy_output()) {
+            let _ = parse_proc_batch(&s);
+            let _ = parse_proc_stat(&s);
+            let _ = parse_uptime(&s);
+            let _ = parse_loadavg(&s);
+            let _ = parse_meminfo(&s);
+            let _ = parse_os_release(&s);
+            let _ = parse_df(&s);
+            let _ = parse_who(&s);
+            for line in s.lines() {
+                let _ = parse_df_line(line);
+                let _ = parse_who_line(line);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

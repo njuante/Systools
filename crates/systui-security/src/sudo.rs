@@ -97,6 +97,22 @@ pub fn check_sudo(entries: &[SudoEntry]) -> Vec<Finding> {
 }
 
 #[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+    use systui_testkit::fuzz::messy_output;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(400))]
+
+        #[test]
+        fn sudoers_parser_never_panics(s in messy_output()) {
+            let _ = parse_sudoers(&s);
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

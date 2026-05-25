@@ -28,4 +28,11 @@ tracing.workspace = true
 [dev-dependencies]
 systui-transport.workspace = true
 systui-core.workspace = true
+systui-testkit.workspace = true
 tokio.workspace = true
+proptest.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "log_parse"
+harness = false

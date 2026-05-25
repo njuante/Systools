@@ -175,6 +175,25 @@ fn format_time_us(us: u64) -> String {
 }
 
 #[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+    use systui_testkit::fuzz::messy_output;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(400))]
+
+        #[test]
+        fn log_parsers_never_panic(s in messy_output()) {
+            let _ = parse_journal_json(&s);
+            for line in s.lines() {
+                let _ = parse_journal_line(line);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use systui_transport::MockTransport;
@@ -187,6 +206,26 @@ mod tests {
             build_args(&LogQuery::default()).join(" "),
             "-p 3 -n 200 -o json --no-pager"
         );
+    }
+
+    // A large journal must parse fully without exploding (no quadratic blow-up,
+    // no per-line allocation surprise). Correctness at scale; timing lives in the
+    // criterion bench (`benches/log_parse.rs`).
+    #[test]
+    fn parses_a_large_journal() {
+        let n = 100_000;
+        let mut journal = String::with_capacity(n * 180);
+        for i in 0..n {
+            journal.push_str(&format!(
+                "{{\"__REALTIME_TIMESTAMP\":\"{}\",\"PRIORITY\":\"{}\",\"SYSLOG_IDENTIFIER\":\"svc{}\",\"MESSAGE\":\"event {i} on the host\"}}\n",
+                1_700_000_000_000_000u64 + i as u64,
+                i % 8,
+                i % 50,
+            ));
+        }
+        let entries = parse_journal_json(&journal);
+        assert_eq!(entries.len(), n);
+        assert_eq!(entries[0].priority, 0);
     }
 
     #[test]

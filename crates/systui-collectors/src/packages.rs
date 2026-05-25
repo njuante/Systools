@@ -152,6 +152,25 @@ fn parse_zypper(s: &str) -> usize {
 }
 
 #[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+    use systui_testkit::fuzz::messy_output;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(400))]
+
+        #[test]
+        fn package_parsers_never_panic(s in messy_output()) {
+            let _ = parse_apt(&s);
+            let _ = parse_dnf(&s);
+            let _ = parse_line_count(&s);
+            let _ = parse_zypper(&s);
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

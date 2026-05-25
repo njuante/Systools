@@ -244,6 +244,26 @@ pub fn check_suid(paths: &[String]) -> Option<Finding> {
 }
 
 #[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+    use systui_testkit::fuzz::messy_output;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(400))]
+
+        #[test]
+        fn system_security_parsers_never_panic(s in messy_output()) {
+            let _ = parse_stat(&s);
+            let _ = iptables_has_rules(&s);
+            for line in s.lines() {
+                let _ = parse_stat_line(line);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

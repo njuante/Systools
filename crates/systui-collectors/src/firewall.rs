@@ -206,6 +206,23 @@ fn parse_iptables(s: &str) -> FirewallSnapshot {
 }
 
 #[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+    use systui_testkit::fuzz::messy_output;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(400))]
+
+        #[test]
+        fn firewall_parsers_never_panic(s in messy_output()) {
+            let _ = parse_nft(&s);
+            let _ = parse_iptables(&s);
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use systui_transport::MockTransport;

@@ -602,6 +602,29 @@ fn parse_timer_line(line: &str) -> Option<SystemdTimer> {
 }
 
 #[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+    use systui_testkit::fuzz::messy_output;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(400))]
+
+        #[test]
+        fn cron_parsers_never_panic(s in messy_output()) {
+            let _ = parse_crontab(&s, true, CronSource::User, "fuzz");
+            let _ = parse_crontab(&s, false, CronSource::System, "fuzz");
+            let _ = parse_anacrontab(&s);
+            let _ = parse_schedule(&s);
+            for line in s.lines() {
+                let _ = parse_timer_line(line);
+                let _ = parse_field(line, 0, 59);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use systui_core::{DirEntry, FileType};

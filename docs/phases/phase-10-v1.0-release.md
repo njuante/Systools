@@ -137,6 +137,18 @@ version is bumped from the placeholder `0.1.0` to `1.0.0`.
   high findings.
 - **S10.5 - Packaging**: static `x86_64`/`aarch64` binaries, AUR, `.deb`, `.rpm`,
   `cargo install`, `install.sh`, and release artifacts (checksums, signatures, SBOM).
+  **Done.** Added the release pipeline (`.github/workflows/release.yml`, on `v*` tags):
+  cross-compiles static musl `x86_64`/`aarch64` binaries (native + `cross`), tars them
+  with the licenses and man page, builds `.deb`/`.rpm` from one `packaging/nfpm.yaml`,
+  generates an SPDX SBOM (syft), writes `SHA256SUMS`, signs them with **keyless cosign
+  (Sigstore/OIDC)** — the chosen approach, no private keys to manage — and publishes the
+  GitHub Release. Added `LICENSE-MIT` + canonical `LICENSE-APACHE`, a real `systui.1` man
+  page (matching the actual CLI), an `install.sh` that verifies checksum + cosign
+  signature before installing, an AUR `PKGBUILD` (`systui-bin`), and `docs/INSTALL.md`
+  (script / native packages / AUR / `cargo install` / verification). Validated locally:
+  the `x86_64-unknown-linux-musl` build is fully static (`statically linked`, 5.8 MB
+  stripped) and runs; `install.sh`/`PKGBUILD` pass syntax checks. The actual release run
+  fires on the `v1.0` tag in S10.6. (Version bump to `1.0.0` is in S10.6.)
 - **S10.6 - Docs & launch**: man page, README, examples, demo GIF, changelog, version
   bump to `1.0.0`, release CI/CD; final gates, merge `--no-ff` into `main` and tag
   `v1.0`.

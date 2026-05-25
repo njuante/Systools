@@ -1,0 +1,33 @@
+# nfpm config for building systui .deb and .rpm packages from a prebuilt binary.
+# Version and arch are injected from the environment by the release workflow:
+#   SYSTUI_VERSION  e.g. 1.0.0   (no leading v)
+#   SYSTUI_ARCH     amd64 | arm64
+# The binary is expected at ./dist/systui (the release workflow stages it there).
+name: systui
+arch: ${SYSTUI_ARCH}
+platform: linux
+version: ${SYSTUI_VERSION}
+release: "1"
+section: admin
+priority: optional
+maintainer: njuante <njuante@users.noreply.github.com>
+description: |
+  Fast, agentless TUI for Linux server administration.
+  Detect, explain, correlate and act safely on system, service, log, network,
+  docker, cron, security and policy state — locally or over SSH, read-only by default.
+vendor: njuante
+homepage: https://github.com/njuante/Systools
+license: MIT OR Apache-2.0
+contents:
+  - src: ./dist/systui
+    dst: /usr/bin/systui
+    file_info:
+      mode: 0755
+  - src: ./LICENSE-MIT
+    dst: /usr/share/doc/systui/LICENSE-MIT
+  - src: ./LICENSE-APACHE
+    dst: /usr/share/doc/systui/LICENSE-APACHE
+  - src: ./packaging/systui.1
+    dst: /usr/share/man/man1/systui.1
+    file_info:
+      mode: 0644

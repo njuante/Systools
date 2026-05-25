@@ -110,7 +110,8 @@ cargo test --workspace
 ```
 
 Parsers of command output are always covered by fixture/golden-file tests
-(`Product.md` §12) — text parsing without tests is forbidden.
+(`Product.md` §12) — text parsing without tests is forbidden. The test layers and the
+fixture/golden-file convention are documented in [`TESTING.md`](TESTING.md).
 
 ---
 

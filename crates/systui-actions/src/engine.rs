@@ -288,4 +288,53 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(record.status, systui_core::AuditStatus::Rejected);
     }
+
+    #[tokio::test]
+    async fn run_records_failure_when_execution_does_not_succeed() {
+        // Start is Low risk, so it is Ready without confirmation; the command
+        // itself fails (non-zero exit) so the outcome is an unsuccessful run,
+        // which must be audited as Failure, distinct from a Rejected gate.
+        let engine = ActionEngine::new(ExecutionMode::Privileged);
+        let action = ServiceAction::new(ServiceOp::Start, "missing.service");
+        let transport = MockTransport::new().with_command(
+            "systemctl start missing.service",
+            CommandOutput {
+                exit_code: Some(5),
+                stdout: String::new(),
+                stderr: "Unit missing.service not found.".to_owned(),
+                duration: std::time::Duration::ZERO,
+            },
+        );
+
+        let (result, record) = engine.run(&action, &transport, None, &ctx()).await;
+        assert!(!result.unwrap().success);
+        assert_eq!(record.status, systui_core::AuditStatus::Failure);
+    }
+
+    #[tokio::test]
+    async fn execute_rejects_guardrailed_action() {
+        // The guardrail must also hold on the execute path, not only on plan.
+        let engine = ActionEngine::new(ExecutionMode::Privileged);
+        let action = SignalAction::new(Signal::Kill, 1, "init");
+        let err = engine
+            .execute(&action, &MockTransport::new(), None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CoreError::InvalidInput(_)));
+    }
+
+    #[tokio::test]
+    async fn confirmation_is_trimmed_and_case_insensitive() {
+        let engine = ActionEngine::new(ExecutionMode::Privileged);
+        let action = ServiceAction::new(ServiceOp::Restart, "nginx.service");
+        let transport = MockTransport::new()
+            .with_command("systemctl restart nginx.service", ok(""))
+            .with_command("systemctl is-active nginx.service", ok("active\n"));
+
+        let outcome = engine
+            .execute(&action, &transport, Some("  RESTART nginx.service  "))
+            .await
+            .unwrap();
+        assert!(outcome.success);
+    }
 }

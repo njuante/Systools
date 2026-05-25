@@ -30,6 +30,7 @@ substrate for `v0.1` and is built on the `release/v0.1` branch as the first sess
 | 8.5   | v0.8.1  | In-TUI management & UX polish | `release/v0.8.1` |
 | 8.6   | v0.8.2  | UI redesign (approved design) | `release/v0.8.2` |
 | 8.7   | v0.8.3  | Optimization (performance)    | `release/v0.8.3` |
+| 8.8   | v0.8.4  | Prototype data parity         | `release/v0.8.4` |
 | 9     | v0.9    | Policies & expected state     | `release/v0.9`   |
 | 10    | v1.0    | Stabilization & release       | `release/v1.0`   |
 
@@ -304,6 +305,50 @@ green.
 
 > No UI/visual change beyond a refresh indicator, no new collectors/actions/data, and
 > no SSH-library rewrite — those are **out of scope**.
+
+---
+
+## Phase 8.8 — v0.8.4 Prototype data parity & persistence
+
+**Goal:** fill in the panels the v0.8.2 reskin intentionally **left out**. The approved
+prototype in [`interfaz/`](interfaz/) shows several sections v0.8.2 omitted because the
+data was not collected or not persisted (the reskin's contract was *match the layout but
+only with real data, never mock*). This **feature/data** phase supplies the real data
+and persistence behind those omitted panels, reaching visual+data parity. It does **not**
+touch the visual identity, chrome, theme tokens or safety model. Detailed scope in
+[`phases/phase-08-4-v0.8.4-prototype-data-parity.md`](phases/phase-08-4-v0.8.4-prototype-data-parity.md).
+
+Sessions:
+- **S8e.1 — Context**: `phase-08-4-v0.8.4-prototype-data-parity.md` + this insert.
+- **S8e.2 — Services & Connectivity wiring**: surface the existing full unit list +
+  enabled state behind `ALL/RUNNING/INACTIVE/ENABLED/FAILED` filters; wire the existing
+  ping/DNS/TCP probes into the Network **Connectivity tests** panel (on-demand).
+- **S8e.3 — Firewall**: a `firewall` collector (backend nftables/iptables/ufw/firewalld
+  + table/chain/rule counts + "rule with no bound process / conflicts with a listening
+  port" notes) → the Network **Firewall** panel.
+- **S8e.4 — Docker compose + image hygiene + prune**: compose-project and image-store
+  collectors → the two omitted Docker panels; `prune dangling` mutation via the engine.
+- **S8e.5 — Packages & Anacron**: a packages/updates collector (apt/dnf/pacman/zypper) →
+  the Dashboard **UPDATES** at-a-glance tile; `/etc/anacrontab` source in Crons; a cron
+  **run now** action.
+- **S8e.6 — Persistence-backed panels**: a small versioned local store for health/
+  finding-count **snapshots** (Dashboard "was X 7d ago" + Security trend), per-host
+  **Session notes**, and **Saved searches** in Logs.
+- **S8e.7 — Polish & close**: render-test refresh, help/keymap updates, final
+  prototype-vs-app panel inventory + polish → **tag v0.8.4**.
+
+**DoD:** the omitted prototype panels are present and backed by **real data** (Services
+filters, Connectivity + Firewall, Docker Compose + Image hygiene, the UPDATES tile,
+anacron, and the trend/session-notes/saved-searches panels); the two new mutations
+(`prune dangling`, cron `run now`) go through the action engine and respect read-only;
+new slow collectors run in the v0.8.3 tiered/concurrent refresh with timeouts (no
+stall); the persistence store degrades gracefully; visual identity, keymaps elsewhere
+and the safety model are unchanged; render stays a pure function of `App`; gates green.
+
+> **Deferred:** finding-state buttons (accept/ignore → phase 9), `apply fix`
+> auto-remediation (→ v1.1+), "backups detected" + per-source log byte-rates (not
+> honestly measurable), and the command palette (carried over from v0.8.2) — all
+> **out of scope**, documented with reasons.
 
 ---
 

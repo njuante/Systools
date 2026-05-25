@@ -101,7 +101,7 @@ jobs:
           for pair in "x86_64-unknown-linux-musl amd64" "aarch64-unknown-linux-musl arm64"; do
             set -- $pair; triple=$1; arch=$2
             mkdir -p dist
-            tar -C dist -xzf "release/systui-$ver-$triple.tar.gz" systui
+            tar -C dist -xzf "release/systui-$ver-$triple.tar.gz"
             SYSTUI_VERSION="$ver" SYSTUI_ARCH="$arch" nfpm package -f packaging/nfpm.yaml -p deb -t release/
             SYSTUI_VERSION="$ver" SYSTUI_ARCH="$arch" nfpm package -f packaging/nfpm.yaml -p rpm -t release/
           done

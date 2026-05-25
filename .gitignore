@@ -21,6 +21,3 @@ Cargo.lock.bak
 # Logs & temp
 *.log
 /tmp/
-
-# Extracted prototype screenshots (reference only, not versioned)
-/docs/interfaz/_extracted/

@@ -21,7 +21,7 @@ Download the `.deb` or `.rpm` for your architecture from the
 
 ```sh
 # Debian / Ubuntu
-sudo dpkg -i systui_1.0.0_amd64.deb
+sudo dpkg -i systui_1.0.0-1_amd64.deb
 
 # Fedora / RHEL / Rocky / Alma
 sudo rpm -i systui-1.0.0-1.x86_64.rpm

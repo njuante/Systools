@@ -1224,13 +1224,104 @@ fn render_docker(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let rows =
-        Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
+    let rows = Layout::vertical([
+        Constraint::Percentage(44),
+        Constraint::Percentage(34),
+        Constraint::Percentage(22),
+    ])
+    .split(area);
     render_container_table(frame, app, rows[0]);
-    let bottom =
+    let mid =
         Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)]).split(rows[1]);
-    render_docker_risks(frame, app, bottom[0]);
-    render_container_detail(frame, app, bottom[1]);
+    render_docker_risks(frame, app, mid[0]);
+    render_container_detail(frame, app, mid[1]);
+    let bottom =
+        Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)]).split(rows[2]);
+    render_compose_projects(frame, app, bottom[0]);
+    render_image_hygiene(frame, app, bottom[1]);
+}
+
+/// Discovered Compose projects (`docker compose ls`): name, service count and
+/// the config file backing each. Omitted-looking (an "(none)" line) when the
+/// Compose plugin is absent or no projects exist.
+fn render_compose_projects(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Compose projects");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.compose_projects.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("none discovered", Style::new().fg(t.fg_dim))),
+            inner,
+        );
+        return;
+    }
+
+    let mut lines: Vec<Line> = Vec::new();
+    for p in &app.compose_projects {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{:<16} ", p.name),
+                Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(p.config_files.clone(), Style::new().fg(t.fg_dim)),
+        ]));
+        lines.push(Line::from(Span::styled(
+            format!("  {} services · {}", p.service_count, p.status),
+            Style::new().fg(t.fg_muted),
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+}
+
+/// Image-store summary (`docker system df` + dangling count) with a prune hint.
+fn render_image_hygiene(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let h = &app.image_hygiene;
+    let block = panel_block(&t, "Image hygiene");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if h.total_images == 0 && h.dangling == 0 {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no image data", Style::new().fg(t.fg_dim))),
+            inner,
+        );
+        return;
+    }
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                format!("{} images", h.total_images),
+                Style::new().fg(t.fg_strong),
+            ),
+            Span::styled(
+                format!(" · {} total", h.total_size),
+                Style::new().fg(t.fg_muted),
+            ),
+        ]),
+        Line::from(Span::styled(
+            format!("{} dangling", h.dangling),
+            Style::new().fg(if h.dangling > 0 { t.high } else { t.fg_muted }),
+        )),
+    ];
+    if !h.reclaimable.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("{} reclaimable", h.reclaimable),
+            Style::new().fg(t.fg_muted),
+        )));
+    }
+    let hint = if app.mode == systui_core::ExecutionMode::ReadOnly {
+        Span::styled("read-only — prune disabled", Style::new().fg(t.fg_dim))
+    } else if h.dangling > 0 {
+        Span::styled("press p to prune dangling", Style::new().fg(t.accent))
+    } else {
+        Span::styled("nothing to prune", Style::new().fg(t.fg_dim))
+    };
+    lines.push(Line::from(hint));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 fn render_container_table(frame: &mut Frame, app: &App, area: Rect) {
@@ -2556,6 +2647,13 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             ("?", "help"),
             ("q", "quit"),
         ],
+        Tab::Docker => &[
+            ("r", "refresh"),
+            ("a", "actions"),
+            ("p", "prune images"),
+            ("?", "help"),
+            ("q", "quit"),
+        ],
         _ => &[
             ("r", "refresh"),
             ("/", "search"),
@@ -2617,6 +2715,7 @@ fn render_help(frame: &mut Frame, app: &App) {
         ("s", "sort processes by CPU/memory"),
         ("f", "cycle Services filter (all/failed/running/…)"),
         ("c", "run connectivity probes (Network tab)"),
+        ("p", "prune dangling images (Docker tab)"),
         ("/", "search logs (Esc to clear)"),
         ("l / t", "cycle log level / time window"),
         ("?", "toggle this help"),
@@ -3273,6 +3372,40 @@ mod tests {
         // The privileged container surfaces in the detail panel and as a RISK badge.
         assert!(out.contains("privileged"));
         assert!(out.contains("RISK"));
+    }
+
+    #[test]
+    fn docker_tab_shows_compose_and_image_hygiene() {
+        use systui_collectors::{ComposeProject, ImageHygiene};
+        let mut app = App::new("local", ExecutionMode::Privileged);
+        app.snapshot = Some(sample_snapshot());
+        app.docker_available = true;
+        app.containers = vec![sample_container()];
+        app.container_inspects = vec![sample_inspect()];
+        app.compose_projects = vec![ComposeProject {
+            name: "acme-stack".to_owned(),
+            status: "running(5)".to_owned(),
+            config_files: "/srv/acme/docker-compose.yml".to_owned(),
+            service_count: 5,
+        }];
+        app.image_hygiene = ImageHygiene {
+            total_images: 23,
+            total_size: "9.4GB".to_owned(),
+            reclaimable: "2.1GB (22%)".to_owned(),
+            dangling: 2,
+        };
+        app.view_state = ViewState::Ready;
+        app.select_tab(6); // Docker
+
+        let out = render_to_string(&app, 120, 36);
+        assert!(out.contains("Compose projects"));
+        assert!(out.contains("acme-stack"));
+        assert!(out.contains("5 services"));
+        assert!(out.contains("Image hygiene"));
+        assert!(out.contains("23 images"));
+        assert!(out.contains("2 dangling"));
+        // A writable mode invites the prune.
+        assert!(out.contains("press p to prune"));
     }
 
     #[test]

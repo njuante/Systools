@@ -2,13 +2,14 @@
 
 use chrono::{Local, NaiveDateTime};
 use systui_actions::{
-    ActionDecision, CronAction, DockerAction, DockerOp, ServiceAction, ServiceOp, Signal,
-    SignalAction,
+    ActionDecision, CronAction, DockerAction, DockerOp, DockerPruneAction, ServiceAction,
+    ServiceOp, Signal, SignalAction,
 };
 use systui_collectors::{
-    Container, ContainerStats, CronEntry, CronSource, DatabaseSnapshot, ExposureEntry,
-    FirewallSnapshot, HealthReport, HostCapabilities, InspectSummary, LogEntry, LogQuery,
-    NetworkSnapshot, Process, ServiceUnit, SystemSnapshot, SystemdTimer, parse_schedule,
+    ComposeProject, Container, ContainerStats, CronEntry, CronSource, DatabaseSnapshot,
+    ExposureEntry, FirewallSnapshot, HealthReport, HostCapabilities, ImageHygiene, InspectSummary,
+    LogEntry, LogQuery, NetworkSnapshot, Process, ServiceUnit, SystemSnapshot, SystemdTimer,
+    parse_schedule,
 };
 use systui_core::{Action, ExecutionMode, Finding, ModuleId, Severity, Thresholds};
 
@@ -22,6 +23,7 @@ pub enum PendingAction {
     Service(ServiceAction),
     Signal(SignalAction),
     Docker(DockerAction),
+    DockerPrune(DockerPruneAction),
     Cron(CronAction),
 }
 
@@ -31,6 +33,7 @@ impl PendingAction {
             PendingAction::Service(a) => a,
             PendingAction::Signal(a) => a,
             PendingAction::Docker(a) => a,
+            PendingAction::DockerPrune(a) => a,
             PendingAction::Cron(a) => a,
         }
     }
@@ -306,6 +309,8 @@ pub struct App {
     pub container_inspects: Vec<InspectSummary>,
     pub container_stats: Vec<ContainerStats>,
     pub docker_available: bool,
+    pub compose_projects: Vec<ComposeProject>,
+    pub image_hygiene: ImageHygiene,
     pub containers_selected: usize,
     pub crons: Vec<CronEntry>,
     pub timers: Vec<SystemdTimer>,
@@ -372,6 +377,8 @@ impl App {
             container_inspects: Vec::new(),
             container_stats: Vec::new(),
             docker_available: false,
+            compose_projects: Vec::new(),
+            image_hygiene: ImageHygiene::default(),
             containers_selected: 0,
             crons: Vec::new(),
             timers: Vec::new(),
@@ -725,6 +732,18 @@ impl App {
             self.pending = Some(pending);
             self.action_plan_requested = true;
         }
+    }
+
+    /// Queue a "prune dangling images" mutation for the engine (Docker tab).
+    pub fn request_prune_images(&mut self) {
+        if self.mode == ExecutionMode::ReadOnly {
+            self.set_decision(ActionDecision::Rejected(
+                "image prune is disabled in read-only mode".to_owned(),
+            ));
+            return;
+        }
+        self.pending = Some(PendingAction::DockerPrune(DockerPruneAction::new()));
+        self.action_plan_requested = true;
     }
 
     /// Open a form for adding a user-crontab entry.

@@ -180,6 +180,119 @@ pub async fn container_logs(transport: &dyn Transport, id: &str, tail: u32) -> R
     Ok(lines)
 }
 
+/// A Docker Compose project discovered via `docker compose ls`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComposeProject {
+    pub name: String,
+    /// Raw status text, e.g. `running(5)` or `exited(2)`.
+    pub status: String,
+    pub config_files: String,
+    /// Number of services parsed from the status (the count in parentheses).
+    pub service_count: usize,
+}
+
+/// A summary of the local image store (`docker system df` + dangling count).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageHygiene {
+    pub total_images: usize,
+    /// Human total size as reported by `docker system df`, e.g. `9.4GB`.
+    pub total_size: String,
+    /// Human reclaimable size, e.g. `2.1GB (22%)`.
+    pub reclaimable: String,
+    /// Number of dangling (untagged, unreferenced) images.
+    pub dangling: usize,
+}
+
+/// List Compose projects via `docker compose ls -a --format json`. Best-effort:
+/// the Compose v2 plugin may be absent, in which case the caller degrades to an
+/// empty list (the panel is simply omitted).
+pub async fn compose_projects(transport: &dyn Transport) -> Result<Vec<ComposeProject>> {
+    let spec = CommandSpec::new("docker").args(["compose", "ls", "-a", "--format", "json"]);
+    let output = transport.run(&spec).await?.into_result("docker compose")?;
+    Ok(parse_compose_ls(&output.stdout))
+}
+
+/// Summarise the image store: totals from `docker system df` and the dangling
+/// count from `docker images --filter dangling=true`.
+pub async fn image_hygiene(transport: &dyn Transport) -> Result<ImageHygiene> {
+    let df = CommandSpec::new("docker").args(["system", "df", "--format", "{{json .}}"]);
+    let df_out = transport.run(&df).await?.into_result("docker")?;
+    let mut hygiene = parse_system_df_images(&df_out.stdout);
+
+    let dangling =
+        CommandSpec::new("docker").args(["images", "--filter", "dangling=true", "--quiet"]);
+    if let Ok(out) = transport.run(&dangling).await
+        && out.success()
+    {
+        hygiene.dangling = out.stdout.lines().filter(|l| !l.trim().is_empty()).count();
+    }
+    Ok(hygiene)
+}
+
+#[derive(Deserialize)]
+struct RawCompose {
+    #[serde(rename = "Name", default)]
+    name: String,
+    #[serde(rename = "Status", default)]
+    status: String,
+    #[serde(rename = "ConfigFiles", default)]
+    config_files: String,
+}
+
+fn parse_compose_ls(s: &str) -> Vec<ComposeProject> {
+    // Compose v2 emits a single JSON array; tolerate NDJSON too.
+    let raws: Vec<RawCompose> = serde_json::from_str::<Vec<RawCompose>>(s).unwrap_or_else(|_| {
+        s.lines()
+            .filter_map(|l| serde_json::from_str::<RawCompose>(l).ok())
+            .collect()
+    });
+    raws.into_iter()
+        .map(|r| ComposeProject {
+            service_count: count_in_parens(&r.status),
+            name: r.name,
+            status: r.status,
+            config_files: r.config_files,
+        })
+        .collect()
+}
+
+/// Extract the integer inside the first parentheses, e.g. `running(5)` → 5.
+fn count_in_parens(status: &str) -> usize {
+    status
+        .split_once('(')
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .and_then(|(num, _)| num.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+#[derive(Deserialize)]
+struct RawSystemDf {
+    #[serde(rename = "Type", default)]
+    kind: String,
+    #[serde(rename = "TotalCount", default)]
+    total_count: String,
+    #[serde(rename = "Size", default)]
+    size: String,
+    #[serde(rename = "Reclaimable", default)]
+    reclaimable: String,
+}
+
+fn parse_system_df_images(s: &str) -> ImageHygiene {
+    for line in s.lines() {
+        if let Ok(row) = serde_json::from_str::<RawSystemDf>(line)
+            && row.kind == "Images"
+        {
+            return ImageHygiene {
+                total_images: row.total_count.trim().parse().unwrap_or(0),
+                total_size: row.size,
+                reclaimable: row.reclaimable,
+                dangling: 0,
+            };
+        }
+    }
+    ImageHygiene::default()
+}
+
 // --- docker ps -------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -407,6 +520,41 @@ mod tests {
 
     const PS_CMD: &str = "docker ps -a --no-trunc --format {{json .}}";
     const STATS_CMD: &str = "docker stats --no-stream --format {{json .}}";
+
+    #[test]
+    fn parses_compose_projects() {
+        let projects = parse_compose_ls(include_str!("../fixtures/docker-compose-ls.txt"));
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[0].name, "acme-stack");
+        assert_eq!(projects[0].service_count, 5);
+        assert_eq!(projects[0].config_files, "/srv/acme/docker-compose.yml");
+        // status with multiple groups: parses the first parenthesised count.
+        assert_eq!(projects[1].service_count, 2);
+    }
+
+    #[test]
+    fn parses_image_hygiene_from_system_df() {
+        let hygiene = parse_system_df_images(include_str!("../fixtures/docker-system-df.txt"));
+        assert_eq!(hygiene.total_images, 23);
+        assert_eq!(hygiene.total_size, "9.4GB");
+        assert_eq!(hygiene.reclaimable, "2.1GB (22%)");
+    }
+
+    #[tokio::test]
+    async fn image_hygiene_counts_dangling() {
+        let transport = MockTransport::new()
+            .with_stdout(
+                "docker system df --format {{json .}}",
+                include_str!("../fixtures/docker-system-df.txt"),
+            )
+            .with_stdout(
+                "docker images --filter dangling=true --quiet",
+                "abc123\ndef456\n",
+            );
+        let hygiene = image_hygiene(&transport).await.unwrap();
+        assert_eq!(hygiene.total_images, 23);
+        assert_eq!(hygiene.dangling, 2);
+    }
 
     #[test]
     fn parses_container_list() {

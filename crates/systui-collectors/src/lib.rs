@@ -32,8 +32,9 @@ pub use database::{
     detect_database_instances,
 };
 pub use docker::{
-    Container, ContainerHealth, ContainerStats, DockerCollector, InspectSummary, Mount,
-    PublishedPort, container_logs, container_stats, inspect_container,
+    ComposeProject, Container, ContainerHealth, ContainerStats, DockerCollector, ImageHygiene,
+    InspectSummary, Mount, PublishedPort, compose_projects, container_logs, container_stats,
+    image_hygiene, inspect_container,
 };
 pub use exposure::{BindScope, ExposureEntry, exposure_map};
 pub use firewall::{FirewallCollector, FirewallSnapshot};

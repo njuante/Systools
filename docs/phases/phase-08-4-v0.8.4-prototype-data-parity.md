@@ -161,6 +161,19 @@ The omitted panels, audited against the current code, fall into four buckets:
   tests added; gates green.
 - **S8e.4 — Docker compose + image hygiene + prune**: the two omitted Docker panels
   from new collectors; `prune dangling` mutation through the action engine.
+  **Done.** Added `compose_projects` (`docker compose ls -a --format json` →
+  name, status, config file, service count) and `image_hygiene` (`docker system
+  df` totals + a `docker images --filter dangling=true` count) collectors,
+  fixture-tested. They collect concurrently with `container_stats` inside the
+  existing docker group (which was refactored from a 5-tuple to a `DockerGather`
+  struct for readability), gated on Docker being available, and degrade to empty
+  (the Compose plugin may be absent). The Docker screen grew a third row with
+  **Compose projects** and **Image hygiene** panels alongside the existing
+  table/risks/detail. A new host-scoped **`DockerPruneAction`** (`docker image
+  prune -f`, Medium risk, reports reclaimed space) runs through the action
+  engine; `p` on the Docker tab triggers it, blocked in read-only mode and
+  audited like every other mutation. Status-bar/help hints, render tests and
+  action/parser unit tests added; gates green.
 - **S8e.5 — Packages & Anacron**: packages/updates collector → Dashboard **UPDATES**
   tile (+ Packages view if it fits); anacron source in Crons; cron **run now** action.
 - **S8e.6 — Persistence-backed panels**: the local store for health/finding-count

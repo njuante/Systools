@@ -10,9 +10,10 @@ use std::time::Instant;
 
 use chrono::{Local, NaiveDateTime};
 use systui_collectors::{
-    Container, ContainerStats, CronEntry, DatabaseSnapshot, ExposureEntry, FirewallSnapshot,
-    HealthReport, HostStatics, InspectSummary, LogEntry, LogQuery, LogsCollector, NetStatics,
-    NetworkSnapshot, Process, ServiceUnit, SystemSnapshot, SystemdTimer, timing,
+    ComposeProject, Container, ContainerStats, CronEntry, DatabaseSnapshot, ExposureEntry,
+    FirewallSnapshot, HealthReport, HostStatics, ImageHygiene, InspectSummary, LogEntry, LogQuery,
+    LogsCollector, NetStatics, NetworkSnapshot, Process, ServiceUnit, SystemSnapshot, SystemdTimer,
+    timing,
 };
 use systui_core::{Collector, CoreError, Finding, Thresholds, Transport};
 use systui_report::collect::{
@@ -43,6 +44,8 @@ pub struct RefreshResult {
     pub container_inspects: Vec<InspectSummary>,
     pub container_stats: Vec<ContainerStats>,
     pub docker_available: bool,
+    pub compose_projects: Vec<ComposeProject>,
+    pub image_hygiene: ImageHygiene,
     pub crons: Vec<CronEntry>,
     pub timers: Vec<SystemdTimer>,
     pub now: NaiveDateTime,
@@ -89,15 +92,13 @@ pub async fn gather(
     let report = report?;
     let (network, exposures, security_findings, firewall) = net;
     let (databases, database_findings_v) = dbs;
-    let (containers, container_inspects, container_stats_data, docker_available, docker_findings_v) =
-        docker;
     let (crons, cron_findings_v) = crons_group;
     let (all_units, enabled_units) = services;
 
     let findings = merge_findings(
         security_findings,
         database_findings_v,
-        docker_findings_v,
+        docker.findings,
         cron_findings_v,
     );
 
@@ -119,10 +120,12 @@ pub async fn gather(
         exposures,
         firewall,
         databases,
-        containers,
-        container_inspects,
-        container_stats: container_stats_data,
-        docker_available,
+        containers: docker.containers,
+        container_inspects: docker.inspects,
+        container_stats: docker.stats,
+        docker_available: docker.available,
+        compose_projects: docker.compose,
+        image_hygiene: docker.hygiene,
         crons,
         timers,
         now: Local::now().naive_local(),
@@ -157,6 +160,8 @@ pub fn apply_refresh(app: &mut App, outcome: RefreshOutcome) {
             app.container_inspects = result.container_inspects;
             app.container_stats = result.container_stats;
             app.docker_available = result.docker_available;
+            app.compose_projects = result.compose_projects;
+            app.image_hygiene = result.image_hygiene;
             app.crons = result.crons;
             app.timers = result.timers;
             app.now = result.now;

@@ -12,11 +12,12 @@ use std::future::Future;
 use std::time::{Duration, Instant};
 
 use systui_collectors::{
-    Container, ContainerStats, CronEntry, DatabaseCollector, DatabaseSnapshot, DockerCollector,
-    ExposureEntry, FirewallCollector, FirewallSnapshot, HostReport, HostStatics, InspectSummary,
-    LogQuery, NetStatics, NetworkCollector, NetworkSnapshot, ServiceCollector, ServiceUnit,
-    SystemdTimer, UnitFilesCollector, collect_cron_entries, collect_host_report, collect_timers,
-    container_stats, exposure_map, inspect_container, timing,
+    ComposeProject, Container, ContainerStats, CronEntry, DatabaseCollector, DatabaseSnapshot,
+    DockerCollector, ExposureEntry, FirewallCollector, FirewallSnapshot, HostReport, HostStatics,
+    ImageHygiene, InspectSummary, LogQuery, NetStatics, NetworkCollector, NetworkSnapshot,
+    ServiceCollector, ServiceUnit, SystemdTimer, UnitFilesCollector, collect_cron_entries,
+    collect_host_report, collect_timers, compose_projects, container_stats, exposure_map,
+    image_hygiene, inspect_container, timing,
 };
 use systui_core::{Collector, CoreError, Finding, Result, Thresholds, Transport};
 use systui_security::{cron_findings, database_findings, docker_findings, security_scan};
@@ -122,44 +123,56 @@ pub async fn gather_databases(transport: &dyn Transport) -> (DatabaseSnapshot, V
 /// Docker containers → per-container inspect → stats, plus risk findings. An
 /// unreachable daemon yields an empty, unavailable view. The returned bool is
 /// whether Docker is available.
-pub async fn gather_docker(
-    transport: &dyn Transport,
-) -> (
-    Vec<Container>,
-    Vec<InspectSummary>,
-    Vec<ContainerStats>,
-    bool,
-    Vec<Finding>,
-) {
-    within_timeout(
-        "docker_group",
-        (Vec::new(), Vec::new(), Vec::new(), false, Vec::new()),
-        async move {
-            match timing::timed("docker", DockerCollector::new().collect(transport)).await {
-                Ok(containers) => {
-                    let inspect_start = Instant::now();
-                    let mut inspects: Vec<InspectSummary> = Vec::new();
-                    for c in &containers {
-                        if let Ok(Some(summary)) = inspect_container(transport, &c.id).await {
-                            inspects.push(summary);
-                        }
+pub async fn gather_docker(transport: &dyn Transport) -> DockerGather {
+    within_timeout("docker_group", DockerGather::default(), async move {
+        match timing::timed("docker", DockerCollector::new().collect(transport)).await {
+            Ok(containers) => {
+                let inspect_start = Instant::now();
+                let mut inspects: Vec<InspectSummary> = Vec::new();
+                for c in &containers {
+                    if let Ok(Some(summary)) = inspect_container(transport, &c.id).await {
+                        inspects.push(summary);
                     }
-                    tracing::info!(
-                        target: timing::PERF_TARGET,
-                        collector = "docker_inspects",
-                        elapsed_ms = inspect_start.elapsed().as_secs_f64() * 1000.0,
-                    );
-                    let findings = docker_findings(&inspects);
-                    let stats = timing::timed("container_stats", container_stats(transport))
-                        .await
-                        .unwrap_or_default();
-                    (containers, inspects, stats, true, findings)
                 }
-                Err(_) => (Vec::new(), Vec::new(), Vec::new(), false, Vec::new()),
+                tracing::info!(
+                    target: timing::PERF_TARGET,
+                    collector = "docker_inspects",
+                    elapsed_ms = inspect_start.elapsed().as_secs_f64() * 1000.0,
+                );
+                let findings = docker_findings(&inspects);
+                // Stats, compose projects and image hygiene are independent of
+                // each other; overlap them instead of running back-to-back.
+                let (stats, compose, hygiene) = tokio::join!(
+                    timing::timed("container_stats", container_stats(transport)),
+                    timing::timed("compose_projects", compose_projects(transport)),
+                    timing::timed("image_hygiene", image_hygiene(transport)),
+                );
+                DockerGather {
+                    containers,
+                    inspects,
+                    stats: stats.unwrap_or_default(),
+                    available: true,
+                    findings,
+                    compose: compose.unwrap_or_default(),
+                    hygiene: hygiene.unwrap_or_default(),
+                }
             }
-        },
-    )
+            Err(_) => DockerGather::default(),
+        }
+    })
     .await
+}
+
+/// The collected Docker view shared by the dashboard refresh and the report.
+#[derive(Debug, Default)]
+pub struct DockerGather {
+    pub containers: Vec<Container>,
+    pub inspects: Vec<InspectSummary>,
+    pub stats: Vec<ContainerStats>,
+    pub available: bool,
+    pub findings: Vec<Finding>,
+    pub compose: Vec<ComposeProject>,
+    pub hygiene: ImageHygiene,
 }
 
 /// Cron entries → cron risk findings (the findings depend on the entries).

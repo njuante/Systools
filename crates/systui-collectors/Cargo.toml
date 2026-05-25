@@ -10,6 +10,12 @@ description = "SysTUI collectors: system, process, service, log and network read
 [lints]
 workspace = true
 
+[features]
+# Opt-in integration tests that run the real collectors over LocalTransport/SshTransport
+# against the host. Off by default so `cargo test --workspace` stays hermetic; the CI
+# distro matrix and the systemd/ssh job enable it explicitly.
+integration = []
+
 [dependencies]
 systui-core.workspace = true
 async-trait.workspace = true
@@ -21,3 +27,5 @@ tracing.workspace = true
 
 [dev-dependencies]
 systui-transport.workspace = true
+systui-core.workspace = true
+tokio.workspace = true

@@ -96,9 +96,29 @@ version is bumped from the placeholder `0.1.0` to `1.0.0`.
 - **S10.2 - Test coverage**: close unit-test and fixture/golden-file gaps on parsers,
   the action engine, the policy evaluator and finding/severity logic; document the
   fixture convention for future distros.
+  **Done.** Audited coverage: every production `parse_*` is already exercised by a
+  fixture/unit test and most collectors have edge-case tests, so the real gaps were in
+  the safety layer and the docs. Added `docs/TESTING.md` documenting the test layers and
+  the fixture/golden-file convention (how fixtures are loaded with `include_str!` +
+  `MockTransport`, naming, and how to add a new distro by capturing fixtures), linked
+  from `METHODOLOGY.md`. Closed three action-engine gaps: the `Failure` audit status
+  (execution runs but does not succeed, distinct from `Rejected`), guardrail enforcement
+  on the `execute` path (previously only covered on `plan`), and case/whitespace-
+  insensitive confirmation matching.
 - **S10.3 - Integration tests**: containerized per-distro runs of the read-only
   collectors (Debian/Ubuntu/Arch/Fedora/Rocky-Alma/Alpine), a systemd-capable
   environment for real unit behavior, and an SSH parity smoke test, wired into CI.
+  **Done.** Added a feature-gated integration test target
+  (`crates/systui-collectors/tests/integration.rs`, behind the new `integration`
+  feature so `cargo test --workspace` stays hermetic) that runs the real collectors over
+  `LocalTransport`/`SshTransport`: system-snapshot sanity, PID 1 presence, host-report
+  assembly, transport smoke, systemd behaviour (graceful when absent, strict under
+  `SYSTUI_HAS_SYSTEMD=1`), and local/SSH hostname+kernel parity (opt-in via
+  `SYSTUI_SSH_TARGET`). Added `.github/workflows/integration.yml`: a distro-matrix job
+  runs the universal tests inside each distro container (Alpine non-blocking), and a
+  second job runs the strict systemd + local/SSH parity tests directly on the
+  `ubuntu-latest` runner — where systemd is PID 1 — instead of the fragile
+  systemd-in-Docker approach. The fast push gate (`ci.yml`) is unchanged.
 - **S10.4 - Hardening**: parser fuzzing harness, large-log benchmarks, and a security
   review of the privileged/action/shell-out paths confirming the no-free-form-command
   invariant; fix what they surface.

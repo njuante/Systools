@@ -51,6 +51,7 @@ pub fn run(
     let mut app = App::new(host_label, mode);
     app.thresholds = config.thresholds.clone();
     app.cert_warning_days = config.security.cert_expiry_warning_days;
+    app.policy_selection = systui_security::PolicySelection::for_host(config, &app.host_label);
     // Load persisted local state (trends, notes, saved searches); best-effort.
     let state_store = StateStore::at_default_location().ok();
     if let Some(store) = &state_store {
@@ -102,6 +103,7 @@ fn spawn_refresh(
     let thresholds = app.thresholds.clone();
     let log_query = app.log_query.clone();
     let cert_warning_days = app.cert_warning_days;
+    let policy_selection = app.policy_selection.clone();
     // Reuse the slow-changing tiers already on screen so this gather skips
     // re-reading them (tiered refresh); `None` on the first gather reads fresh.
     let (host_statics, net_statics) = data::cached_statics(app);
@@ -111,6 +113,7 @@ fn spawn_refresh(
             &thresholds,
             &log_query,
             cert_warning_days,
+            &policy_selection,
             host_statics,
             net_statics,
         )

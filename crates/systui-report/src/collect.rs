@@ -243,11 +243,13 @@ pub fn merge_findings(
     database: Vec<Finding>,
     docker: Vec<Finding>,
     cron: Vec<Finding>,
+    policy: Vec<Finding>,
 ) -> Vec<Finding> {
     let mut findings = security;
     findings.extend(database);
     findings.extend(docker);
     findings.extend(cron);
+    findings.extend(policy);
     findings.sort_by(|a, b| b.severity.cmp(&a.severity).then_with(|| a.id.cmp(&b.id)));
     findings
 }

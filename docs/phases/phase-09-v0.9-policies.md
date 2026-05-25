@@ -103,6 +103,17 @@ do not introduce automatic remediation. By the end of the phase, a web host can 
 - **S9.3 - Policy evaluation engine + drift findings**: evaluate gathered host facts
   against policies, produce stable `policy.*` findings, wire results into Security,
   dashboard health, reports and fleet output.
+  **Done.** Added `systui-security::policy`, a pure evaluator over already-collected
+  facts (`SystemSnapshot`, `NetworkSnapshot`, service inventory and Docker inventory).
+  It produces deterministic `policy.*` findings for missing policy definitions,
+  missing/forbidden ports, missing/inactive/forbidden services, disk/RAM/load
+  threshold drift, expected containers, image mismatches, forbidden containers and
+  forbidden images. Unknown areas are explicit `policy.partial.*` findings rather
+  than silent compliance: network/services/Docker when their snapshots are absent,
+  and identity/certificate expectations until those facts are exposed structurally.
+  The evaluator is wired into both TUI refresh and headless reports; fleet inherits it
+  through per-host reports. Unit tests cover evaluator behavior, and report/UI tests
+  assert policy findings appear in both data paths.
 - **S9.4 - Exceptions, finding states and polish**: persist finding states/exceptions,
   add TUI/report affordances for accepted/ignored/fixed/false-positive findings,
   refresh docs/tests/help text, run final gates, merge `--no-ff` into `main` and tag

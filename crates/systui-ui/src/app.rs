@@ -12,6 +12,7 @@ use systui_collectors::{
     SystemdTimer, parse_schedule,
 };
 use systui_core::{Action, ExecutionMode, Finding, ModuleId, Severity, Thresholds};
+use systui_security::PolicySelection;
 use systui_storage::PersistentState;
 
 use crate::form::{Field, Form};
@@ -326,6 +327,8 @@ pub struct App {
     pub input_mode: InputMode,
     pub health: Option<HealthReport>,
     pub thresholds: Thresholds,
+    /// Expected-state policy selected for this host, if any.
+    pub policy_selection: PolicySelection,
     pub services_selected: usize,
     pub processes_selected: usize,
     pub action: Option<ActionModal>,
@@ -402,6 +405,7 @@ impl App {
             input_mode: InputMode::Normal,
             health: None,
             thresholds: Thresholds::default(),
+            policy_selection: PolicySelection::default(),
             services_selected: 0,
             processes_selected: 0,
             action: None,

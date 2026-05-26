@@ -891,6 +891,8 @@ fn render_process_list(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let procs = app.process_rows();
+    let tree = app.process_view == ProcessView::Tree;
+    let depths: Vec<u16> = procs.iter().map(|(d, _)| *d).collect();
     // Scroll a window of rows so the selection is always on screen.
     let capacity = (body_area.height as usize).saturating_sub(1).max(1); // minus header
     let start = app
@@ -903,14 +905,18 @@ fn render_process_list(frame: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .skip(start)
         .take(capacity)
-        .map(|(i, (depth, p))| {
-            let indent = "  ".repeat(*depth as usize);
+        .map(|(i, (_, p))| {
+            let command = if tree {
+                format!("{}{}", tree_prefix(&depths, i), p.command)
+            } else {
+                p.command.clone()
+            };
             let row = Row::new([
                 p.pid.to_string(),
                 p.user.clone(),
                 format!("{:.1}", p.cpu_percent),
                 format!("{:.1}", p.mem_percent),
-                format!("{indent}{}", p.command),
+                command,
             ]);
             if i == app.processes_selected {
                 row.style(selected_style(app))
@@ -930,6 +936,33 @@ fn render_process_list(frame: &mut Frame, app: &App, area: Rect) {
         .column_spacing(1)
         .style(Style::new().fg(t.fg));
     frame.render_widget(table, body_area);
+}
+
+/// Tree connectors for row `i` of a pre-order, depth-annotated process list:
+/// `│  ` for ancestor levels that continue, `├─ `/`└─ ` for the node itself.
+fn tree_prefix(depths: &[u16], i: usize) -> String {
+    let d = depths[i];
+    if d == 0 {
+        return String::new();
+    }
+    // At a given level, the relevant ancestor/self has a following sibling iff,
+    // scanning forward, we meet that exact depth before rising above it.
+    let has_following = |level: u16| {
+        depths[i + 1..]
+            .iter()
+            .take_while(|&&dj| dj >= level)
+            .any(|&dj| dj == level)
+    };
+    let mut prefix = String::with_capacity(d as usize * 3);
+    for level in 1..=d {
+        let following = has_following(level);
+        if level == d {
+            prefix.push_str(if following { "├─ " } else { "└─ " });
+        } else {
+            prefix.push_str(if following { "│  " } else { "   " });
+        }
+    }
+    prefix
 }
 
 /// Right column: detail for the selected process, derived from the gathered
@@ -3311,6 +3344,18 @@ mod tests {
         let tree = render_to_string(&app, 110, 18);
         assert!(tree.contains("· tree"));
         assert!(tree.contains("Children")); // systemd has children
+        // The tree is drawn with connector glyphs, not bare indentation.
+        assert!(tree.contains("├─ ") || tree.contains("└─ "));
+    }
+
+    #[test]
+    fn tree_prefix_draws_connectors() {
+        // Pre-order depths for: systemd / ├ sshd / └ nginx / (nginx's child) worker.
+        let depths = [0u16, 1, 1, 2];
+        assert_eq!(tree_prefix(&depths, 0), "");
+        assert_eq!(tree_prefix(&depths, 1), "├─ "); // sshd has a following sibling
+        assert_eq!(tree_prefix(&depths, 2), "└─ "); // nginx is the last child
+        assert_eq!(tree_prefix(&depths, 3), "   └─ "); // worker under the last child
     }
 
     #[test]

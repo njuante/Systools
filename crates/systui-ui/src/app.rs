@@ -9,7 +9,7 @@ use systui_collectors::{
     ComposeProject, Container, ContainerStats, CronEntry, CronSource, DatabaseSnapshot,
     ExposureEntry, FirewallSnapshot, HealthReport, HostCapabilities, ImageHygiene, InspectSummary,
     LogEntry, LogQuery, NetworkSnapshot, PackageUpdates, Process, ServiceUnit, SystemSnapshot,
-    SystemdTimer, parse_schedule,
+    SystemdTimer, build_process_tree, parse_schedule,
 };
 use systui_core::{Action, ExecutionMode, Finding, FindingStatus, ModuleId, Severity, Thresholds};
 use systui_security::PolicySelection;
@@ -214,6 +214,22 @@ impl ProcessSort {
     }
 }
 
+/// How the Processes tab lays out the list: a flat sorted list or a parent→child tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessView {
+    List,
+    Tree,
+}
+
+impl ProcessView {
+    pub fn toggled(self) -> Self {
+        match self {
+            ProcessView::List => ProcessView::Tree,
+            ProcessView::Tree => ProcessView::List,
+        }
+    }
+}
+
 /// Which subset of systemd units the Services screen shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceFilter {
@@ -288,6 +304,7 @@ pub struct App {
     pub snapshot: Option<SystemSnapshot>,
     pub processes: Vec<Process>,
     pub process_sort: ProcessSort,
+    pub process_view: ProcessView,
     pub failed_units: Vec<ServiceUnit>,
     /// Full service unit list (slow-tier), backing the Services screen filters.
     pub all_units: Vec<ServiceUnit>,
@@ -374,6 +391,7 @@ impl App {
             snapshot: None,
             processes: Vec::new(),
             process_sort: ProcessSort::Cpu,
+            process_view: ProcessView::List,
             failed_units: Vec::new(),
             all_units: Vec::new(),
             enabled_units: Vec::new(),
@@ -714,7 +732,7 @@ impl App {
         self.services_selected = 0;
     }
 
-    /// Processes in display order (sorted by the current key).
+    /// Processes sorted by the current key (the flat List view order).
     pub fn visible_processes(&self) -> Vec<&Process> {
         let mut procs: Vec<&Process> = self.processes.iter().collect();
         let key = |p: &Process| match self.process_sort {
@@ -727,6 +745,36 @@ impl App {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         procs
+    }
+
+    /// The Processes rows in the current view's order, each with its tree depth
+    /// (always 0 in List view). Selection, the detail panel and the signal action
+    /// all index into this so they stay consistent across views.
+    pub fn process_rows(&self) -> Vec<(u16, &Process)> {
+        match self.process_view {
+            ProcessView::List => self
+                .visible_processes()
+                .into_iter()
+                .map(|p| (0, p))
+                .collect(),
+            ProcessView::Tree => build_process_tree(&self.processes)
+                .into_iter()
+                .filter_map(|r| self.processes.get(r.index).map(|p| (r.depth, p)))
+                .collect(),
+        }
+    }
+
+    /// The process currently under the cursor, in the active view's order.
+    pub fn selected_process(&self) -> Option<&Process> {
+        self.process_rows()
+            .get(self.processes_selected)
+            .map(|(_, p)| *p)
+    }
+
+    /// Toggle the Processes tab between the flat list and the process tree.
+    pub fn toggle_process_view(&mut self) {
+        self.process_view = self.process_view.toggled();
+        self.processes_selected = 0;
     }
 
     /// Count findings at each severity, as `[critical, high, medium, low, info]`.
@@ -846,12 +894,9 @@ impl App {
             Tab::Services => self
                 .selected_service()
                 .map(|u| PendingAction::Service(ServiceAction::new(ServiceOp::Restart, &u.name))),
-            Tab::Processes => {
-                let procs = self.visible_processes();
-                procs.get(self.processes_selected).map(|p| {
-                    PendingAction::Signal(SignalAction::new(Signal::Term, p.pid, &p.command))
-                })
-            }
+            Tab::Processes => self
+                .selected_process()
+                .map(|p| PendingAction::Signal(SignalAction::new(Signal::Term, p.pid, &p.command))),
             // Default container op is state-aware: restart a running container,
             // start a stopped one. Stop/remove remain available via the engine.
             Tab::Docker => self.selected_container().map(|c| {

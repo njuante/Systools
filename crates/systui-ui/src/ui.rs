@@ -373,9 +373,7 @@ fn render_content(frame: &mut Frame, app: &App, area: Rect) {
         (ViewState::Ready, Some(snap), Tab::Dashboard) => {
             render_dashboard(frame, app, snap, inner);
         }
-        (ViewState::Ready, Some(snap), Tab::System) => {
-            frame.render_widget(Paragraph::new(system_text(app, snap)), inner);
-        }
+        (ViewState::Ready, Some(snap), Tab::System) => render_system(frame, app, snap, inner),
         (ViewState::Ready, _, Tab::Processes) => render_processes(frame, app, inner),
         (ViewState::Ready, _, Tab::Services) => render_services(frame, app, inner),
         (ViewState::Ready, _, Tab::Logs) => render_logs(frame, app, inner),
@@ -2656,102 +2654,186 @@ fn finding_line(app: &App, check: &systui_collectors::Check) -> Line<'static> {
     ])
 }
 
-/// The full system detail view.
-fn system_text(app: &App, snap: &SystemSnapshot) -> Text<'static> {
-    let dim = Style::new().fg(app.theme.dim);
-    let accent = Style::new()
-        .fg(app.theme.accent)
-        .add_modifier(Modifier::BOLD);
+/// The System tab: a multi-panel hardware/identity view built entirely from the
+/// live `SystemSnapshot` (no mock data). Left: identity + disks; right: memory + users.
+fn render_system(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
+    let cols =
+        Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).split(area);
+    let left = Layout::vertical([Constraint::Length(8), Constraint::Min(0)]).split(cols[0]);
+    let right = Layout::vertical([Constraint::Length(7), Constraint::Min(0)]).split(cols[1]);
 
-    let rows = [
-        ("Hostname", snap.hostname.clone()),
-        (
-            "OS",
-            snap.os.clone().unwrap_or_else(|| "unknown".to_owned()),
-        ),
-        ("Kernel", snap.kernel.clone()),
-        ("Uptime", human_uptime(snap.uptime_secs)),
-        (
+    render_system_identity(frame, app, snap, left[0]);
+    render_system_disks(frame, app, snap, left[1]);
+    render_system_memory(frame, app, snap, right[0]);
+    render_system_users(frame, app, snap, right[1]);
+}
+
+/// Identity & vitals: hostname, OS, kernel, uptime, CPU and load.
+fn render_system_identity(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
+    let block = panel_block(&app.theme, "System");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = vec![
+        label_value(app, "Hostname", &snap.hostname),
+        label_value(app, "OS", snap.os.as_deref().unwrap_or("unknown")),
+        label_value(app, "Kernel", &snap.kernel),
+        label_value(app, "Uptime", &human_uptime(snap.uptime_secs)),
+        label_value(
+            app,
             "CPU",
-            format!(
+            &format!(
                 "{:.0}% busy · {} cores",
                 snap.cpu.busy_percent, snap.cpu.cores
             ),
         ),
-        (
+        label_value(
+            app,
             "Load",
-            format!(
+            &format!(
                 "{:.2}  {:.2}  {:.2}",
                 snap.load.one, snap.load.five, snap.load.fifteen
             ),
         ),
-        (
-            "Memory",
-            format!(
-                "{} / {} ({:.0}%)",
-                human_kb(snap.memory.used_kb()),
-                human_kb(snap.memory.total_kb),
-                snap.memory.used_percent()
-            ),
-        ),
-        (
-            "Swap",
-            if snap.swap.total_kb > 0 {
-                format!(
-                    "{} / {} ({:.0}%)",
-                    human_kb(snap.swap.used_kb()),
-                    human_kb(snap.swap.total_kb),
-                    snap.swap.used_percent()
-                )
-            } else {
-                "none".to_owned()
-            },
-        ),
     ];
+    frame.render_widget(Paragraph::new(lines), inner);
+}
 
-    let mut lines = vec![Line::from("")];
-    for (key, value) in rows {
-        lines.push(label_value(app, key, &value));
-    }
+/// Memory & swap as labelled, colour-coded gauges.
+fn render_system_memory(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Memory");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("Disks", accent)));
-    for disk in &snap.disks {
-        lines.push(Line::from(vec![Span::styled(
+    let bar_w = (inner.width as usize).saturating_sub(13).clamp(4, 24);
+    let mut lines = vec![
+        gauge_line(&t, "RAM", snap.memory.used_percent(), bar_w),
+        Line::from(Span::styled(
             format!(
-                "  {:<10} {:>3}%  {} / {}  ({})",
-                disk.mount,
-                disk.use_percent,
-                human_kb(disk.used_kb),
-                human_kb(disk.size_kb),
-                disk.filesystem
+                "        {} / {}",
+                human_kb(snap.memory.used_kb()),
+                human_kb(snap.memory.total_kb)
             ),
-            dim,
-        )]));
-    }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("Users", accent)));
-    if snap.users.is_empty() {
-        lines.push(Line::from(Span::styled("  none", dim)));
+            Style::new().fg(t.fg_dim),
+        )),
+    ];
+    if snap.swap.total_kb > 0 {
+        lines.push(gauge_line(&t, "Swap", snap.swap.used_percent(), bar_w));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "        {} / {}",
+                human_kb(snap.swap.used_kb()),
+                human_kb(snap.swap.total_kb)
+            ),
+            Style::new().fg(t.fg_dim),
+        )));
     } else {
-        for user in &snap.users {
-            let from = user
-                .from
-                .as_deref()
-                .map(|f| format!(" ({f})"))
-                .unwrap_or_default();
-            lines.push(Line::from(vec![Span::styled(
-                format!(
-                    "  {:<10} {:<10} {}{}",
-                    user.name, user.tty, user.login_time, from
-                ),
-                dim,
-            )]));
-        }
+        lines.push(Line::from(vec![
+            Span::styled("  Swap  ", Style::new().fg(t.dim)),
+            Span::styled("none", Style::new().fg(t.fg_dim)),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// A "label ████░░ NN%" gauge line, coloured by utilisation band.
+fn gauge_line(theme: &Theme, label: &str, percent: f64, width: usize) -> Line<'static> {
+    let color = usage_color(theme, percent);
+    Line::from(vec![
+        Span::styled(format!("  {label:<5} "), Style::new().fg(theme.dim)),
+        Span::styled(gauge_bar(percent, width), Style::new().fg(color)),
+        Span::styled(format!(" {percent:.0}%"), Style::new().fg(theme.fg)),
+    ])
+}
+
+/// Disks: per-mount usage with a colour-coded gauge.
+fn render_system_disks(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Disks");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if snap.disks.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no disk data", Style::new().fg(t.fg_dim))),
+            inner,
+        );
+        return;
     }
 
-    Text::from(lines)
+    let header = Row::new(["MOUNT", "USE", "USED / SIZE", "FS"])
+        .style(Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD));
+    let bar_w = 10usize;
+    let rows = snap.disks.iter().map(|d| {
+        let pct = d.use_percent as f64;
+        let color = usage_color(&t, pct);
+        Row::new(vec![
+            Cell::from(d.mount.clone()),
+            Cell::from(Line::from(vec![
+                Span::styled(gauge_bar(pct, bar_w), Style::new().fg(color)),
+                Span::styled(format!(" {:>3}%", d.use_percent), Style::new().fg(color)),
+            ])),
+            Cell::from(format!("{} / {}", human_kb(d.used_kb), human_kb(d.size_kb))),
+            Cell::from(d.filesystem.clone()),
+        ])
+    });
+    let widths = [
+        Constraint::Length(14),
+        Constraint::Length(bar_w as u16 + 5),
+        Constraint::Length(20),
+        Constraint::Min(6),
+    ];
+    frame.render_widget(
+        Table::new(rows, widths)
+            .header(header)
+            .column_spacing(1)
+            .style(Style::new().fg(t.fg)),
+        inner,
+    );
+}
+
+/// Logged-in users.
+fn render_system_users(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Logged in");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if snap.users.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "no users logged in",
+                Style::new().fg(t.fg_dim),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let header = Row::new(["USER", "TTY", "LOGIN", "FROM"])
+        .style(Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD));
+    let rows = snap.users.iter().map(|u| {
+        Row::new(vec![
+            Cell::from(u.name.clone()),
+            Cell::from(u.tty.clone()),
+            Cell::from(u.login_time.clone()),
+            Cell::from(u.from.clone().unwrap_or_default()),
+        ])
+    });
+    let widths = [
+        Constraint::Length(12),
+        Constraint::Length(10),
+        Constraint::Min(8),
+        Constraint::Min(8),
+    ];
+    frame.render_widget(
+        Table::new(rows, widths)
+            .header(header)
+            .column_spacing(1)
+            .style(Style::new().fg(t.fg)),
+        inner,
+    );
 }
 
 fn label_value(app: &App, key: &str, value: &str) -> Line<'static> {
@@ -3099,7 +3181,10 @@ mod tests {
         assert!(out.contains("Hostname"));
         assert!(out.contains("Kernel"));
         assert!(out.contains("6.1.0-18-amd64"));
-        assert!(out.contains("Users"));
+        // Multi-panel layout: identity, memory gauges, disks and logged-in users.
+        assert!(out.contains("Memory"));
+        assert!(out.contains("Disks"));
+        assert!(out.contains("Logged in"));
         assert!(out.contains("admin"));
     }
 

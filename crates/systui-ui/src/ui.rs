@@ -15,7 +15,7 @@ use systui_collectors::{
 };
 use systui_core::{Finding, ModuleId, Severity};
 
-use crate::app::{ActionStage, App, InputMode, ServiceFilter, Tab, ViewState};
+use crate::app::{ActionStage, App, InputMode, ProcessView, ServiceFilter, Tab, ViewState};
 use crate::form::render_form;
 use crate::theme::Theme;
 
@@ -855,46 +855,69 @@ fn render_service_detail(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_processes(frame: &mut Frame, app: &App, area: Rect) {
+    let cols =
+        Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).split(area);
+    render_process_list(frame, app, cols[0]);
+    render_process_detail(frame, app, cols[1]);
+}
+
+/// Left column: a one-line hint plus the process table (flat list or tree),
+/// scrolled so the selected row stays visible.
+fn render_process_list(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
 
+    let view = if app.process_view == ProcessView::Tree {
+        "tree"
+    } else {
+        "list"
+    };
     let hint = Line::from(vec![
         Span::styled(
-            format!("sorted by {} ", app.process_sort.label()),
-            Style::new().fg(app.theme.text),
+            format!("sorted by {} · {view} ", app.process_sort.label()),
+            Style::new().fg(t.text),
         ),
-        Span::styled("(s to toggle)", Style::new().fg(app.theme.dim)),
+        Span::styled("(s sort · t list/tree)", Style::new().fg(t.dim)),
     ]);
     frame.render_widget(Paragraph::new(hint), rows[0]);
-    let area = rows[1];
+    let body_area = rows[1];
 
     if app.processes.is_empty() {
         frame.render_widget(
-            Paragraph::new(Span::styled(
-                "No process data.",
-                Style::new().fg(app.theme.dim),
-            )),
-            area,
+            Paragraph::new(Span::styled("No process data.", Style::new().fg(t.dim))),
+            body_area,
         );
         return;
     }
 
-    let procs = app.visible_processes();
+    let procs = app.process_rows();
+    // Scroll a window of rows so the selection is always on screen.
+    let capacity = (body_area.height as usize).saturating_sub(1).max(1); // minus header
+    let start = app
+        .processes_selected
+        .saturating_sub(capacity.saturating_sub(1));
     let header = Row::new(["PID", "USER", "%CPU", "%MEM", "COMMAND"])
-        .style(Style::new().fg(app.theme.dim).add_modifier(Modifier::BOLD));
-    let body = procs.iter().take(20).enumerate().map(|(i, p)| {
-        let row = Row::new([
-            p.pid.to_string(),
-            p.user.clone(),
-            format!("{:.1}", p.cpu_percent),
-            format!("{:.1}", p.mem_percent),
-            p.command.clone(),
-        ]);
-        if i == app.processes_selected {
-            row.style(selected_style(app))
-        } else {
-            row
-        }
-    });
+        .style(Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD));
+    let body = procs
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(capacity)
+        .map(|(i, (depth, p))| {
+            let indent = "  ".repeat(*depth as usize);
+            let row = Row::new([
+                p.pid.to_string(),
+                p.user.clone(),
+                format!("{:.1}", p.cpu_percent),
+                format!("{:.1}", p.mem_percent),
+                format!("{indent}{}", p.command),
+            ]);
+            if i == app.processes_selected {
+                row.style(selected_style(app))
+            } else {
+                row
+            }
+        });
     let widths = [
         Constraint::Length(7),
         Constraint::Length(12),
@@ -904,8 +927,61 @@ fn render_processes(frame: &mut Frame, app: &App, area: Rect) {
     ];
     let table = Table::new(body, widths)
         .header(header)
-        .style(Style::new().fg(app.theme.text));
-    frame.render_widget(table, rows[1]);
+        .column_spacing(1)
+        .style(Style::new().fg(t.fg));
+    frame.render_widget(table, body_area);
+}
+
+/// Right column: detail for the selected process, derived from the gathered
+/// process list (PID/PPID/parent, owner, CPU/RAM, command) — real data only.
+fn render_process_detail(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "Process");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let Some(p) = app.selected_process() else {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "no process selected",
+                Style::new().fg(t.fg_dim),
+            )),
+            inner,
+        );
+        return;
+    };
+
+    let parent = app
+        .processes
+        .iter()
+        .find(|c| c.pid == p.ppid)
+        .map(|c| format!("{} ({})", c.command, c.pid))
+        .unwrap_or_else(|| p.ppid.to_string());
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            p.command.clone(),
+            Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        label_value(app, "PID", &p.pid.to_string()),
+        label_value(app, "Parent", &parent),
+        label_value(app, "User", &p.user),
+        label_value(app, "CPU", &format!("{:.1}%", p.cpu_percent)),
+        label_value(app, "Memory", &format!("{:.1}%", p.mem_percent)),
+    ];
+
+    let children = app.processes.iter().filter(|c| c.ppid == p.pid).count();
+    if children > 0 {
+        lines.push(label_value(app, "Children", &children.to_string()));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "a to signal (SIGTERM) · ↑↓ to select",
+        Style::new().fg(t.fg_dim),
+    )));
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 /// Color for a finding/exposure severity.
@@ -3186,6 +3262,55 @@ mod tests {
         assert!(out.contains("Disks"));
         assert!(out.contains("Logged in"));
         assert!(out.contains("admin"));
+    }
+
+    #[test]
+    fn processes_show_detail_panel_and_tree() {
+        use systui_collectors::Process;
+        let mut app = App::new("prod-01", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.processes = vec![
+            Process {
+                pid: 1,
+                ppid: 0,
+                user: "root".into(),
+                cpu_percent: 0.1,
+                mem_percent: 0.2,
+                command: "systemd".into(),
+            },
+            Process {
+                pid: 880,
+                ppid: 1,
+                user: "root".into(),
+                cpu_percent: 0.4,
+                mem_percent: 1.1,
+                command: "sshd".into(),
+            },
+            Process {
+                pid: 3300,
+                ppid: 880,
+                user: "admin".into(),
+                cpu_percent: 12.4,
+                mem_percent: 0.8,
+                command: "node".into(),
+            },
+        ];
+        app.view_state = ViewState::Ready;
+        app.select_tab(2);
+
+        // Detail panel reflects the selected process (top of the CPU sort: node).
+        let out = render_to_string(&app, 110, 18);
+        assert!(out.contains("Process")); // detail panel title
+        assert!(out.contains("Parent")); // parent row
+        assert!(out.contains("sshd (880)")); // node's parent resolved by ppid
+
+        // Tree view indents children and exposes the child count in the detail.
+        app.toggle_process_view();
+        assert_eq!(app.process_view, ProcessView::Tree);
+        assert_eq!(app.processes_selected, 0); // reset on toggle → systemd
+        let tree = render_to_string(&app, 110, 18);
+        assert!(tree.contains("· tree"));
+        assert!(tree.contains("Children")); // systemd has children
     }
 
     #[test]

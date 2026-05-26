@@ -89,6 +89,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('s') => app.toggle_process_sort(),
         KeyCode::Char('/') => app.enter_search(),
         KeyCode::Char('l') => app.cycle_log_level(),
+        KeyCode::Char('t') if app.current_tab() == Tab::Processes => app.toggle_process_view(),
         KeyCode::Char('t') => app.cycle_log_window(),
         KeyCode::Char('a') => {
             if app.current_tab() == Tab::Security {

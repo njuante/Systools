@@ -2597,9 +2597,9 @@ fn render_health_panel(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Critical-findings list with severity-colored left edge bars (spec §14).
+/// Worst-first findings list with severity-colored left edge bars (spec §14).
 fn render_findings_panel(frame: &mut Frame, app: &App, area: Rect) {
-    let block = panel_block(&app.theme, "Critical findings");
+    let block = panel_block(&app.theme, "Top findings");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let t = app.theme;
@@ -2628,11 +2628,18 @@ fn render_findings_panel(frame: &mut Frame, app: &App, area: Rect) {
             ),
             Span::styled(f.title.clone(), Style::new().fg(t.fg_strong)),
         ]));
-        let evidence = f.evidence.first().cloned().unwrap_or_else(|| f.id.clone());
-        lines.push(Line::from(Span::styled(
-            format!("    {evidence}"),
-            Style::new().fg(t.fg_muted),
-        )));
+        // Prefer evidence; fall back to the recommendation; never leak the raw id.
+        if let Some(evidence) = f.evidence.first() {
+            lines.push(Line::from(Span::styled(
+                format!("    {evidence}"),
+                Style::new().fg(t.fg_muted),
+            )));
+        } else if !f.recommendation.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("    → {}", f.recommendation),
+                Style::new().fg(t.fg_dim),
+            )));
+        }
     }
     frame.render_widget(Paragraph::new(lines), inner);
 }

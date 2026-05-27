@@ -15,7 +15,7 @@ use systui_core::{Action, ExecutionMode, Finding, FindingStatus, ModuleId, Sever
 use systui_security::PolicySelection;
 use systui_storage::PersistentState;
 
-use crate::form::{Field, Form};
+use crate::cron_builder::CronBuilder;
 use crate::theme::{Theme, ThemeKind};
 
 /// A concrete action queued for the engine. An enum (not a trait object) so
@@ -49,13 +49,6 @@ pub enum CronFormMode {
         original_schedule: String,
         original_command: String,
     },
-}
-
-/// Cron form overlay state.
-#[derive(Debug, Clone)]
-pub struct CronFormState {
-    pub mode: CronFormMode,
-    pub form: Form,
 }
 
 /// Stage of the action confirmation modal.
@@ -378,7 +371,7 @@ pub struct App {
     pub processes_selected: usize,
     pub action: Option<ActionModal>,
     pub pending: Option<PendingAction>,
-    pub cron_form: Option<CronFormState>,
+    pub cron_builder: Option<CronBuilder>,
     pub show_help: bool,
     pub should_quit: bool,
     /// A background gather is in flight; drives the refresh indicator and
@@ -464,7 +457,7 @@ impl App {
             processes_selected: 0,
             action: None,
             pending: None,
-            cron_form: None,
+            cron_builder: None,
             show_help: false,
             should_quit: false,
             refreshing: false,
@@ -994,7 +987,7 @@ impl App {
         self.action_plan_requested = true;
     }
 
-    /// Open a form for adding a user-crontab entry.
+    /// Open the guided builder for adding a user-crontab entry.
     pub fn open_add_cron_form(&mut self) {
         if self.mode == ExecutionMode::ReadOnly {
             self.set_decision(ActionDecision::Rejected(
@@ -1002,13 +995,10 @@ impl App {
             ));
             return;
         }
-        self.cron_form = Some(CronFormState {
-            mode: CronFormMode::Add,
-            form: cron_form("Add cron job", "", ""),
-        });
+        self.cron_builder = Some(CronBuilder::add());
     }
 
-    /// Open a form for editing the selected user-crontab entry.
+    /// Open the builder to edit the selected user-crontab entry.
     pub fn open_edit_cron_form(&mut self) {
         if self.mode == ExecutionMode::ReadOnly {
             self.set_decision(ActionDecision::Rejected(
@@ -1022,13 +1012,10 @@ impl App {
             ));
             return;
         };
-        self.cron_form = Some(CronFormState {
-            mode: CronFormMode::Edit {
-                original_schedule: entry.schedule.clone(),
-                original_command: entry.command.clone(),
-            },
-            form: cron_form("Edit cron job", &entry.schedule, &entry.command),
-        });
+        self.cron_builder = Some(CronBuilder::edit(
+            entry.schedule.clone(),
+            entry.command.clone(),
+        ));
     }
 
     /// Delete the selected user-crontab entry through the action engine.
@@ -1079,26 +1066,30 @@ impl App {
         }
     }
 
-    /// Submit the open cron form and route the resulting mutation through the
-    /// action engine.
+    /// Submit the open cron builder and route the resulting mutation through the
+    /// action engine. Validation failures re-open the builder with an error.
     pub fn submit_cron_form(&mut self) {
-        let Some(mut state) = self.cron_form.take() else {
+        let Some(mut builder) = self.cron_builder.take() else {
             return;
         };
-        let schedule = state.form.value("Schedule").to_owned();
-        let command = state.form.value("Command").to_owned();
-        if schedule.is_empty() || command.is_empty() {
-            state.form.error = Some("schedule and command are required".to_owned());
-            self.cron_form = Some(state);
+        let command = builder.command().to_owned();
+        if command.is_empty() {
+            builder.error = Some("command is required".to_owned());
+            self.cron_builder = Some(builder);
             return;
         }
+        let Some(schedule) = builder.expression() else {
+            builder.error = Some("the schedule is incomplete".to_owned());
+            self.cron_builder = Some(builder);
+            return;
+        };
         if let Err(err) = parse_schedule(&schedule) {
-            state.form.error = Some(format!("invalid schedule: {err}"));
-            self.cron_form = Some(state);
+            builder.error = Some(format!("invalid schedule: {err}"));
+            self.cron_builder = Some(builder);
             return;
         }
 
-        let action = match state.mode {
+        let action = match builder.mode {
             CronFormMode::Add => CronAction::add(schedule, command),
             CronFormMode::Edit {
                 original_schedule,
@@ -1110,32 +1101,44 @@ impl App {
     }
 
     pub fn close_cron_form(&mut self) {
-        self.cron_form = None;
+        self.cron_builder = None;
     }
 
     pub fn cron_form_focus_next(&mut self) {
-        if let Some(state) = &mut self.cron_form {
-            state.form.focus_next();
+        if let Some(b) = &mut self.cron_builder {
+            b.focus_next();
         }
     }
 
     pub fn cron_form_focus_prev(&mut self) {
-        if let Some(state) = &mut self.cron_form {
-            state.form.focus_prev();
+        if let Some(b) = &mut self.cron_builder {
+            b.focus_prev();
+        }
+    }
+
+    /// Adjust the focused choice field down/left.
+    pub fn cron_form_decrement(&mut self) {
+        if let Some(b) = &mut self.cron_builder {
+            b.decrement();
+        }
+    }
+
+    /// Adjust the focused choice field up/right.
+    pub fn cron_form_increment(&mut self) {
+        if let Some(b) = &mut self.cron_builder {
+            b.increment();
         }
     }
 
     pub fn cron_form_push_char(&mut self, c: char) {
-        if let Some(state) = &mut self.cron_form {
-            state.form.error = None;
-            state.form.push_char(c);
+        if let Some(b) = &mut self.cron_builder {
+            b.push_char(c);
         }
     }
 
     pub fn cron_form_pop_char(&mut self) {
-        if let Some(state) = &mut self.cron_form {
-            state.form.error = None;
-            state.form.pop_char();
+        if let Some(b) = &mut self.cron_builder {
+            b.pop_char();
         }
     }
 
@@ -1196,16 +1199,6 @@ impl App {
     pub fn quit(&mut self) {
         self.should_quit = true;
     }
-}
-
-fn cron_form(title: &str, schedule: &str, command: &str) -> Form {
-    Form::new(
-        title,
-        vec![
-            Field::text("Schedule", schedule).with_hint("five fields or @daily"),
-            Field::text("Command", command),
-        ],
-    )
 }
 
 #[cfg(test)]

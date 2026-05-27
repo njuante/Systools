@@ -16,7 +16,6 @@ use systui_collectors::{
 use systui_core::{Finding, ModuleId, Severity};
 
 use crate::app::{ActionStage, App, InputMode, ProcessView, ServiceFilter, Tab, ViewState};
-use crate::form::render_form;
 use crate::theme::Theme;
 
 /// Draw the whole UI for the current state.
@@ -47,8 +46,8 @@ pub fn render(frame: &mut Frame, app: &App) {
     if app.action.is_some() {
         render_action_modal(frame, app);
     }
-    if let Some(state) = &app.cron_form {
-        render_form(frame, &state.form, &app.theme);
+    if let Some(builder) = &app.cron_builder {
+        crate::cron_builder::render_cron_builder(frame, builder, &app.theme, app.now);
     }
     if let Some(draft) = &app.note_draft {
         render_note_input(frame, app, draft);
@@ -1955,11 +1954,13 @@ fn render_cron_table(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     if app.crons.is_empty() {
+        let msg = if app.mode == systui_core::ExecutionMode::ReadOnly {
+            "no cron jobs found"
+        } else {
+            "no cron jobs yet — press a to add one"
+        };
         frame.render_widget(
-            Paragraph::new(Span::styled(
-                "no cron jobs found",
-                Style::new().fg(t.fg_dim),
-            )),
+            Paragraph::new(Span::styled(msg, Style::new().fg(t.fg_dim))),
             inner,
         );
         return;
@@ -3361,6 +3362,36 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+
+    #[test]
+    fn cron_builder_shows_live_preview() {
+        let mut app = App::new("local", ExecutionMode::Privileged);
+        app.snapshot = Some(sample_snapshot());
+        app.view_state = ViewState::Ready;
+        app.select_tab(7); // Crons
+        app.open_add_cron_form();
+        assert!(app.cron_builder.is_some());
+
+        let out = render_to_string(&app, 120, 32);
+        assert!(out.contains("New cron job"));
+        assert!(out.contains("Frequency"));
+        assert!(out.contains("Daily")); // default frequency
+        // Live preview: the generated expression and its human description.
+        assert!(out.contains("0 9 * * *"));
+        assert!(out.contains("Every day"));
+    }
+
+    #[test]
+    fn cron_builder_frequency_changes_visible_fields() {
+        let mut app = App::new("local", ExecutionMode::Privileged);
+        app.open_add_cron_form();
+        // Frequency starts on Daily; one increment moves to Weekly, which adds
+        // the Weekday row.
+        app.cron_form_increment(); // Daily -> Weekly
+        let out = render_to_string(&app, 120, 32);
+        assert!(out.contains("Weekly"));
+        assert!(out.contains("Weekday"));
     }
 
     #[test]

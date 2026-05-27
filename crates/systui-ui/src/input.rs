@@ -33,13 +33,15 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    // Form overlays capture input while open.
-    if app.cron_form.is_some() {
+    // The cron builder captures input while open.
+    if app.cron_builder.is_some() {
         match key.code {
             KeyCode::Esc => app.close_cron_form(),
             KeyCode::Enter => app.submit_cron_form(),
             KeyCode::Tab | KeyCode::Down => app.cron_form_focus_next(),
             KeyCode::BackTab | KeyCode::Up => app.cron_form_focus_prev(),
+            KeyCode::Left => app.cron_form_decrement(),
+            KeyCode::Right => app.cron_form_increment(),
             KeyCode::Backspace => app.cron_form_pop_char(),
             KeyCode::Char(c) => app.cron_form_push_char(c),
             _ => {}

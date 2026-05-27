@@ -21,6 +21,12 @@ a development phase (see [`docs/ROADMAP.md`](docs/ROADMAP.md)).
   - **Docker**: the container detail adds published port mappings and the restart
     max-retry count.
   - **System**: the identity panel adds the CPU model and virtualization (`systemd-detect-virt`).
+- **Crons**: creating and editing jobs is now a guided, visual builder instead of a raw
+  cron-expression field. Pick a frequency (every N minutes / hourly / daily / weekly /
+  monthly / at startup / custom) and fill only the inputs it needs; a live preview shows
+  the generated expression, a plain-language description and the next runs as you type.
+  Raw cron is still available via the Custom frequency. The empty Crons tab now prompts
+  how to add a job.
 
 ### Changed
 - The default dark palette was reworked for contrast (lifted background, brighter text,

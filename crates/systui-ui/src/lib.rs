@@ -4,6 +4,7 @@
 //! actions; it never executes them.
 
 pub mod app;
+pub mod cron_builder;
 pub mod data;
 pub mod fleet;
 pub mod form;

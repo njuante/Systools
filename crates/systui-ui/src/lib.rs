@@ -203,6 +203,10 @@ fn event_loop(
             // A log filter changed: re-collect only the logs.
             app.logs_reload_requested = false;
             data::reload_logs_blocking(runtime, transport.as_ref(), app);
+        } else if app.service_detail_requested {
+            // The Services selection changed: fetch that unit's detail.
+            app.service_detail_requested = false;
+            data::reload_service_detail_blocking(runtime, transport.as_ref(), app);
         }
 
         if app.connectivity_requested {

@@ -423,7 +423,10 @@ mod tests {
 
     #[test]
     fn unknown_and_legacy_names_fall_back_to_dark() {
-        assert_eq!(ThemeKind::from_config_name("dark_green"), ThemeKind::DarkRich);
+        assert_eq!(
+            ThemeKind::from_config_name("dark_green"),
+            ThemeKind::DarkRich
+        );
         assert_eq!(ThemeKind::from_config_name("nonsense"), ThemeKind::DarkRich);
         assert_eq!(ThemeKind::from_config_name("MIDNIGHT"), ThemeKind::Midnight);
     }

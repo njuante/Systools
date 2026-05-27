@@ -10,8 +10,8 @@ use ratatui::widgets::{
 };
 use regex::RegexBuilder;
 use systui_collectors::{
-    BindScope, Container, CronEntry, CronSource, DatabaseInstance, LogEntry, NetworkSnapshot,
-    ServiceUnit, SystemSnapshot, parse_schedule,
+    BindScope, Connection, Container, CronEntry, CronSource, DatabaseInstance, LogEntry,
+    NetworkSnapshot, ServiceUnit, SystemSnapshot, parse_schedule,
 };
 use systui_core::{Finding, ModuleId, Severity};
 
@@ -804,7 +804,7 @@ fn render_service_list(frame: &mut Frame, app: &App, area: Rect) {
 fn render_service_detail(frame: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
     let units = app.visible_units();
-    let Some(u) = units.get(app.services_selected) else {
+    let Some(u) = units.get(app.services_selected).map(|u| (*u).clone()) else {
         frame.render_widget(
             Paragraph::new(Span::styled("no unit selected", Style::new().fg(t.fg_dim)))
                 .block(panel_block(&t, "Unit", app.domain_color())),
@@ -817,42 +817,135 @@ fn render_service_detail(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // The lazily-fetched detail is only trustworthy once it matches the current
+    // selection; until then fall back to the list-level fields.
+    let detail = app
+        .selected_unit_detail
+        .as_ref()
+        .filter(|d| d.name == u.name);
+
+    let rows = Layout::vertical([
+        Constraint::Length(8), // identity fields
+        Constraint::Length(5), // dependencies
+        Constraint::Min(0),    // recent logs
+    ])
+    .split(inner);
+
     let field = |key: &str, value: String, color| {
         Line::from(vec![
-            Span::styled(format!("{key:<8} "), Style::new().fg(t.fg_dim)),
+            Span::styled(format!("{key:<9} "), Style::new().fg(t.fg_dim)),
             Span::styled(value, Style::new().fg(color)),
         ])
     };
+    let enabled = detail
+        .map(|d| d.unit_file_state.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            if app.enabled_units.iter().any(|n| n == &u.name) {
+                "enabled".to_owned()
+            } else {
+                "disabled".to_owned()
+            }
+        });
     let mut lines = vec![
         Line::from(Span::styled(
             u.description.clone(),
             Style::new().fg(t.fg_muted),
         )),
-        Line::from(""),
-        field("load", u.load.clone(), t.fg),
-        field("active", u.active.clone(), unit_dot_color(&t, u)),
-        field("sub", u.sub.clone(), t.fg_muted),
         field(
-            "enabled",
-            if app.enabled_units.iter().any(|n| n == &u.name) {
-                "yes".to_owned()
-            } else {
-                "no".to_owned()
-            },
-            t.fg,
+            "state",
+            format!("{} ({})", u.active, u.sub),
+            unit_dot_color(&t, &u),
         ),
-        Line::from(""),
+        field("enabled", enabled, t.fg),
     ];
-    let hint = if app.mode == systui_core::ExecutionMode::ReadOnly {
-        Span::styled("read-only — actions disabled", Style::new().fg(t.fg_dim))
+    match detail.and_then(|d| d.main_pid) {
+        Some(pid) => lines.push(field(
+            "main PID",
+            format!("{pid}  (see Processes)"),
+            t.fg_strong,
+        )),
+        None => lines.push(field("main PID", "—".to_owned(), t.fg_dim)),
+    }
+    if let Some(d) = detail {
+        if !d.fragment_path.is_empty() {
+            lines.push(field("file", d.fragment_path.clone(), t.fg_muted));
+        }
     } else {
-        Span::styled(
-            "press a to act on this unit (restart / stop / …)",
-            Style::new().fg(t.fg_muted),
-        )
+        lines.push(Line::from(Span::styled(
+            "fetching detail…",
+            Style::new().fg(t.fg_dim),
+        )));
+    }
+    let hint = if app.mode == systui_core::ExecutionMode::ReadOnly {
+        "read-only — actions disabled"
+    } else {
+        "press a to act (restart / stop / …)"
     };
-    lines.push(Line::from(hint));
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+    lines.push(Line::from(Span::styled(hint, Style::new().fg(t.fg_dim))));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), rows[0]);
+
+    render_unit_dependencies(frame, app, rows[1]);
+    render_unit_logs(frame, app, rows[2]);
+}
+
+/// Dependencies of the selected unit (`systemctl list-dependencies`).
+fn render_unit_dependencies(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let header = Line::from(Span::styled(
+        format!("Dependencies ({})", app.selected_unit_deps.len()),
+        Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD),
+    ));
+    let mut lines = vec![header];
+    if app.selected_unit_deps.is_empty() {
+        lines.push(Line::from(Span::styled("none", Style::new().fg(t.fg_dim))));
+    } else {
+        let max = (area.height as usize).saturating_sub(1).max(1);
+        for dep in app.selected_unit_deps.iter().take(max) {
+            lines.push(Line::from(Span::styled(
+                format!("  {dep}"),
+                Style::new().fg(t.fg_muted),
+            )));
+        }
+        let extra = app.selected_unit_deps.len().saturating_sub(max);
+        if extra > 0 {
+            lines.push(Line::from(Span::styled(
+                format!("  +{extra} more"),
+                Style::new().fg(t.fg_dim),
+            )));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Recent journal lines for the selected unit (`journalctl -u`).
+fn render_unit_logs(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let header = Line::from(Span::styled(
+        "Recent logs",
+        Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD),
+    ));
+    let mut lines = vec![header];
+    if app.selected_unit_logs.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "no recent journal entries",
+            Style::new().fg(t.fg_dim),
+        )));
+    } else {
+        let max = (area.height as usize).saturating_sub(1).max(1);
+        for e in app.selected_unit_logs.iter().rev().take(max) {
+            let color = log_priority_color(app, e);
+            lines.push(Line::from(vec![
+                Span::styled(format!("{} ", e.time), Style::new().fg(t.fg_dim)),
+                Span::styled(
+                    format!("{:<5} ", e.priority_label()),
+                    Style::new().fg(color),
+                ),
+                Span::styled(e.message.clone(), Style::new().fg(t.fg)),
+            ]));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_processes(frame: &mut Frame, app: &App, area: Rect) {
@@ -1070,9 +1163,9 @@ fn render_network(frame: &mut Frame, app: &App, area: Rect) {
     render_exposure_panel(frame, app, left[0]);
     render_connectivity_panel(frame, app, left[1]);
     let right = Layout::vertical([
-        Constraint::Percentage(32),
-        Constraint::Percentage(22),
-        Constraint::Percentage(16),
+        Constraint::Percentage(26),
+        Constraint::Percentage(20),
+        Constraint::Percentage(24),
         Constraint::Percentage(30),
     ])
     .split(cols[1]);
@@ -1366,16 +1459,58 @@ fn render_net_connections(frame: &mut Frame, app: &App, net: &NetworkSnapshot, a
         );
         return;
     }
-    let lines: Vec<Line> = counts
+
+    // Compact one-line summary by state, then the real established connections.
+    let summary = counts
         .iter()
-        .map(|(state, n)| {
-            Line::from(vec![
-                Span::styled(format!("{n:>4} "), Style::new().fg(t.fg_muted)),
-                Span::styled(state.clone(), Style::new().fg(t.fg)),
-            ])
-        })
+        .map(|(state, n)| format!("{} {n}", state.to_ascii_lowercase()))
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let mut lines = vec![Line::from(Span::styled(
+        summary,
+        Style::new().fg(t.fg_muted),
+    ))];
+
+    let established: Vec<&Connection> = net
+        .connections
+        .iter()
+        .filter(|c| c.state.starts_with("ESTAB") && is_real_peer(&c.peer_ip))
         .collect();
+    let max = (inner.height as usize).saturating_sub(1);
+    if established.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "no established peers",
+            Style::new().fg(t.fg_dim),
+        )));
+    } else {
+        for c in established.iter().take(max) {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(":{:<5} ", c.local_port),
+                    Style::new().fg(t.fg_muted),
+                ),
+                Span::styled("⇄ ", Style::new().fg(t.fg_dim)),
+                Span::styled(
+                    format!("{}:{}", c.peer_ip, c.peer_port),
+                    Style::new().fg(t.fg),
+                ),
+            ]));
+        }
+        let extra = established.len().saturating_sub(max);
+        if extra > 0 {
+            lines.push(Line::from(Span::styled(
+                format!("+{extra} more established"),
+                Style::new().fg(t.fg_dim),
+            )));
+        }
+    }
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Whether a peer address is a real remote endpoint worth listing (not a
+/// wildcard/empty placeholder from `ss`).
+fn is_real_peer(ip: &str) -> bool {
+    !ip.is_empty() && ip != "*" && ip != "0.0.0.0" && ip != "::" && ip != "[::]"
 }
 
 fn render_docker(frame: &mut Frame, app: &App, area: Rect) {
@@ -1679,6 +1814,11 @@ fn render_container_detail(frame: &mut Frame, app: &App, area: Rect) {
         human_kb(inspect.memory_limit_bytes / 1024)
     };
     let priv_color = if inspect.privileged { t.critical } else { t.fg };
+    let retries = if inspect.max_retry_count > 0 {
+        format!("{}/{}", inspect.restart_count, inspect.max_retry_count)
+    } else {
+        inspect.restart_count.to_string()
+    };
     lines.push(Line::from(vec![
         Span::styled("privileged ", dim),
         Span::styled(
@@ -1687,8 +1827,8 @@ fn render_container_detail(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Span::styled(
             format!(
-                "  ·  restart {} ({})  ·  mem {}",
-                inspect.restart_policy, inspect.restart_count, mem
+                "  ·  restart {} ({} retries)  ·  mem {}",
+                inspect.restart_policy, retries, mem
             ),
             text_s,
         ),
@@ -1698,6 +1838,23 @@ fn render_container_detail(frame: &mut Frame, app: &App, area: Rect) {
             format!("net {}", inspect.networks.join(", ")),
             dim,
         )));
+    }
+    if !inspect.published_ports.is_empty() {
+        let ports = inspect
+            .published_ports
+            .iter()
+            .map(|p| {
+                format!(
+                    "{}:{}->{}/{}",
+                    p.host_ip, p.host_port, p.container_port, p.protocol
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("  ");
+        lines.push(Line::from(vec![
+            Span::styled("ports ", dim),
+            Span::styled(ports, text_s),
+        ]));
     }
 
     if let Some(stats) = app
@@ -2783,7 +2940,7 @@ fn finding_line(app: &App, check: &systui_collectors::Check) -> Line<'static> {
 fn render_system(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
     let cols =
         Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).split(area);
-    let left = Layout::vertical([Constraint::Length(8), Constraint::Min(0)]).split(cols[0]);
+    let left = Layout::vertical([Constraint::Length(10), Constraint::Min(0)]).split(cols[0]);
     let right = Layout::vertical([Constraint::Length(7), Constraint::Min(0)]).split(cols[1]);
 
     render_system_identity(frame, app, snap, left[0]);
@@ -2798,29 +2955,36 @@ fn render_system_identity(frame: &mut Frame, app: &App, snap: &SystemSnapshot, a
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let lines = vec![
+    let mut lines = vec![
         label_value(app, "Hostname", &snap.hostname),
         label_value(app, "OS", snap.os.as_deref().unwrap_or("unknown")),
         label_value(app, "Kernel", &snap.kernel),
-        label_value(app, "Uptime", &human_uptime(snap.uptime_secs)),
-        label_value(
-            app,
-            "CPU",
-            &format!(
-                "{:.0}% busy · {} cores",
-                snap.cpu.busy_percent, snap.cpu.cores
-            ),
-        ),
-        label_value(
-            app,
-            "Load",
-            &format!(
-                "{:.2}  {:.2}  {:.2}",
-                snap.load.one, snap.load.five, snap.load.fifteen
-            ),
-        ),
     ];
-    frame.render_widget(Paragraph::new(lines), inner);
+    if let Some(virt) = snap.virtualization.as_deref() {
+        let shown = if virt == "none" { "bare metal" } else { virt };
+        lines.push(label_value(app, "Virt", shown));
+    }
+    lines.push(label_value(app, "Uptime", &human_uptime(snap.uptime_secs)));
+    let cpu = match snap.cpu_model.as_deref() {
+        Some(model) => format!(
+            "{:.0}% busy · {} cores · {}",
+            snap.cpu.busy_percent, snap.cpu.cores, model
+        ),
+        None => format!(
+            "{:.0}% busy · {} cores",
+            snap.cpu.busy_percent, snap.cpu.cores
+        ),
+    };
+    lines.push(label_value(app, "CPU", &cpu));
+    lines.push(label_value(
+        app,
+        "Load",
+        &format!(
+            "{:.2}  {:.2}  {:.2}",
+            snap.load.one, snap.load.five, snap.load.fifteen
+        ),
+    ));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
 /// Memory & swap as labelled, colour-coded gauges.
@@ -3096,7 +3260,12 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         ("○", "detached", app.theme.fg_dim)
     };
     let right = Line::from(vec![
-        Span::styled("T ", Style::new().fg(app.theme.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "T ",
+            Style::new()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(
             format!("{}  ", app.theme_kind.label()),
             Style::new().fg(app.theme.fg_dim),
@@ -3289,6 +3458,8 @@ mod tests {
                 from: Some("10.0.0.5".to_owned()),
                 login_time: "2026-05-24 09:12".to_owned(),
             }],
+            cpu_model: Some("Intel(R) Xeon(R) E5-2670".to_owned()),
+            virtualization: Some("kvm".to_owned()),
         }
     }
 
@@ -3325,6 +3496,10 @@ mod tests {
         assert!(out.contains("Disks"));
         assert!(out.contains("Logged in"));
         assert!(out.contains("admin"));
+        // New vitals: CPU model and virtualization.
+        assert!(out.contains("Xeon"));
+        assert!(out.contains("Virt"));
+        assert!(out.contains("kvm"));
     }
 
     #[test]
@@ -3537,6 +3712,45 @@ mod tests {
     }
 
     #[test]
+    fn services_detail_shows_pid_deps_and_logs() {
+        use systui_collectors::{LogEntry, ServiceUnit, UnitDetail};
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.all_units = vec![ServiceUnit {
+            name: "nginx.service".to_owned(),
+            load: "loaded".to_owned(),
+            active: "active".to_owned(),
+            sub: "running".to_owned(),
+            description: "nginx web server".to_owned(),
+        }];
+        app.selected_unit_detail = Some(UnitDetail {
+            name: "nginx.service".to_owned(),
+            main_pid: Some(1832),
+            unit_file_state: "enabled".to_owned(),
+            fragment_path: "/lib/systemd/system/nginx.service".to_owned(),
+            ..Default::default()
+        });
+        app.selected_unit_deps = vec!["network.target".to_owned(), "system.slice".to_owned()];
+        app.selected_unit_logs = vec![LogEntry {
+            time: "12:01:02".to_owned(),
+            priority: 4,
+            identifier: "nginx.service".to_owned(),
+            message: "upstream timed out".to_owned(),
+        }];
+        app.view_state = ViewState::Ready;
+        app.select_tab(3); // Services
+
+        let out = render_to_string(&app, 120, 28);
+        assert!(out.contains("main PID"));
+        assert!(out.contains("1832"));
+        assert!(out.contains("Dependencies"));
+        assert!(out.contains("network.target"));
+        assert!(out.contains("Recent logs"));
+        assert!(out.contains("upstream timed out"));
+        assert!(out.contains("nginx.service"));
+    }
+
+    #[test]
     fn services_tab_reports_no_failures() {
         let mut app = App::new("local", ExecutionMode::ReadOnly);
         app.snapshot = Some(sample_snapshot());
@@ -3670,6 +3884,9 @@ mod tests {
         assert!(out.contains("CRIT")); // redis on 0.0.0.0:6379
         assert!(out.contains("6379"));
         assert!(out.contains("redis.service"));
+        // Connections panel lists the real established peer, not just a count.
+        assert!(out.contains("Connections"));
+        assert!(out.contains("10.0.0.2:51000"));
     }
 
     #[test]
@@ -3925,6 +4142,8 @@ mod tests {
         // The privileged container surfaces in the detail panel and as a RISK badge.
         assert!(out.contains("privileged"));
         assert!(out.contains("RISK"));
+        // Published ports now appear in the detail panel.
+        assert!(out.contains("0.0.0.0:6379->6379/tcp"));
     }
 
     #[test]

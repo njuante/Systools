@@ -24,6 +24,13 @@ pub struct SystemSnapshot {
     pub swap: Swap,
     pub disks: Vec<Disk>,
     pub users: Vec<LoggedUser>,
+    /// CPU model name (from `/proc/cpuinfo`), when available.
+    #[serde(default)]
+    pub cpu_model: Option<String>,
+    /// Virtualization technology (`systemd-detect-virt`), e.g. `kvm`; `None`
+    /// when undetectable, `Some("none")` on bare metal.
+    #[serde(default)]
+    pub virtualization: Option<String>,
 }
 
 /// 1/5/15-minute load averages.
@@ -105,6 +112,8 @@ pub struct HostStatics {
     pub hostname: String,
     pub os: Option<String>,
     pub kernel: String,
+    pub cpu_model: Option<String>,
+    pub virtualization: Option<String>,
 }
 
 impl HostStatics {
@@ -114,6 +123,8 @@ impl HostStatics {
             hostname: snapshot.hostname.clone(),
             os: snapshot.os.clone(),
             kernel: snapshot.kernel.clone(),
+            cpu_model: snapshot.cpu_model.clone(),
+            virtualization: snapshot.virtualization.clone(),
         }
     }
 }
@@ -165,8 +176,14 @@ impl Collector for SystemCollector {
         // Slow-changing identity: reuse the cache when tiered, else read it.
         // `hostname`/`kernel` are required (their read failing fails the snapshot);
         // `os` is best-effort.
-        let (hostname, kernel, os) = match &self.statics {
-            Some(s) => (s.hostname.clone(), s.kernel.clone(), s.os.clone()),
+        let (hostname, kernel, os, cpu_model, virtualization) = match &self.statics {
+            Some(s) => (
+                s.hostname.clone(),
+                s.kernel.clone(),
+                s.os.clone(),
+                s.cpu_model.clone(),
+                s.virtualization.clone(),
+            ),
             None => {
                 let hostname = run_trimmed(transport, "uname", &["-n"]).await?;
                 let kernel = run_trimmed(transport, "uname", &["-r"]).await?;
@@ -174,7 +191,19 @@ impl Collector for SystemCollector {
                     .await
                     .ok()
                     .and_then(|s| parse_os_release(&s));
-                (hostname, kernel, os)
+                let cpu_model = read_text(transport, "/proc/cpuinfo")
+                    .await
+                    .ok()
+                    .and_then(|s| parse_cpu_model(&s));
+                // `systemd-detect-virt` exits non-zero on bare metal but prints
+                // `none`; treat any trimmed stdout as the answer, best-effort.
+                let virtualization = transport
+                    .run(&CommandSpec::new("systemd-detect-virt"))
+                    .await
+                    .ok()
+                    .map(|o| o.stdout.trim().to_owned())
+                    .filter(|s| !s.is_empty());
+                (hostname, kernel, os, cpu_model, virtualization)
             }
         };
 
@@ -224,8 +253,18 @@ impl Collector for SystemCollector {
             swap,
             disks,
             users,
+            cpu_model,
+            virtualization,
         })
     }
+}
+
+/// First `model name` from `/proc/cpuinfo`, trimmed.
+fn parse_cpu_model(cpuinfo: &str) -> Option<String> {
+    cpuinfo.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        (key.trim() == "model name").then(|| value.trim().to_owned())
+    })
 }
 
 fn percent(part: u64, whole: u64) -> f64 {
@@ -581,6 +620,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_cpu_model_from_cpuinfo() {
+        let cpuinfo = "processor\t: 0\nvendor_id\t: GenuineIntel\nmodel name\t: Intel(R) Core(TM) i7-8550U CPU @ 1.80GHz\ncache size\t: 8192 KB\n";
+        assert_eq!(
+            parse_cpu_model(cpuinfo).as_deref(),
+            Some("Intel(R) Core(TM) i7-8550U CPU @ 1.80GHz")
+        );
+        assert_eq!(parse_cpu_model("processor\t: 0\n"), None);
+    }
+
+    #[test]
     fn parses_df_and_skips_pseudo_filesystems() {
         // fixture has /dev/sda1, tmpfs, /dev/sda2 — tmpfs is filtered out.
         let disks = parse_df(include_str!("../fixtures/df-P.txt"));
@@ -713,6 +762,8 @@ mod tests {
             hostname: "cached-host".to_owned(),
             os: Some("Cached OS 1.0".to_owned()),
             kernel: "9.9.9".to_owned(),
+            cpu_model: None,
+            virtualization: None,
         };
         let collector = SystemCollector {
             cpu_sample_delay: Duration::ZERO,

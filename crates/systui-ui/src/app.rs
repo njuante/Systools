@@ -9,7 +9,7 @@ use systui_collectors::{
     ComposeProject, Container, ContainerStats, CronEntry, CronSource, DatabaseSnapshot,
     ExposureEntry, FirewallSnapshot, HealthReport, HostCapabilities, ImageHygiene, InspectSummary,
     LogEntry, LogQuery, NetworkSnapshot, PackageUpdates, Process, ServiceUnit, SystemSnapshot,
-    SystemdTimer, build_process_tree, parse_schedule,
+    SystemdTimer, UnitDetail, build_process_tree, parse_schedule,
 };
 use systui_core::{Action, ExecutionMode, Finding, FindingStatus, ModuleId, Severity, Thresholds};
 use systui_security::PolicySelection;
@@ -367,6 +367,14 @@ pub struct App {
     /// Expected-state policy selected for this host, if any.
     pub policy_selection: PolicySelection,
     pub services_selected: usize,
+    /// Detail for the selected service unit (lazily fetched on selection).
+    pub selected_unit_detail: Option<UnitDetail>,
+    /// Dependencies of the selected service unit.
+    pub selected_unit_deps: Vec<String>,
+    /// Recent journal lines for the selected service unit.
+    pub selected_unit_logs: Vec<LogEntry>,
+    /// The selected service unit's detail should be (re)fetched.
+    pub service_detail_requested: bool,
     pub processes_selected: usize,
     pub action: Option<ActionModal>,
     pub pending: Option<PendingAction>,
@@ -449,6 +457,10 @@ impl App {
             thresholds: Thresholds::default(),
             policy_selection: PolicySelection::default(),
             services_selected: 0,
+            selected_unit_detail: None,
+            selected_unit_deps: Vec::new(),
+            selected_unit_logs: Vec::new(),
+            service_detail_requested: false,
             processes_selected: 0,
             action: None,
             pending: None,
@@ -511,11 +523,13 @@ impl App {
     /// Move to the next tab, wrapping around.
     pub fn next_tab(&mut self) {
         self.active_tab = (self.active_tab + 1) % Tab::ALL.len();
+        self.note_selection_changed();
     }
 
     /// Move to the previous tab, wrapping around.
     pub fn prev_tab(&mut self) {
         self.active_tab = (self.active_tab + Tab::ALL.len() - 1) % Tab::ALL.len();
+        self.note_selection_changed();
     }
 
     /// Select a tab by zero-based index, ignoring out-of-range values.
@@ -523,6 +537,7 @@ impl App {
         if index < Tab::ALL.len() {
             self.active_tab = index;
         }
+        self.note_selection_changed();
     }
 
     // --- Session notes (Dashboard) ----------------------------------------
@@ -901,12 +916,22 @@ impl App {
                 *sel += 1;
             }
         }
+        self.note_selection_changed();
     }
 
     /// Move the selection up within the active list.
     pub fn select_up(&mut self) {
         if let Some(sel) = self.selected_mut() {
             *sel = sel.saturating_sub(1);
+        }
+        self.note_selection_changed();
+    }
+
+    /// React to a selection or tab change: queue any per-selection detail that is
+    /// fetched lazily (currently the Services detail panel).
+    fn note_selection_changed(&mut self) {
+        if self.current_tab() == Tab::Services {
+            self.service_detail_requested = true;
         }
     }
 

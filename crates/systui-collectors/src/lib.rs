@@ -52,7 +52,7 @@ pub use process::{
 };
 pub use service::{
     FailedUnitsCollector, ServiceCollector, ServiceUnit, UnitDetail, UnitFile, UnitFilesCollector,
-    unit_detail,
+    unit_dependencies, unit_detail,
 };
 pub use system::{
     CpuUsage, Disk, HostStatics, LoadAverage, LoggedUser, Memory, Swap, SystemCollector,

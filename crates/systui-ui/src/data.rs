@@ -188,6 +188,10 @@ pub fn apply_refresh(app: &mut App, outcome: RefreshOutcome) {
             app.apply_finding_states();
             app.record_health_snapshot();
             app.view_state = ViewState::Ready;
+            // Keep the selected unit's detail current after a refresh.
+            if app.current_tab() == crate::app::Tab::Services {
+                app.service_detail_requested = true;
+            }
         }
         Err(err) => apply_error(app, err),
     }
@@ -268,6 +272,33 @@ pub fn reload_logs_blocking(runtime: &Runtime, transport: &dyn Transport, app: &
     if let Ok(logs) = runtime.block_on(collector.collect(transport)) {
         app.logs = logs;
     }
+}
+
+/// Fetch detail, dependencies and recent logs for the selected service unit
+/// (best-effort). These are cheap, read-only `systemctl`/`journalctl` reads run
+/// only for the one selected unit, not the whole list.
+pub fn reload_service_detail_blocking(runtime: &Runtime, transport: &dyn Transport, app: &mut App) {
+    let Some(unit) = app.selected_service().map(|u| u.name.clone()) else {
+        app.selected_unit_detail = None;
+        app.selected_unit_deps.clear();
+        app.selected_unit_logs.clear();
+        return;
+    };
+    app.selected_unit_detail = runtime
+        .block_on(systui_collectors::unit_detail(transport, &unit))
+        .ok();
+    app.selected_unit_deps = runtime
+        .block_on(systui_collectors::unit_dependencies(transport, &unit))
+        .unwrap_or_default();
+    let query = LogQuery {
+        min_priority: 7,
+        unit: Some(unit),
+        since: None,
+        lines: 12,
+    };
+    app.selected_unit_logs = runtime
+        .block_on(LogsCollector::with_query(query).collect(transport))
+        .unwrap_or_default();
 }
 
 fn apply_error(app: &mut App, err: CoreError) {

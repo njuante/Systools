@@ -12,6 +12,15 @@ a development phase (see [`docs/ROADMAP.md`](docs/ROADMAP.md)).
 - Per-domain accent colors: each tab/section carries its own hue (System=teal,
   Network=cyan, Docker=indigo, Logs=amber, Crons=violet, Databases=rose, Security=red,
   …); panel titles and the active tab take the domain hue. Severity colors are unchanged.
+- Richer per-tab detail using data the collectors already gather:
+  - **Services**: the unit detail panel now shows the main PID, unit-file path and
+    install state, plus the selected unit's dependencies (`systemctl list-dependencies`)
+    and its recent journal lines (`journalctl -u`), fetched read-only on selection.
+  - **Network**: the Connections panel lists real established peers (local→peer ip:port)
+    instead of only per-state counts.
+  - **Docker**: the container detail adds published port mappings and the restart
+    max-retry count.
+  - **System**: the identity panel adds the CPU model and virtualization (`systemd-detect-virt`).
 
 ### Changed
 - The default dark palette was reworked for contrast (lifted background, brighter text,

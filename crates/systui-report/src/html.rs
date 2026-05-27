@@ -540,6 +540,8 @@ mod tests {
                     },
                     disks: Vec::new(),
                     users: Vec::new(),
+                    cpu_model: None,
+                    virtualization: None,
                 },
                 health: HealthReport {
                     score: 85,

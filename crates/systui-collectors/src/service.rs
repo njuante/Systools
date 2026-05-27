@@ -158,6 +158,32 @@ pub async fn unit_detail(transport: &dyn Transport, unit: &str) -> Result<UnitDe
     Ok(parse_show(&output.stdout))
 }
 
+/// List a unit's dependencies via `systemctl list-dependencies`. Read-only.
+pub async fn unit_dependencies(transport: &dyn Transport, unit: &str) -> Result<Vec<String>> {
+    let spec =
+        CommandSpec::new("systemctl").args(["list-dependencies", unit, "--plain", "--no-pager"]);
+    let output = transport.run(&spec).await?.into_result("systemctl")?;
+    Ok(parse_dependencies(&output.stdout, unit))
+}
+
+/// Parse `list-dependencies` output into a flat, de-duplicated unit list,
+/// dropping the unit itself and any tree/bullet glyphs that survive `--plain`.
+fn parse_dependencies(s: &str, unit: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in s.lines() {
+        let name = line
+            .trim_start_matches(|c: char| c.is_whitespace() || "●○•│├└─".contains(c))
+            .trim();
+        if name.is_empty() || !name.contains('.') || name == unit {
+            continue;
+        }
+        if !out.iter().any(|n| n == name) {
+            out.push(name.to_owned());
+        }
+    }
+    out
+}
+
 fn parse_units(s: &str) -> Vec<ServiceUnit> {
     s.lines().filter_map(parse_unit_line).collect()
 }
@@ -232,6 +258,7 @@ mod fuzz {
             let _ = parse_units(&s);
             let _ = parse_unit_files(&s);
             let _ = parse_show(&s);
+            let _ = parse_dependencies(&s, "x.service");
             for line in s.lines() {
                 let _ = parse_unit_line(line);
             }
@@ -294,6 +321,13 @@ mod tests {
         assert_eq!(detail.main_pid, Some(1132));
         assert_eq!(detail.unit_file_state, "enabled");
         assert_eq!(detail.fragment_path, "/lib/systemd/system/nginx.service");
+    }
+
+    #[test]
+    fn parses_dependencies_dropping_self_and_glyphs() {
+        let out = "nginx.service\n● ├─system.slice\n  ├─network.target\n  └─basic.target\n  network.target\n";
+        let deps = parse_dependencies(out, "nginx.service");
+        assert_eq!(deps, ["system.slice", "network.target", "basic.target"]);
     }
 
     #[test]

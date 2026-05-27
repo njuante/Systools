@@ -59,6 +59,8 @@ mod tests {
                         mount: "/".to_owned(),
                     }],
                     users: Vec::new(),
+                    cpu_model: None,
+                    virtualization: None,
                 },
                 health: HealthReport {
                     score: 100,

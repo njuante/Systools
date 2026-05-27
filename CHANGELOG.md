@@ -4,6 +4,19 @@ All notable changes to SysTUI. The format follows [Keep a Changelog](https://kee
 and the project adheres to [Semantic Versioning](https://semver.org). Each version maps to
 a development phase (see [`docs/ROADMAP.md`](docs/ROADMAP.md)).
 
+## [Unreleased]
+
+### Added
+- Multi-theme system: an enriched **dark** (higher contrast), a neon **midnight**, and a
+  **light** theme, cycled live with `T` and persisted to `[general] theme`.
+- Per-domain accent colors: each tab/section carries its own hue (System=teal,
+  Network=cyan, Docker=indigo, Logs=amber, Crons=violet, Databases=rose, Security=red,
+  …); panel titles and the active tab take the domain hue. Severity colors are unchanged.
+
+### Changed
+- The default dark palette was reworked for contrast (lifted background, brighter text,
+  visible borders) so the UI no longer reads as flat/low-contrast.
+
 ## [1.0.0] - 2026-05-25
 
 First stable release. No new modules over v0.9 — this version raises the product floor:

@@ -85,6 +85,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char('q') => app.quit(),
         KeyCode::Char('?') => app.toggle_help(),
+        KeyCode::Char('T') => {
+            app.cycle_theme();
+        }
         KeyCode::Char('r') => app.request_refresh(),
         KeyCode::Char('s') => app.toggle_process_sort(),
         KeyCode::Char('/') => app.enter_search(),

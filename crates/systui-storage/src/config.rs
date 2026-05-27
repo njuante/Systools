@@ -61,6 +61,27 @@ pub fn save_host_to(path: &Path, id: &str, host: &Host) -> Result<()> {
     write_document(path, &doc)
 }
 
+/// Persist the active theme into `[general] theme` of the default config file,
+/// preserving the rest of the file (hosts, comments, other keys).
+pub fn save_general_theme(theme: &str) -> Result<()> {
+    save_general_theme_to(&paths::config_file()?, theme)
+}
+
+/// Persist the active theme into `[general] theme` of a specific config file.
+/// Creates the file and its parent directory when missing.
+pub fn save_general_theme_to(path: &Path, theme: &str) -> Result<()> {
+    let mut doc = read_document(path)?;
+    let general = doc
+        .entry("general")
+        .or_insert(Item::Table(Table::new()))
+        .as_table_mut()
+        .ok_or_else(|| {
+            CoreError::Config(format!("{}: `general` is not a table", path.display()))
+        })?;
+    general["theme"] = value(theme);
+    write_document(path, &doc)
+}
+
 /// Remove the `[hosts.<id>]` entry from the default config file. Returns whether
 /// it existed.
 pub fn remove_host(id: &str) -> Result<bool> {
@@ -292,6 +313,37 @@ mod tests {
         assert!(cfg.hosts.contains_key("b"));
         assert_eq!(cfg.general.theme, "dark");
 
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn save_theme_sets_general_theme_and_preserves_hosts() {
+        let path = tmp_path("theme.toml");
+        std::fs::write(&path, "# top\n[general]\ndefault_refresh_seconds = 7\n").unwrap();
+        save_host_to(&path, "h", &sample_host()).unwrap();
+
+        save_general_theme_to(&path, "midnight").unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("# top"));
+        let cfg = load_from(&path).unwrap();
+        assert_eq!(cfg.general.theme, "midnight");
+        // Unrelated general keys and hosts survive the edit.
+        assert_eq!(cfg.general.default_refresh_seconds, 7);
+        assert!(cfg.hosts.contains_key("h"));
+
+        // Switching again overwrites the previous value.
+        save_general_theme_to(&path, "light").unwrap();
+        assert_eq!(load_from(&path).unwrap().general.theme, "light");
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn save_theme_into_missing_file_creates_it() {
+        let path = tmp_path("theme-new.toml");
+        save_general_theme_to(&path, "dark").unwrap();
+        assert_eq!(load_from(&path).unwrap().general.theme, "dark");
         std::fs::remove_file(&path).unwrap();
     }
 

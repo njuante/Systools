@@ -44,6 +44,56 @@ it must be designed so it does not quietly undermine that model:
 Recommendation: scope as an explicit, audited, opt-in v1.1 feature kept clearly separate
 from the engine-mediated actions — not the default, and never presented as "safe".
 
+## Feature ideas — real server-ops value (queued 2026-05-28)
+
+Gathered while polishing the TUI. Ordered by value/effort. The first three reuse
+collectors that already exist, so they are the cheapest high-impact wins.
+
+### High value, low effort (extend existing collectors)
+
+- **TLS/SSL certificate panel.** Certificates are already discovered and scored as
+  findings (`cert_warning_days`, the v0.3 cert checks). Promote them to a first-class
+  view: a sortable list of every cert (local files under `/etc/letsencrypt`,
+  nginx/apache, plus probed `host:443`) with days-to-expiry, CN/SAN and issuer, colored
+  by urgency. Expiry is the classic silent outage — make it impossible to miss.
+- **Disk drill-down ("who's eating the disk").** `System` shows the global disk % only.
+  Add an `ncdu`-style breakdown: top directories/files by size, fastest-growing logs,
+  unrotated journald, package caches — i.e. *what to delete*, not just *how full*. New
+  collector (`du`/`find` via `CommandSpec`), surfaced as a System sub-panel.
+- **Security updates surfaced + reboot-required.** The packages collector already feeds
+  the Dashboard UPDATES tile. Add: how many pending updates are *security* (apt/dnf/
+  pacman/zypper security channels) and whether a reboot is required
+  (`/var/run/reboot-required`, `needs-restarting -r`). Correlate with running services
+  for "service X links a vulnerable lib, patch available".
+
+### Higher effort / more differentiating
+
+- **Auth & access panel (defensive).** Extend Security with the login picture: failed
+  SSH attempts (journald / `lastb`) with repeat-offender IPs, current sessions,
+  `authorized_keys` inventory, and users with a shell but no password. Builds on the
+  existing `capabilities` (sudo) detection. This is the lively, AdGuardian-style
+  event-list view.
+- **Live mode + richer real-time sparklines.** Today only Dashboard CPU/RAM have
+  sparklines. Extend the existing history/trends store to per-core CPU, disk I/O, and
+  per-interface network throughput, plus a follow-mode log tail. Trends already persist,
+  so 1h/24h history is mostly wiring.
+- **Alerting / thresholds.** Simple rules ("disk >90%", "service failed", "cert <7d")
+  that drive the tab badges (mechanism already exists in `tab_badge`) and feed the
+  report. Turns SysTUI from a viewer into a watcher.
+- **Config/state drift.** Snapshot host state and diff across runs ("this port wasn't
+  open yesterday"). The local snapshot store from v0.8.4 is the substrate.
+
+### Extensions to existing tabs
+
+- **Network:** established connections with reverse-DNS, per-process bandwidth
+  (`nethogs`-style).
+- **Docker:** live per-container stats, healthcheck status, reclaimable space from
+  orphaned images/volumes, compose awareness.
+- **Services:** dependency view (`systemctl list-dependencies`) and boot timing
+  (`systemd-analyze blame`) for slow-boot diagnosis.
+- **Logs:** known-pattern detection (OOM killer, segfault, disk errors) and log-spike
+  alerts (a service suddenly logging 100×).
+
 ## Docs
 
 - Demo GIF / asciinema for the README (the one optional v1.0 docs item left outstanding).

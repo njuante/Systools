@@ -296,7 +296,7 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
         ));
         let name_style = if active {
             Style::new()
-                .fg(app.theme.accent)
+                .fg(app.theme.domain(tab.domain()))
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {
             Style::new().fg(app.theme.fg_muted)
@@ -420,7 +420,7 @@ fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
 /// applies one.
 fn render_saved_searches(frame: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, "Saved searches");
+    let block = panel_block(&t, "Saved searches", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -455,7 +455,7 @@ fn render_saved_searches(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_log_tail(frame: &mut Frame, app: &App, filtered: &[&LogEntry], area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, "journalctl · live");
+    let block = panel_block(&t, "journalctl · live", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -591,7 +591,7 @@ fn log_fingerprints(entries: &[&LogEntry]) -> Vec<LogFingerprint> {
 
 fn render_log_fingerprints(frame: &mut Frame, app: &App, filtered: &[&LogEntry], area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, "Error fingerprints");
+    let block = panel_block(&t, "Error fingerprints", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -626,7 +626,7 @@ fn render_log_fingerprints(frame: &mut Frame, app: &App, filtered: &[&LogEntry],
 fn render_log_sources(frame: &mut Frame, app: &App, filtered: &[&LogEntry], area: Rect) {
     use std::collections::HashMap;
     let t = app.theme;
-    let block = panel_block(&t, "Sources");
+    let block = panel_block(&t, "Sources", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -742,6 +742,7 @@ fn render_service_list(frame: &mut Frame, app: &App, area: Rect) {
     let block = panel_block(
         &t,
         &format!("systemd · {} {}", units.len(), app.service_filter.label()),
+        app.domain_color(),
     );
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -806,13 +807,13 @@ fn render_service_detail(frame: &mut Frame, app: &App, area: Rect) {
     let Some(u) = units.get(app.services_selected) else {
         frame.render_widget(
             Paragraph::new(Span::styled("no unit selected", Style::new().fg(t.fg_dim)))
-                .block(panel_block(&t, "Unit")),
+                .block(panel_block(&t, "Unit", app.domain_color())),
             area,
         );
         return;
     };
 
-    let block = panel_block(&t, &u.name);
+    let block = panel_block(&t, &u.name, app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -969,7 +970,7 @@ fn tree_prefix(depths: &[u16], i: usize) -> String {
 /// process list (PID/PPID/parent, owner, CPU/RAM, command) — real data only.
 fn render_process_detail(frame: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, "Process");
+    let block = panel_block(&t, "Process", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1091,7 +1092,7 @@ fn render_firewall_panel(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         "off"
     };
-    let block = panel_block(&t, "Firewall");
+    let block = panel_block(&t, "Firewall", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1145,7 +1146,7 @@ fn render_connectivity_panel(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         "Connectivity tests"
     };
-    let block = panel_block(&t, title);
+    let block = panel_block(&t, title, app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1189,6 +1190,7 @@ fn render_exposure_panel(frame: &mut Frame, app: &App, area: Rect) {
     let block = panel_block(
         &t,
         &format!("Exposure map · {} listening", app.exposures.len()),
+        app.domain_color(),
     );
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1272,7 +1274,7 @@ fn severity_abbr(severity: Severity) -> &'static str {
 
 fn render_net_interfaces(frame: &mut Frame, app: &App, net: &NetworkSnapshot, area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, "Interfaces");
+    let block = panel_block(&t, "Interfaces", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1310,7 +1312,7 @@ fn render_net_interfaces(frame: &mut Frame, app: &App, net: &NetworkSnapshot, ar
 
 fn render_net_dns_routes(frame: &mut Frame, app: &App, net: &NetworkSnapshot, area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, "DNS · routes");
+    let block = panel_block(&t, "DNS · routes", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1349,7 +1351,7 @@ fn render_net_dns_routes(frame: &mut Frame, app: &App, net: &NetworkSnapshot, ar
 
 fn render_net_connections(frame: &mut Frame, app: &App, net: &NetworkSnapshot, area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, "Connections");
+    let block = panel_block(&t, "Connections", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1423,7 +1425,7 @@ fn render_docker(frame: &mut Frame, app: &App, area: Rect) {
 /// Compose plugin is absent or no projects exist.
 fn render_compose_projects(frame: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, "Compose projects");
+    let block = panel_block(&t, "Compose projects", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1456,7 +1458,7 @@ fn render_compose_projects(frame: &mut Frame, app: &App, area: Rect) {
 fn render_image_hygiene(frame: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
     let h = &app.image_hygiene;
-    let block = panel_block(&t, "Image hygiene");
+    let block = panel_block(&t, "Image hygiene", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1506,6 +1508,7 @@ fn render_container_table(frame: &mut Frame, app: &App, area: Rect) {
     let block = panel_block(
         &t,
         &format!("docker ps · {} containers", app.containers.len()),
+        app.domain_color(),
     );
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1597,7 +1600,7 @@ fn container_risk(app: &App, c: &Container) -> Option<Severity> {
 /// Risk-check side panel: the worst Docker findings across all containers.
 fn render_docker_risks(frame: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, "Risk checks");
+    let block = panel_block(&t, "Risk checks", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1649,7 +1652,7 @@ fn render_container_detail(frame: &mut Frame, app: &App, area: Rect) {
         .selected_container()
         .map(|c| c.name.clone())
         .unwrap_or_else(|| "Container".to_owned());
-    let block = panel_block(&t, &title);
+    let block = panel_block(&t, &title, app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1749,7 +1752,11 @@ fn render_crons(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_cron_timers_panel(frame: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, &format!("Systemd timers · {}", app.timers.len()));
+    let block = panel_block(
+        &t,
+        &format!("Systemd timers · {}", app.timers.len()),
+        app.domain_color(),
+    );
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1785,6 +1792,7 @@ fn render_cron_table(frame: &mut Frame, app: &App, area: Rect) {
     let block = panel_block(
         &t,
         &format!("Scheduled jobs · {} ({} user)", app.crons.len(), user_jobs),
+        app.domain_color(),
     );
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1858,7 +1866,7 @@ fn cron_next_runs(app: &App, schedule_str: &str, n: usize) -> Vec<String> {
 
 fn render_cron_preview(frame: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, "Preview");
+    let block = panel_block(&t, "Preview", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1921,7 +1929,7 @@ fn render_cron_preview(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_cron_summary(frame: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, "Cron health");
+    let block = panel_block(&t, "Cron health", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -2213,7 +2221,7 @@ fn render_security(frame: &mut Frame, app: &App, area: Rect) {
 /// Severity-counter header band: one tile per severity with a big count.
 fn render_security_header(frame: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, "Security findings");
+    let block = panel_block(&t, "Security findings", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -2262,7 +2270,7 @@ fn render_security_header(frame: &mut Frame, app: &App, area: Rect) {
 /// evidence line and the recommendation (spec §14).
 fn render_security_findings(frame: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, "Findings · evidence-based");
+    let block = panel_block(&t, "Findings · evidence-based", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -2376,7 +2384,7 @@ fn render_dashboard(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: R
 /// are shown last; `n` starts a new note.
 fn render_session_notes(frame: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, "Session notes");
+    let block = panel_block(&t, "Session notes", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -2401,14 +2409,14 @@ fn render_session_notes(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 /// A rounded, titled panel block in the theme's surface style.
-fn panel_block(theme: &Theme, title: &str) -> Block<'static> {
+fn panel_block(theme: &Theme, title: &str, accent: ratatui::style::Color) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(theme.border))
         .title(Span::styled(
             format!(" {title} "),
-            Style::new().fg(theme.fg_muted).add_modifier(Modifier::BOLD),
+            Style::new().fg(accent).add_modifier(Modifier::BOLD),
         ))
 }
 
@@ -2501,7 +2509,7 @@ fn metric_tile(
     history: Option<&[u64]>,
     percent: f64,
 ) {
-    let block = panel_block(theme, label);
+    let block = panel_block(theme, label, theme.accent);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -2555,7 +2563,7 @@ fn metric_tile(
 
 /// Health-score panel: the score, a gauge, and the deduction breakdown.
 fn render_health_panel(frame: &mut Frame, app: &App, area: Rect) {
-    let block = panel_block(&app.theme, "Health score");
+    let block = panel_block(&app.theme, "Health score", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -2599,7 +2607,7 @@ fn render_health_panel(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Worst-first findings list with severity-colored left edge bars (spec §14).
 fn render_findings_panel(frame: &mut Frame, app: &App, area: Rect) {
-    let block = panel_block(&app.theme, "Top findings");
+    let block = panel_block(&app.theme, "Top findings", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let t = app.theme;
@@ -2675,7 +2683,7 @@ fn updates_value(app: &App, t: Theme) -> Vec<Span<'static>> {
 }
 
 fn render_at_a_glance(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
-    let block = panel_block(&app.theme, "At a glance");
+    let block = panel_block(&app.theme, "At a glance", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let t = app.theme;
@@ -2786,7 +2794,7 @@ fn render_system(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect
 
 /// Identity & vitals: hostname, OS, kernel, uptime, CPU and load.
 fn render_system_identity(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
-    let block = panel_block(&app.theme, "System");
+    let block = panel_block(&app.theme, "System", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -2818,7 +2826,7 @@ fn render_system_identity(frame: &mut Frame, app: &App, snap: &SystemSnapshot, a
 /// Memory & swap as labelled, colour-coded gauges.
 fn render_system_memory(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, "Memory");
+    let block = panel_block(&t, "Memory", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -2866,7 +2874,7 @@ fn gauge_line(theme: &Theme, label: &str, percent: f64, width: usize) -> Line<'s
 /// Disks: per-mount usage with a colour-coded gauge.
 fn render_system_disks(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, "Disks");
+    let block = panel_block(&t, "Disks", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -2912,7 +2920,7 @@ fn render_system_disks(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area
 /// Logged-in users.
 fn render_system_users(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, "Logged in");
+    let block = panel_block(&t, "Logged in", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -3088,6 +3096,11 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         ("○", "detached", app.theme.fg_dim)
     };
     let right = Line::from(vec![
+        Span::styled("T ", Style::new().fg(app.theme.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("{}  ", app.theme_kind.label()),
+            Style::new().fg(app.theme.fg_dim),
+        ),
         Span::styled(format!("{dot} "), Style::new().fg(color)),
         Span::styled(format!("{label} "), Style::new().fg(app.theme.fg_muted)),
     ]);
@@ -3121,6 +3134,7 @@ fn render_help(frame: &mut Frame, app: &App) {
         ("S / ↵", "save / apply a log search (Logs tab)"),
         ("/", "search logs (Esc to clear)"),
         ("l", "cycle log level (Logs tab)"),
+        ("T", "cycle theme (dark / midnight / light)"),
         ("?", "toggle this help"),
         ("q / Ctrl+C", "quit"),
         ("Esc", "close overlay / back"),

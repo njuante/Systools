@@ -16,7 +16,7 @@ use systui_security::PolicySelection;
 use systui_storage::PersistentState;
 
 use crate::form::{Field, Form};
-use crate::theme::Theme;
+use crate::theme::{Theme, ThemeKind};
 
 /// A concrete action queued for the engine. An enum (not a trait object) so
 /// [`App`] stays `Debug`.
@@ -177,6 +177,23 @@ impl Tab {
             Tab::Security => ModuleId::Security,
         }
     }
+
+    /// The semantic domain this tab belongs to, used to pick its accent hue.
+    pub fn domain(self) -> crate::theme::Domain {
+        use crate::theme::Domain;
+        match self {
+            Tab::Dashboard => Domain::Dashboard,
+            Tab::System => Domain::System,
+            Tab::Processes => Domain::Processes,
+            Tab::Services => Domain::Services,
+            Tab::Logs => Domain::Logs,
+            Tab::Network => Domain::Network,
+            Tab::Docker => Domain::Docker,
+            Tab::Crons => Domain::Crons,
+            Tab::Databases => Domain::Databases,
+            Tab::Security => Domain::Security,
+        }
+    }
 }
 
 /// The render state of the active view (`Product.md` §5). A module that fails
@@ -299,6 +316,8 @@ pub struct App {
     /// What the connected user can do on the host (probed once at startup).
     pub capabilities: Option<HostCapabilities>,
     pub theme: Theme,
+    /// Which palette is active; cycled with the theme key and persisted.
+    pub theme_kind: ThemeKind,
     pub active_tab: usize,
     pub view_state: ViewState,
     pub snapshot: Option<SystemSnapshot>,
@@ -361,6 +380,8 @@ pub struct App {
     pub logs_reload_requested: bool,
     pub action_plan_requested: bool,
     pub action_exec_requested: bool,
+    /// The active theme changed and the choice should be flushed to the config.
+    pub theme_persist_requested: bool,
     /// Recent CPU busy% samples for the dashboard sparkline (oldest first).
     pub cpu_history: Vec<u64>,
     /// Recent RAM used% samples for the dashboard sparkline (oldest first).
@@ -386,6 +407,7 @@ impl App {
             mode,
             capabilities: None,
             theme: Theme::dark(),
+            theme_kind: ThemeKind::DarkRich,
             active_tab: 0,
             view_state: ViewState::Empty,
             snapshot: None,
@@ -438,6 +460,7 @@ impl App {
             logs_reload_requested: false,
             action_plan_requested: false,
             action_exec_requested: false,
+            theme_persist_requested: false,
             cpu_history: Vec::new(),
             mem_history: Vec::new(),
             state: PersistentState::default(),
@@ -464,6 +487,25 @@ impl App {
     /// The currently selected tab.
     pub fn current_tab(&self) -> Tab {
         Tab::ALL[self.active_tab]
+    }
+
+    /// Accent hue for the active tab's domain.
+    pub fn domain_color(&self) -> ratatui::style::Color {
+        self.theme.domain(self.current_tab().domain())
+    }
+
+    /// Set the active palette, rebuilding the concrete theme.
+    pub fn set_theme_kind(&mut self, kind: ThemeKind) {
+        self.theme_kind = kind;
+        self.theme = kind.theme();
+    }
+
+    /// Switch to the next palette in the cycle. Returns the new kind so the
+    /// caller can persist the choice.
+    pub fn cycle_theme(&mut self) -> ThemeKind {
+        self.set_theme_kind(self.theme_kind.next());
+        self.theme_persist_requested = true;
+        self.theme_kind
     }
 
     /// Move to the next tab, wrapping around.

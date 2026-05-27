@@ -49,6 +49,7 @@ pub fn run(
     // clone while the main thread keeps one for synchronous action calls.
     let transport: Arc<dyn Transport> = Arc::from(transport);
     let mut app = App::new(host_label, mode);
+    app.set_theme_kind(theme::ThemeKind::from_config_name(&config.general.theme));
     app.thresholds = config.thresholds.clone();
     app.cert_warning_days = config.security.cert_expiry_warning_days;
     app.policy_selection = systui_security::PolicySelection::for_host(config, &app.host_label);
@@ -207,6 +208,12 @@ fn event_loop(
         if app.connectivity_requested {
             app.connectivity_requested = false;
             spawn_connectivity(runtime, transport, app, &conn_tx);
+        }
+
+        if app.theme_persist_requested {
+            app.theme_persist_requested = false;
+            // Best-effort: a failed write just means the choice isn't remembered.
+            let _ = systui_storage::save_general_theme(app.theme_kind.config_name());
         }
     }
     Ok(())

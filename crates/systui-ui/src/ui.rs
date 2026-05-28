@@ -6,7 +6,7 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Sparkline, Table, Wrap,
+    Block, BorderType, Borders, Cell, Clear, Gauge, Paragraph, Row, Table, Wrap,
 };
 use regex::RegexBuilder;
 use systui_collectors::{
@@ -17,7 +17,9 @@ use systui_core::{Finding, ModuleId, Severity};
 
 use crate::app::{ActionStage, App, InputMode, ProcessView, ServiceFilter, Tab, ViewState};
 use crate::theme::{Domain, Theme};
-use crate::widgets::{StatusLevel, grid, status_card};
+use crate::widgets::{
+    StatusLevel, grid, history_chart, meter_gauge, severity_bars, status_card,
+};
 
 /// Draw the whole UI for the current state.
 pub fn render(frame: &mut Frame, app: &App) {
@@ -2570,19 +2572,42 @@ fn content_message(app: &App, tab: Tab) -> (String, String) {
 fn render_dashboard(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
     let cols =
         Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).split(area);
-    let left = Layout::vertical([Constraint::Length(8), Constraint::Min(0)]).split(cols[0]);
+    let left = Layout::vertical([
+        Constraint::Length(5),  // gauge meters
+        Constraint::Length(9),  // history chart
+        Constraint::Min(0),     // domain status cards
+    ])
+    .split(cols[0]);
     let right = Layout::vertical([
-        Constraint::Length(12),
-        Constraint::Min(0),
-        Constraint::Length(6),
+        Constraint::Length(8),  // health gauge + deductions
+        Constraint::Length(10), // severity bar chart
+        Constraint::Min(0),     // top findings
+        Constraint::Length(5),  // session notes
     ])
     .split(cols[1]);
 
     render_metric_tiles(frame, app, snap, left[0]);
-    render_domain_cards(frame, app, snap, left[1]);
+    history_chart(
+        frame,
+        &app.theme,
+        left[1],
+        app.visual_style,
+        "CPU / RAM history",
+        &app.cpu_history,
+        &app.mem_history,
+    );
+    render_domain_cards(frame, app, snap, left[2]);
+
     render_health_panel(frame, app, right[0]);
-    render_findings_panel(frame, app, right[1]);
-    render_session_notes(frame, app, right[2]);
+    let [crit, high, med, low, info] = app.finding_counts();
+    severity_bars(
+        frame,
+        &app.theme,
+        right[1],
+        [crit as u64, high as u64, med as u64, low as u64, info as u64],
+    );
+    render_findings_panel(frame, app, right[2]);
+    render_session_notes(frame, app, right[3]);
 }
 
 /// Map a 0–100 utilisation to a cockpit status band.
@@ -2924,130 +2949,34 @@ fn usage_color(theme: &Theme, percent: f64) -> ratatui::style::Color {
 /// The four top metric tiles: CPU, RAM, DISK, LOAD.
 fn render_metric_tiles(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
     let cells = Layout::horizontal([Constraint::Ratio(1, 4); 4]).split(area);
+    let t = &app.theme;
 
-    metric_tile(
-        frame,
-        &app.theme,
-        cells[0],
-        "CPU",
-        format!("{:.0}", snap.cpu.busy_percent),
-        "%",
-        format!("{} cores", snap.cpu.cores),
-        Some(&app.cpu_history),
-        snap.cpu.busy_percent,
-    );
-    metric_tile(
-        frame,
-        &app.theme,
-        cells[1],
-        "RAM",
-        format!("{:.0}", snap.memory.used_percent()),
-        "%",
-        format!(
-            "{} / {}",
-            human_kb(snap.memory.used_kb()),
-            human_kb(snap.memory.total_kb)
-        ),
-        Some(&app.mem_history),
-        snap.memory.used_percent(),
-    );
+    let cpu = snap.cpu.busy_percent;
+    meter_gauge(frame, t, cells[0], "CPU", cpu, &format!("{cpu:.0}%"), usage_color(t, cpu));
+
+    let ram = snap.memory.used_percent();
+    meter_gauge(frame, t, cells[1], "RAM", ram, &format!("{ram:.0}%"), usage_color(t, ram));
 
     let worst = snap.disks.iter().max_by_key(|d| d.use_percent);
-    let (dvalue, dsub, dpct) = match worst {
-        Some(d) => (
-            format!("{}", d.use_percent),
-            format!("{} {}", d.mount, human_kb(d.size_kb)),
-            d.use_percent as f64,
-        ),
-        None => ("–".to_owned(), "no disks".to_owned(), 0.0),
+    let (dpct, dlabel) = match worst {
+        Some(d) => (d.use_percent as f64, format!("{}% {}", d.use_percent, d.mount)),
+        None => (0.0, "no disks".to_owned()),
     };
-    metric_tile(
-        frame, &app.theme, cells[2], "DISK", dvalue, "%", dsub, None, dpct,
-    );
+    meter_gauge(frame, t, cells[2], "DISK", dpct, &dlabel, usage_color(t, dpct));
 
     let load_pct = if snap.cpu.cores > 0 {
         (snap.load.one / snap.cpu.cores as f64 * 100.0).min(100.0)
     } else {
         0.0
     };
-    metric_tile(
+    meter_gauge(
         frame,
-        &app.theme,
+        t,
         cells[3],
         "LOAD",
-        format!("{:.2}", snap.load.one),
-        "",
-        format!(
-            "{:.2} {:.2} · {} cores",
-            snap.load.five, snap.load.fifteen, snap.cpu.cores
-        ),
-        None,
         load_pct,
-    );
-}
-
-/// One metric tile: label, big value, sparkline-or-gauge, sub-line.
-#[allow(clippy::too_many_arguments)]
-fn metric_tile(
-    frame: &mut Frame,
-    theme: &Theme,
-    area: Rect,
-    label: &str,
-    value: String,
-    unit: &str,
-    sub: String,
-    history: Option<&[u64]>,
-    percent: f64,
-) {
-    let block = panel_block(theme, label, theme.accent);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let color = usage_color(theme, percent);
-    let rows = Layout::vertical([
-        Constraint::Length(1), // value
-        Constraint::Length(1), // sparkline / gauge
-        Constraint::Min(0),    // sub
-    ])
-    .split(inner);
-
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                value,
-                Style::new()
-                    .fg(theme.fg_strong)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!(" {unit}"), Style::new().fg(theme.fg_muted)),
-        ])),
-        rows[0],
-    );
-
-    match history {
-        Some(h) if !h.is_empty() => {
-            frame.render_widget(
-                Sparkline::default()
-                    .data(h)
-                    .max(100)
-                    .style(Style::new().fg(color)),
-                rows[1],
-            );
-        }
-        _ => {
-            frame.render_widget(
-                Paragraph::new(Span::styled(
-                    gauge_bar(percent, rows[1].width as usize),
-                    Style::new().fg(color),
-                )),
-                rows[1],
-            );
-        }
-    }
-
-    frame.render_widget(
-        Paragraph::new(Span::styled(sub, Style::new().fg(theme.fg_dim))).wrap(Wrap { trim: true }),
-        rows[2],
+        &format!("{:.2} / {}c", snap.load.one, snap.cpu.cores),
+        usage_color(t, load_pct),
     );
 }
 
@@ -3066,33 +2995,39 @@ fn render_health_panel(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let color = score_color(app, health.score);
-    let mut score_line = vec![
-        Span::styled(
-            format!("{}", health.score),
-            Style::new().fg(color).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" /100  ", Style::new().fg(app.theme.fg_dim)),
-        Span::styled(gauge_bar(health.score as f64, 16), Style::new().fg(color)),
-    ];
+    let rows =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
+
     // Trend vs ~7 days ago, from the persisted snapshots (fills over time).
-    if let Some(base) = app.state.baseline(&app.host_label, app.now.date(), 7) {
-        score_line.push(Span::styled(
-            format!("  was {} 7d ago", base.score),
-            Style::new().fg(app.theme.fg_dim),
-        ));
-    }
-    let mut lines = vec![Line::from(score_line), Line::from("")];
+    let label = match app.state.baseline(&app.host_label, app.now.date(), 7) {
+        Some(base) => format!("{}/100  (was {} 7d ago)", health.score, base.score),
+        None => format!("{}/100", health.score),
+    };
+    frame.render_widget(
+        Gauge::default()
+            .gauge_style(Style::new().fg(color).bg(app.theme.bg_elev))
+            .ratio((health.score as f64).clamp(0.0, 100.0) / 100.0)
+            .label(Span::styled(
+                label,
+                Style::new()
+                    .fg(app.theme.fg_strong)
+                    .add_modifier(Modifier::BOLD),
+            )),
+        rows[0],
+    );
+
+    let mut lines = Vec::new();
     if health.checks.is_empty() {
         lines.push(Line::from(Span::styled(
             "  no deductions — healthy",
             Style::new().fg(app.theme.accent),
         )));
     } else {
-        for check in health.checks.iter().take(7) {
+        for check in health.checks.iter().take(6) {
             lines.push(finding_line(app, check));
         }
     }
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(Paragraph::new(lines), rows[1]);
 }
 
 /// Worst-first findings list with severity-colored left edge bars (spec §14).
@@ -3960,7 +3895,9 @@ mod tests {
         app.view_state = ViewState::Ready;
         app.dense = true; // the secondary "pending" detail shows in dense mode
 
-        let out = render_to_string(&app, 120, 30);
+        // The visual dashboard (gauges + history chart) leaves the cockpit cards
+        // lower down; render tall so the cards have room for their detail line.
+        let out = render_to_string(&app, 120, 44);
         assert!(out.contains("Updates"));
         assert!(out.contains("2 security"));
         assert!(out.contains("23 pending"));
@@ -3980,13 +3917,13 @@ mod tests {
         app.view_state = ViewState::Ready;
 
         // Clean default: only the verdict headline, no secondary detail.
-        let clean = render_to_string(&app, 120, 30);
+        let clean = render_to_string(&app, 120, 44);
         assert!(clean.contains("2 security"));
         assert!(!clean.contains("23 pending"));
 
         // Dense reveals the breakdown/totals line.
         app.dense = true;
-        let dense = render_to_string(&app, 120, 30);
+        let dense = render_to_string(&app, 120, 44);
         assert!(dense.contains("23 pending"));
     }
 

@@ -7,10 +7,15 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
+use ratatui::widgets::{
+    Axis, Bar, BarChart, BarGroup, Block, BorderType, Borders, Chart, Dataset, Gauge, GraphType,
+    Paragraph, Sparkline, Wrap,
+};
 
 use crate::theme::Theme;
+use crate::visual_style::VisualStyle;
 
 /// A domain's health at a glance, mapped to a color and a glyph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +89,163 @@ pub fn status_card(
         )));
     }
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+}
+
+/// A labelled meter: a titled card holding a filled [`Gauge`] bar (colored by
+/// `color`) with the reading drawn on top. Far more visual than a number + text.
+pub fn meter_gauge(
+    frame: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    title: &str,
+    percent: f64,
+    reading: &str,
+    color: Color,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.border))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::new().fg(color).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let gauge = Gauge::default()
+        .gauge_style(Style::new().fg(color).bg(theme.bg_elev))
+        .ratio((percent.clamp(0.0, 100.0)) / 100.0)
+        .label(Span::styled(
+            reading.to_owned(),
+            Style::new()
+                .fg(theme.fg_strong)
+                .add_modifier(Modifier::BOLD),
+        ));
+    frame.render_widget(gauge, inner);
+}
+
+/// A time-series panel for two %-series (e.g. CPU and RAM history). In the
+/// **Rich** style it draws real braille line charts; in **Sober** it stacks two
+/// labelled [`Sparkline`]s. Either way it is a graph, not a table of numbers.
+pub fn history_chart(
+    frame: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    style: VisualStyle,
+    title: &str,
+    cpu: &[u64],
+    mem: &[u64],
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.border))
+        .title(Span::styled(
+            format!(" {title} "),
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if matches!(style, VisualStyle::Rich) {
+        let cpu_pts: Vec<(f64, f64)> = cpu
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i as f64, *v as f64))
+            .collect();
+        let mem_pts: Vec<(f64, f64)> = mem
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i as f64, *v as f64))
+            .collect();
+        let span = cpu.len().max(mem.len()).max(1) as f64 - 1.0;
+        let datasets = vec![
+            Dataset::default()
+                .name("cpu")
+                .marker(Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(Style::new().fg(theme.accent))
+                .data(&cpu_pts),
+            Dataset::default()
+                .name("ram")
+                .marker(Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(Style::new().fg(theme.low))
+                .data(&mem_pts),
+        ];
+        let chart = Chart::new(datasets)
+            .x_axis(Axis::default().bounds([0.0, span.max(1.0)]))
+            .y_axis(
+                Axis::default()
+                    .bounds([0.0, 100.0])
+                    .labels(["0", "50", "100"]),
+            );
+        frame.render_widget(chart, inner);
+        return;
+    }
+
+    // Sober: two labelled sparklines stacked.
+    let rows = Layout::vertical([Constraint::Ratio(1, 2); 2]).split(inner);
+    for (row, (label, data, color)) in rows.iter().zip([
+        ("cpu", cpu, theme.accent),
+        ("ram", mem, theme.low),
+    ]) {
+        let cells =
+            Layout::horizontal([Constraint::Length(4), Constraint::Min(0)]).split(*row);
+        frame.render_widget(
+            Paragraph::new(Span::styled(label, Style::new().fg(color))),
+            cells[0],
+        );
+        frame.render_widget(
+            Sparkline::default()
+                .data(data)
+                .max(100)
+                .style(Style::new().fg(color)),
+            cells[1],
+        );
+    }
+}
+
+/// A horizontal severity distribution as a [`BarChart`]: one colored bar per
+/// severity (critical → info), each as tall as its count.
+pub fn severity_bars(frame: &mut Frame, theme: &Theme, area: Rect, counts: [u64; 5]) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme.border))
+        .title(Span::styled(
+            " Findings by severity ",
+            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let labels = ["CRIT", "HIGH", "MED", "LOW", "INFO"];
+    let colors = [
+        theme.critical,
+        theme.high,
+        theme.medium,
+        theme.low,
+        theme.fg_muted,
+    ];
+    let bars: Vec<Bar> = counts
+        .iter()
+        .zip(labels.iter().zip(colors.iter()))
+        .map(|(count, (label, color))| {
+            Bar::default()
+                .value(*count)
+                .label(Line::from(*label))
+                .style(Style::new().fg(*color))
+                .value_style(Style::new().fg(theme.bg).bg(*color))
+        })
+        .collect();
+    let chart = BarChart::default()
+        .data(BarGroup::default().bars(&bars))
+        .bar_width(6)
+        .bar_gap(2)
+        .label_style(Style::new().fg(theme.fg_dim));
+    frame.render_widget(chart, inner);
 }
 
 /// Lay an area out into a grid of `cols` columns and as many rows as needed for

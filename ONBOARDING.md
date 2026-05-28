@@ -19,7 +19,7 @@ document; everything else is English).
 2. [`docs/ROADMAP.md`](docs/ROADMAP.md) — phases → versions → sessions, v0.1 → v1.0 (all shipped).
 3. [`docs/METHODOLOGY.md`](docs/METHODOLOGY.md) — how we work (branches, gates, commits).
 4. [`CHANGELOG.md`](CHANGELOG.md) — what landed in each version (better than the history below).
-5. [`docs/BACKLOG.md`](docs/BACKLOG.md) — the post-v1.0 candidates, **including the three tasks below**.
+5. [`docs/BACKLOG.md`](docs/BACKLOG.md) — the post-v1.0 candidates (see *What to build next* below).
 
 ## Where the project is now: v1.0.0 shipped
 
@@ -32,38 +32,58 @@ large-log benchmark, a security review and packaging — see `CHANGELOG.md` and
 
 New work is now **v1.1+** (`docs/ROADMAP.md` "Out of scope until v1.1+").
 
-## What to build next (the three tasks)
+### In flight: the `feat/tui-polish` branch (post-v1.0, not yet merged)
 
-These are the three implementations to do well in a fresh session. Full notes in
-[`docs/BACKLOG.md`](docs/BACKLOG.md); concrete pointers here. The approved UI prototype is
-in [`docs/interfaz/`](docs/interfaz/) (Ratatui spec + screenshots under
-`_extracted/screenshots/`) — the first two tasks bring two tabs up to that prototype.
+A UI/UX pass lives on `feat/tui-polish` (see `CHANGELOG.md` "Unreleased"). It is **not yet
+merged into `main` or tagged**. It adds:
+- a **multi-theme system** (enriched dark / midnight / light) cycled live with `T` and
+  persisted to `[general] theme`, plus **per-domain accent colors** (each tab has its hue);
+- **richer per-tab detail** wired from data the collectors already gather — Services
+  (main PID, unit-file path, dependencies, recent `journalctl -u`), Network (real
+  established peers), Docker (published ports, max-retry), System (CPU model, virtualization);
+- a **guided, visual cron builder** (frequency presets + live preview of expression /
+  description / next runs) replacing the raw cron-expression form.
 
-**Read the prototype screenshots first**, then compare against the live tabs.
+When this branch merges, fold its highlights into the section above and clear this note.
 
-### 1 & 2 — System and Processes tab UI parity
+## What to build next
 
-Both tabs render far sparser than the prototype. **The data is already collected** — this
-is UI wiring, exactly like the v0.8.2 reskin / v0.8.4 data-parity work (match the
-prototype layout, **real data only, never mock**, omit panels with no real data).
+The full candidate list lives in [`docs/BACKLOG.md`](docs/BACKLOG.md). For UI work, the
+approved prototype is in [`docs/interfaz/`](docs/interfaz/) (Ratatui spec + screenshots
+under `_extracted/screenshots/`) — **read the prototype screenshot for a tab before
+changing it**, and keep **real data only, never mock**.
 
-- **System tab** — today a single plain-text block: `systui-ui/src/ui.rs::system_text`
-  (dispatched at the `(Ready, Some(snap), Tab::System)` arm of `render`, ~line 376).
-  Rebuild as a multi-panel screen (hardware/identity, CPU/RAM/swap gauges, disks table,
-  load, logged-in users). All fields already exist on `SystemSnapshot` (`os`, `kernel`,
-  `uptime_secs`, `load`, `cpu`, `memory`, `swap`, `disks`, `users`).
-- **Processes tab** — today a flat top-20 table with **no detail panel**:
-  `ui.rs::render_processes` (~line 859). Add a **detail side panel** and optionally a
-  **tree** view, and scroll past 20. Model the layout on the existing
-  `render_service_detail` / `render_container_detail` / `render_database_detail`.
-  - **Non-obvious bit:** those detail panels render from data already in `App`. The
-    process detail (cmd/cwd/open files/ports) is **not** in `App` — it comes from a
-    separate async call `systui_collectors::process_detail(transport, pid)`, and the
-    tree from `build_process_tree`/`TreeRow`. So you must wire a fetch for the selected
-    PID (on selection, or fold it into the gather), going through the v0.8.3 background
-    refresh — don't block the UI thread.
+**Done since v1.0** (don't re-do these): the **System** and **Processes** tabs already
+match the multi-panel idiom — System is `render_system` (identity/disks/memory/users) and
+Processes has `render_process_detail` plus a tree view (`build_process_tree`). The
+`feat/tui-polish` branch above further enriched Services/Network/Docker/System and replaced
+the cron form with a guided builder.
 
-### 3 — Optional "expert console" (free-form shell), gated
+### Highest value / lowest effort (reuse existing collectors)
+
+These three reuse collectors that already exist, so they are the cheapest big wins:
+
+1. **TLS/SSL certificate panel** — certs are already discovered and scored as findings
+   (`cert_expiry_warning_days`, the v0.3 cert checks). Promote them to a first-class
+   sortable view: every cert (local files + probed `host:443`) with days-to-expiry,
+   CN/SAN, issuer, coloured by urgency.
+2. **Disk drill-down** — System shows only the global disk %. Add an `ncdu`-style
+   breakdown of the biggest dirs/files and fastest-growing logs (new `du`/`find`
+   `CommandSpec` reads), surfaced as a System sub-panel.
+3. **Security updates + reboot-required** — the packages collector already feeds the
+   Dashboard UPDATES tile; add how many pending updates are *security* and whether a
+   reboot is required (`/var/run/reboot-required`, `needs-restarting -r`).
+
+### Larger / differentiating
+
+- **Auth & access panel** (failed SSH logins, sessions, `authorized_keys`, no-password
+  shells) — extends Security and `capabilities`.
+- **Live mode + richer sparklines** (per-core CPU, disk I/O, per-interface net, follow-mode
+  log tail) — extends the existing trends store.
+- **Alerting / thresholds** driving the tab badges and the report.
+- **Config/state drift** diffing snapshots across runs (the v0.8.4 store is the substrate).
+
+### Gated "expert console" (free-form shell)
 
 A tab to type raw commands. **This deliberately steps outside the core guarantee** (no
 free-form commands; everything via `CommandSpec` + the action engine). Only build it with

@@ -320,10 +320,13 @@ pub fn render_cron_builder(frame: &mut Frame, b: &CronBuilder, theme: &Theme, no
     let area = centered(frame.area(), width, height);
     frame.render_widget(Clear, area);
 
+    // The modal is a themed card: fill the whole area with the elevated surface
+    // (and theme fg) so it reads correctly under any theme, including light.
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(theme.violet))
+        .style(Style::new().bg(theme.bg_elev).fg(theme.fg))
         .title(Span::styled(
             format!(" {} ", b.title()),
             Style::new().fg(theme.violet).add_modifier(Modifier::BOLD),
@@ -332,7 +335,7 @@ pub fn render_cron_builder(frame: &mut Frame, b: &CronBuilder, theme: &Theme, no
     frame.render_widget(block, area);
 
     let mut constraints: Vec<Constraint> = fields.iter().map(|_| Constraint::Length(1)).collect();
-    constraints.push(Constraint::Length(1)); // blank
+    constraints.push(Constraint::Length(1)); // divider
     constraints.push(Constraint::Min(5)); // preview
     constraints.push(Constraint::Length(1)); // footer
     let rows = Layout::vertical(constraints).split(inner);
@@ -342,8 +345,24 @@ pub fn render_cron_builder(frame: &mut Frame, b: &CronBuilder, theme: &Theme, no
         frame.render_widget(field_line(b, *field, focused, theme), rows[i]);
     }
 
-    let preview_idx = fields.len() + 1;
-    render_preview(frame, b, theme, now, rows[preview_idx]);
+    // A labelled divider separating the inputs from the live preview.
+    let divider_row = rows[fields.len()];
+    let dashes = "─".repeat(divider_row.width.saturating_sub(10) as usize);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" preview ", Style::new().fg(theme.violet)),
+            Span::styled(dashes, Style::new().fg(theme.border)),
+        ])),
+        divider_row,
+    );
+
+    // The preview sits on a second elevation so it reads as its own block.
+    let preview_row = rows[fields.len() + 1];
+    frame.render_widget(
+        Block::default().style(Style::new().bg(theme.bg_elev_2)),
+        preview_row,
+    );
+    render_preview(frame, b, theme, now, preview_row);
 
     let footer = Line::from(Span::styled(
         " ↑↓ move · ←→ change · type to edit · Enter save · Esc cancel ",

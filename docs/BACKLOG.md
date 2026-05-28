@@ -4,26 +4,13 @@ Candidate improvements gathered after the v1.0.0 release. Not scheduled yet; the
 v1.1+ ideas. See [`ROADMAP.md`](ROADMAP.md) "Out of scope until v1.1+" for the larger
 deferred themes.
 
-## UI — prototype parity for the System and Processes tabs
+## UI — prototype parity for the System and Processes tabs — DONE
 
-Both tabs render far more sparsely than the approved prototype in
-[`interfaz/_extracted/screenshots`](interfaz/_extracted/screenshots). The data is already
-collected — this is **UI wiring**, in the spirit of the v0.8.2/v0.8.4 reskin (match the
-prototype layout, real data only, never mock).
-
-- **System tab** — currently a single plain-text block (`ui.rs::system_text`). Should
-  become a multi-panel screen like the other tabs: hardware/identity (OS, kernel,
-  hostname, uptime), CPU/RAM/swap gauges, a disks table, load, and logged-in users. All
-  of this is already in `SystemSnapshot` (`os`, `kernel`, `uptime_secs`, `load`, `cpu`,
-  `memory`, `swap`, `disks`, `users`) — no new collectors needed.
-- **Processes tab** — currently a flat top-20 table with no side panel
-  (`ui.rs::render_processes`), unlike Services/Docker/Database which have a detail panel.
-  Should add: a **process detail panel** (cmd / cwd / open files / ports — already
-  provided by `process_detail`/`ProcessDetail`), an optional **process tree** view
-  (`build_process_tree`/`TreeRow` already exist), and scrolling beyond the top 20.
-
-Acceptance: both tabs visually match the prototype's multi-panel idiom, render only real
-data, keep render a pure function of `App`, and refresh the `TestBackend` render tests.
+~~Both tabs render far more sparsely than the approved prototype.~~ **Completed.** The
+**System** tab is now a multi-panel screen (`ui.rs::render_system`: identity, disks,
+memory gauges, logged-in users) and the **Processes** tab has a detail side panel
+(`render_process_detail`) plus a process-tree view (`build_process_tree`). The
+`feat/tui-polish` branch further enriched both (System gained CPU model + virtualization).
 
 ## Feature — optional "expert console" (free-form shell), gated
 

@@ -29,6 +29,11 @@ pub fn cache_dir() -> Result<PathBuf> {
     Ok(project_dirs()?.cache_dir().to_path_buf())
 }
 
+/// Directory for user-triggered exports (e.g. log/incident JSON dumps).
+pub fn exports_dir() -> Result<PathBuf> {
+    Ok(data_dir()?.join("exports"))
+}
+
 /// Full path to the main configuration file.
 pub fn config_file() -> Result<PathBuf> {
     Ok(config_dir()?.join("config.toml"))

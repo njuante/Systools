@@ -392,6 +392,10 @@ pub struct App {
     pub theme_persist_requested: bool,
     /// The active visual style changed and should be flushed to the config.
     pub visual_style_persist_requested: bool,
+    /// A logs-to-JSON export was requested; the loop performs the file write.
+    pub export_requested: bool,
+    /// Transient status line (e.g. an export result); cleared on the next key.
+    pub status_message: Option<String>,
     /// Recent CPU busy% samples for the dashboard sparkline (oldest first).
     pub cpu_history: Vec<u64>,
     /// Recent RAM used% samples for the dashboard sparkline (oldest first).
@@ -478,6 +482,8 @@ impl App {
             action_exec_requested: false,
             theme_persist_requested: false,
             visual_style_persist_requested: false,
+            export_requested: false,
+            status_message: None,
             cpu_history: Vec::new(),
             mem_history: Vec::new(),
             state: PersistentState::default(),
@@ -673,6 +679,11 @@ impl App {
     /// Toggle dense mode (fuller layout vs. the summary-first default).
     pub fn toggle_dense(&mut self) {
         self.dense = !self.dense;
+    }
+
+    /// Ask the event loop to export the current logs view to a JSON file.
+    pub fn request_log_export(&mut self) {
+        self.export_requested = true;
     }
 
     /// Ask the event loop to re-run collectors on its next tick.

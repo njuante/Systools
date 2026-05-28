@@ -6,6 +6,7 @@
 pub mod app;
 pub mod cron_builder;
 pub mod data;
+pub mod export;
 pub mod fleet;
 pub mod form;
 pub mod input;
@@ -231,6 +232,14 @@ fn event_loop(
             app.visual_style_persist_requested = false;
             // Best-effort: a failed write just means the choice isn't remembered.
             let _ = systui_storage::save_general_visual_style(app.visual_style.config_name());
+        }
+
+        if app.export_requested {
+            app.export_requested = false;
+            app.status_message = Some(match export::export_logs(app) {
+                Ok(path) => format!("exported {} log lines → {}", app.logs.len(), path.display()),
+                Err(e) => format!("log export failed: {e}"),
+            });
         }
     }
     Ok(())

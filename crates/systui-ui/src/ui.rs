@@ -3406,7 +3406,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             ("l", "level"),
             ("t", "window"),
             ("S", "save search"),
-            ("↵", "apply"),
+            ("e", "export json"),
             ("?", "help"),
             ("q", "quit"),
         ],
@@ -3479,7 +3479,20 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let cols = Layout::horizontal([Constraint::Min(10), Constraint::Length(40)]).split(area);
-    frame.render_widget(Paragraph::new(Line::from(spans)), cols[0]);
+    // A transient status message (e.g. an export result) takes over the hint row.
+    if let Some(msg) = &app.status_message {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" {msg}"),
+                Style::new()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ))),
+            cols[0],
+        );
+    } else {
+        frame.render_widget(Paragraph::new(Line::from(spans)), cols[0]);
+    }
 
     // Right: theme + visual style + live/attached indicator.
     let (dot, label, color) = if app.snapshot.is_some() {
@@ -3534,6 +3547,7 @@ fn render_help(frame: &mut Frame, app: &App) {
         ("S / ↵", "save / apply a log search (Logs tab)"),
         ("/", "search logs (Esc to clear)"),
         ("l", "cycle log level (Logs tab)"),
+        ("e", "export the current logs to JSON (Logs tab)"),
         ("T", "cycle theme (dark / midnight / light)"),
         ("V", "cycle visual style (sober / rich)"),
         ("D", "toggle dense mode (more detail per screen)"),

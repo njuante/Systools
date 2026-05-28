@@ -102,6 +102,15 @@ omit the panel rather than mock it.
   (instances → +operational detail). Security keeps its header + findings layout (it is
   already a summary + list with no secondary rail to hide).
 - **S11.5 — Logs aggregation-first + JSON export**.
+  **Done (with a scope adjustment).** Shipped the **JSON export**: `e` on the Logs tab
+  writes the current view to `~/.local/share/systui/exports/systui-logs-<host>-<ts>.json`
+  (host, timestamp, active filter, an error-fingerprint aggregation and the raw entries)
+  off the render path via an `export_requested` flag; a transient status line reports the
+  path. **Adjustment:** the planned "invert Logs to aggregation-first by default" was
+  dropped — the S11.3/S11.4 drill-down already makes the live tail the clean default and
+  surfaces the fingerprints/sources rail under dense (`D`), so inverting the default would
+  contradict the now-consistent per-tab rule. The fingerprint aggregation instead lives in
+  the export payload, where it directly serves "grab a failing host's logs fast".
 
 ## Definition of done
 

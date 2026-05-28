@@ -84,6 +84,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Any normal key clears a transient status message (e.g. an export notice).
+    app.status_message = None;
+
     match key.code {
         KeyCode::Char('q') => app.quit(),
         KeyCode::Char('?') => app.toggle_help(),
@@ -122,6 +125,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
             app.set_selected_finding_status(FindingStatus::FalsePositive);
         }
         KeyCode::Char('e') if app.current_tab() == Tab::Crons => app.open_edit_cron_form(),
+        KeyCode::Char('e') if app.current_tab() == Tab::Logs => app.request_log_export(),
         KeyCode::Char('d') if app.current_tab() == Tab::Crons => app.request_delete_cron(),
         KeyCode::Char('x') if app.current_tab() == Tab::Crons => app.request_toggle_cron(),
         KeyCode::Char('n') if app.current_tab() == Tab::Crons => app.request_run_cron(),
@@ -186,6 +190,15 @@ mod tests {
         assert!(app.dense);
         handle_key(&mut app, press(KeyCode::Char('D')));
         assert!(!app.dense);
+    }
+
+    #[test]
+    fn e_on_logs_requests_export() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.select_tab(4); // Logs
+        assert!(!app.export_requested);
+        handle_key(&mut app, press(KeyCode::Char('e')));
+        assert!(app.export_requested);
     }
 
     #[test]

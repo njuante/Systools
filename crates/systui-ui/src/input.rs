@@ -93,6 +93,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('V') => {
             app.cycle_visual_style();
         }
+        KeyCode::Char('D') => app.toggle_dense(),
         KeyCode::Char('r') => app.request_refresh(),
         KeyCode::Char('s') => app.toggle_process_sort(),
         KeyCode::Char('/') => app.enter_search(),
@@ -175,6 +176,16 @@ mod tests {
         assert!(app.show_help);
         handle_key(&mut app, press(KeyCode::Esc));
         assert!(!app.show_help);
+    }
+
+    #[test]
+    fn shift_d_toggles_dense_mode() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        assert!(!app.dense);
+        handle_key(&mut app, press(KeyCode::Char('D')));
+        assert!(app.dense);
+        handle_key(&mut app, press(KeyCode::Char('D')));
+        assert!(!app.dense);
     }
 
     #[test]

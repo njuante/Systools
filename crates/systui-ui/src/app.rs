@@ -377,6 +377,9 @@ pub struct App {
     pub pending: Option<PendingAction>,
     pub cron_builder: Option<CronBuilder>,
     pub show_help: bool,
+    /// Dense mode: show the fuller, information-heavy layout instead of the
+    /// cleaner summary-first default. Toggled in-session, not persisted.
+    pub dense: bool,
     pub should_quit: bool,
     /// A background gather is in flight; drives the refresh indicator and
     /// coalesces refresh requests so only one gather runs at a time.
@@ -466,6 +469,7 @@ impl App {
             pending: None,
             cron_builder: None,
             show_help: false,
+            dense: false,
             should_quit: false,
             refreshing: false,
             refresh_requested: false,
@@ -664,6 +668,11 @@ impl App {
     /// Toggle the help overlay.
     pub fn toggle_help(&mut self) {
         self.show_help = !self.show_help;
+    }
+
+    /// Toggle dense mode (fuller layout vs. the summary-first default).
+    pub fn toggle_dense(&mut self) {
+        self.dense = !self.dense;
     }
 
     /// Ask the event loop to re-run collectors on its next tick.

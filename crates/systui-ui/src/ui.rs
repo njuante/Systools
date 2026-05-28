@@ -2571,6 +2571,9 @@ fn render_domain_cards(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area
     let cards = domain_cards(app, snap);
     let cells = grid(inner, 4, cards.len());
     for (card, cell) in cards.iter().zip(cells.iter()) {
+        // Clean by default: just the verdict. Dense mode reveals the secondary
+        // breakdown/totals line.
+        let detail = if app.dense { card.detail.as_str() } else { "" };
         status_card(
             frame,
             &app.theme,
@@ -2579,7 +2582,7 @@ fn render_domain_cards(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area
             card.title,
             card.status,
             &card.headline,
-            &card.detail,
+            detail,
         );
     }
 }
@@ -3480,6 +3483,7 @@ fn render_help(frame: &mut Frame, app: &App) {
         ("l", "cycle log level (Logs tab)"),
         ("T", "cycle theme (dark / midnight / light)"),
         ("V", "cycle visual style (sober / rich)"),
+        ("D", "toggle dense mode (more detail per screen)"),
         ("?", "toggle this help"),
         ("q / Ctrl+C", "quit"),
         ("Esc", "close overlay / back"),
@@ -3884,11 +3888,36 @@ mod tests {
             available: true,
         };
         app.view_state = ViewState::Ready;
+        app.dense = true; // the secondary "pending" detail shows in dense mode
 
         let out = render_to_string(&app, 120, 30);
         assert!(out.contains("Updates"));
         assert!(out.contains("2 security"));
         assert!(out.contains("23 pending"));
+    }
+
+    #[test]
+    fn dense_mode_reveals_card_detail() {
+        use systui_collectors::PackageUpdates;
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.packages = PackageUpdates {
+            manager: "apt".to_owned(),
+            pending: 23,
+            security: 2,
+            available: true,
+        };
+        app.view_state = ViewState::Ready;
+
+        // Clean default: only the verdict headline, no secondary detail.
+        let clean = render_to_string(&app, 120, 30);
+        assert!(clean.contains("2 security"));
+        assert!(!clean.contains("23 pending"));
+
+        // Dense reveals the breakdown/totals line.
+        app.dense = true;
+        let dense = render_to_string(&app, 120, 30);
+        assert!(dense.contains("23 pending"));
     }
 
     #[test]

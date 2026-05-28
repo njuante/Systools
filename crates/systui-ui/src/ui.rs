@@ -402,6 +402,13 @@ fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
         .filter(|e| log_matches(e, &app.log_search, regex.as_ref()))
         .collect();
 
+    // Clean by default: the live tail full-width. Dense adds the analysis rail
+    // (error fingerprints, sources, saved searches).
+    if !app.dense {
+        render_log_tail(frame, app, &filtered, area);
+        return;
+    }
+
     let cols =
         Layout::horizontal([Constraint::Percentage(68), Constraint::Percentage(32)]).split(area);
     render_log_tail(frame, app, &filtered, cols[0]);
@@ -697,10 +704,15 @@ fn render_services(frame: &mut Frame, app: &App, area: Rect) {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
     render_service_filter_bar(frame, app, rows[0]);
 
-    let cols =
-        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).split(rows[1]);
-    render_service_list(frame, app, cols[0]);
-    render_service_detail(frame, app, cols[1]);
+    // Clean by default: the unit table full-width. Dense adds the detail pane.
+    if app.dense {
+        let cols = Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)])
+            .split(rows[1]);
+        render_service_list(frame, app, cols[0]);
+        render_service_detail(frame, app, cols[1]);
+    } else {
+        render_service_list(frame, app, rows[1]);
+    }
 }
 
 fn render_service_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
@@ -949,6 +961,11 @@ fn render_unit_logs(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_processes(frame: &mut Frame, app: &App, area: Rect) {
+    // Clean by default: the process table full-width. Dense adds the detail pane.
+    if !app.dense {
+        render_process_list(frame, app, area);
+        return;
+    }
     let cols =
         Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).split(area);
     render_process_list(frame, app, cols[0]);
@@ -1156,6 +1173,14 @@ fn render_network(frame: &mut Frame, app: &App, area: Rect) {
         );
         return;
     };
+
+    // Clean by default: the exposure map full-width — the security-relevant
+    // "what is listening". Dense adds connectivity, interfaces, DNS/routes,
+    // connections and firewall panels.
+    if !app.dense {
+        render_exposure_panel(frame, app, area);
+        return;
+    }
 
     let cols =
         Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).split(area);
@@ -1538,6 +1563,13 @@ fn render_docker(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    // Clean by default: the container table full-height. Dense adds the risk
+    // checks, the selected-container detail, compose projects and image hygiene.
+    if !app.dense {
+        render_container_table(frame, app, area);
+        return;
+    }
+
     let rows = Layout::vertical([
         Constraint::Percentage(44),
         Constraint::Percentage(34),
@@ -1893,6 +1925,13 @@ fn render_container_detail(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_crons(frame: &mut Frame, app: &App, area: Rect) {
+    // Clean by default: the scheduled-jobs table full-width. Dense adds the
+    // schedule preview, systemd timers and the cron-health summary.
+    if !app.dense {
+        render_cron_table(frame, app, area);
+        return;
+    }
+
     let cols =
         Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).split(area);
     render_cron_table(frame, app, cols[0]);
@@ -2169,6 +2208,13 @@ fn render_databases(frame: &mut Frame, app: &App, area: Rect) {
             .alignment(Alignment::Center),
             area,
         );
+        return;
+    }
+
+    // Clean by default: the instances table full-height. Dense adds the
+    // selected-instance detail pane.
+    if !app.dense {
+        render_database_table(frame, app, area);
         return;
     }
 
@@ -3115,13 +3161,20 @@ fn finding_line(app: &App, check: &systui_collectors::Check) -> Line<'static> {
 fn render_system(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
     let cols =
         Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).split(area);
-    let left = Layout::vertical([Constraint::Length(10), Constraint::Min(0)]).split(cols[0]);
-    let right = Layout::vertical([Constraint::Length(7), Constraint::Min(0)]).split(cols[1]);
 
-    render_system_identity(frame, app, snap, left[0]);
-    render_system_disks(frame, app, snap, left[1]);
-    render_system_memory(frame, app, snap, right[0]);
-    render_system_users(frame, app, snap, right[1]);
+    // Clean by default: identity + memory, the "what is this host" essentials.
+    // Dense adds the disks and logged-in users panels.
+    if app.dense {
+        let left = Layout::vertical([Constraint::Length(10), Constraint::Min(0)]).split(cols[0]);
+        let right = Layout::vertical([Constraint::Length(7), Constraint::Min(0)]).split(cols[1]);
+        render_system_identity(frame, app, snap, left[0]);
+        render_system_disks(frame, app, snap, left[1]);
+        render_system_memory(frame, app, snap, right[0]);
+        render_system_users(frame, app, snap, right[1]);
+    } else {
+        render_system_identity(frame, app, snap, cols[0]);
+        render_system_memory(frame, app, snap, cols[1]);
+    }
 }
 
 /// Identity & vitals: hostname, OS, kernel, uptime, CPU and load.
@@ -3696,6 +3749,7 @@ mod tests {
         app.snapshot = Some(sample_snapshot());
         app.view_state = ViewState::Ready;
         app.select_tab(1); // System
+        app.dense = true; // disks + users panels live in dense mode
 
         let out = render_to_string(&app, 100, 30);
         assert!(out.contains("Hostname"));
@@ -3745,6 +3799,7 @@ mod tests {
         ];
         app.view_state = ViewState::Ready;
         app.select_tab(2);
+        app.dense = true; // the process detail pane lives in dense mode
 
         // Detail panel reflects the selected process (top of the CPU sort: node).
         let out = render_to_string(&app, 110, 18);
@@ -3870,6 +3925,7 @@ mod tests {
         app.snapshot = Some(sample_snapshot());
         app.view_state = ViewState::Ready;
         app.select_tab(4); // Logs
+        app.dense = true; // the analysis rail (saved searches) lives in dense mode
         app.state.add_search("nginx timeout");
         let out = render_to_string(&app, 130, 30);
         assert!(out.contains("Saved searches"));
@@ -3989,6 +4045,7 @@ mod tests {
         }];
         app.view_state = ViewState::Ready;
         app.select_tab(3); // Services
+        app.dense = true; // the detail pane lives in dense mode
 
         let out = render_to_string(&app, 120, 28);
         assert!(out.contains("main PID"));
@@ -4124,6 +4181,7 @@ mod tests {
         app.network = Some(net);
         app.view_state = ViewState::Ready;
         app.select_tab(5); // Network
+        app.dense = true; // interfaces/connections panels live in dense mode
 
         // The exposure map is information-dense; render wide (the prototype is 200 cols).
         let out = render_to_string(&app, 130, 30);
@@ -4137,6 +4195,26 @@ mod tests {
         // Connections panel lists the real established peer, not just a count.
         assert!(out.contains("Connections"));
         assert!(out.contains("10.0.0.2:51000"));
+    }
+
+    #[test]
+    fn network_clean_default_hides_secondary_panels() {
+        use systui_collectors::exposure_map;
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        let net = sample_network();
+        app.exposures = exposure_map(&net.listeners);
+        app.network = Some(net);
+        app.view_state = ViewState::Ready;
+        app.select_tab(5); // Network, clean default (dense off)
+
+        let out = render_to_string(&app, 130, 30);
+        // The primary exposure map is shown…
+        assert!(out.contains("Exposure map"));
+        assert!(out.contains("6379"));
+        // …but the secondary rail panels are hidden until dense mode.
+        assert!(!out.contains("Interfaces"));
+        assert!(!out.contains("Connections"));
     }
 
     #[test]
@@ -4155,6 +4233,7 @@ mod tests {
         };
         app.view_state = ViewState::Ready;
         app.select_tab(5); // Network
+        app.dense = true; // firewall panel lives in dense mode
 
         let out = render_to_string(&app, 130, 30);
         assert!(out.contains("Firewall"));
@@ -4170,6 +4249,7 @@ mod tests {
         app.network = Some(sample_network());
         app.view_state = ViewState::Ready;
         app.select_tab(5); // Network
+        app.dense = true; // connectivity panel lives in dense mode
 
         // Before running, the panel invites the user to probe.
         let out = render_to_string(&app, 130, 30);
@@ -4385,6 +4465,7 @@ mod tests {
         app.container_inspects = vec![sample_inspect()];
         app.view_state = ViewState::Ready;
         app.select_tab(6); // Docker
+        app.dense = true; // risk checks + detail pane live in dense mode
 
         let out = render_to_string(&app, 110, 30);
         assert!(out.contains("redis"));
@@ -4420,6 +4501,7 @@ mod tests {
         };
         app.view_state = ViewState::Ready;
         app.select_tab(6); // Docker
+        app.dense = true; // compose + image hygiene panels live in dense mode
 
         let out = render_to_string(&app, 120, 36);
         assert!(out.contains("Compose projects"));
@@ -4475,6 +4557,7 @@ mod tests {
         )];
         app.view_state = ViewState::Ready;
         app.select_tab(7); // Crons
+        app.dense = true; // preview/timers/summary panels live in dense mode
 
         let out = render_to_string(&app, 110, 36);
         assert!(out.contains("Every day at 02:00"));
@@ -4540,6 +4623,7 @@ mod tests {
         )];
         app.view_state = ViewState::Ready;
         app.select_tab(8); // Databases
+        app.dense = true; // the operational detail pane lives in dense mode
 
         let out = render_to_string(&app, 120, 34);
         assert!(out.contains("Redis"));

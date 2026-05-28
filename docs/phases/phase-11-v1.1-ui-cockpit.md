@@ -89,8 +89,18 @@ omit the panel rather than mock it.
   notes. The dense `at_a_glance` text grid was removed.
 - **S11.3 — Drill-down pilot**: the summary-band → raw-detail pattern and the dense-mode
   toggle on Services, Logs and System.
+  **Done.** Added a session-local dense mode (`Shift+D`, `App::dense`). The rule across
+  screens: **clean by default shows the primary panel(s) full-width; dense restores the
+  full multi-panel layout.** Pilots: Services (table → +detail pane), System (identity +
+  memory → +disks +users), Logs (live tail → +fingerprints/sources/saved-searches). The
+  cockpit cards also reveal their secondary breakdown line in dense.
 - **S11.4 — Drill-down rollout**: the remaining tabs (Network, Docker, Crons, Databases,
   Security, Processes).
+  **Done.** Same rule applied to Processes (list → +detail), Network (exposure map →
+  +connectivity/interfaces/DNS/connections/firewall), Docker (container table → +risks/
+  detail/compose/hygiene), Crons (jobs table → +preview/timers/summary) and Databases
+  (instances → +operational detail). Security keeps its header + findings layout (it is
+  already a summary + list with no secondary rail to hide).
 - **S11.5 — Logs aggregation-first + JSON export**.
 
 ## Definition of done

@@ -16,7 +16,8 @@ use systui_collectors::{
 use systui_core::{Finding, ModuleId, Severity};
 
 use crate::app::{ActionStage, App, InputMode, ProcessView, ServiceFilter, Tab, ViewState};
-use crate::theme::Theme;
+use crate::theme::{Domain, Theme};
+use crate::widgets::{StatusLevel, grid, status_card};
 
 /// Draw the whole UI for the current state.
 pub fn render(frame: &mut Frame, app: &App) {
@@ -2532,10 +2533,292 @@ fn render_dashboard(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: R
     .split(cols[1]);
 
     render_metric_tiles(frame, app, snap, left[0]);
-    render_findings_panel(frame, app, left[1]);
+    render_domain_cards(frame, app, snap, left[1]);
     render_health_panel(frame, app, right[0]);
-    render_at_a_glance(frame, app, snap, right[1]);
+    render_findings_panel(frame, app, right[1]);
     render_session_notes(frame, app, right[2]);
+}
+
+/// Map a 0–100 utilisation to a cockpit status band.
+fn usage_status(percent: f64) -> StatusLevel {
+    if percent >= 85.0 {
+        StatusLevel::Crit
+    } else if percent >= 60.0 {
+        StatusLevel::Warn
+    } else {
+        StatusLevel::Ok
+    }
+}
+
+/// A per-domain status card with its computed verdict.
+struct DomainCard {
+    accent: ratatui::style::Color,
+    title: &'static str,
+    status: StatusLevel,
+    headline: String,
+    detail: String,
+}
+
+/// The cockpit's per-domain status cards: one accented card per area, each with
+/// a status dot and a one-line, plain-language verdict derived from the real
+/// snapshot. Replaces a dense text grid — the landing answers "is this host OK?"
+/// at a glance; detail lives one keystroke away in each tab.
+fn render_domain_cards(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
+    let block = panel_block(&app.theme, "Status", app.domain_color());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let cards = domain_cards(app, snap);
+    let cells = grid(inner, 4, cards.len());
+    for (card, cell) in cards.iter().zip(cells.iter()) {
+        status_card(
+            frame,
+            &app.theme,
+            *cell,
+            card.accent,
+            card.title,
+            card.status,
+            &card.headline,
+            &card.detail,
+        );
+    }
+}
+
+/// Build the cockpit verdicts. Every value comes from a real collector; cards for
+/// areas with no data report an idle state rather than inventing numbers.
+fn domain_cards(app: &App, snap: &SystemSnapshot) -> Vec<DomainCard> {
+    let mut cards = Vec::new();
+
+    // Services: failed units (the only service tier always collected).
+    let failed = app.failed_units.len();
+    cards.push(DomainCard {
+        accent: app.theme.domain(Domain::Services),
+        title: "Services",
+        status: if failed > 0 {
+            StatusLevel::Crit
+        } else {
+            StatusLevel::Ok
+        },
+        headline: if failed > 0 {
+            format!("{failed} failed")
+        } else {
+            "all up".to_owned()
+        },
+        detail: String::new(),
+    });
+
+    // Network: externally reachable, sensitive exposures.
+    let risky = app.risky_exposure_count();
+    let listening = app.exposures.len();
+    cards.push(if app.network.is_none() && listening == 0 {
+        DomainCard {
+            accent: app.theme.domain(Domain::Network),
+            title: "Network",
+            status: StatusLevel::Idle,
+            headline: "no data".to_owned(),
+            detail: String::new(),
+        }
+    } else {
+        DomainCard {
+            accent: app.theme.domain(Domain::Network),
+            title: "Network",
+            status: if risky > 0 {
+                StatusLevel::Crit
+            } else {
+                StatusLevel::Ok
+            },
+            headline: if risky > 0 {
+                format!("{risky} risky")
+            } else {
+                "no risky ports".to_owned()
+            },
+            detail: format!("{listening} listening"),
+        }
+    });
+
+    // Docker: running containers (informational; risks live in the Docker tab).
+    let running = app.containers.iter().filter(|c| c.is_running()).count();
+    cards.push(if !app.docker_available {
+        DomainCard {
+            accent: app.theme.domain(Domain::Docker),
+            title: "Docker",
+            status: StatusLevel::Idle,
+            headline: "not installed".to_owned(),
+            detail: String::new(),
+        }
+    } else {
+        DomainCard {
+            accent: app.theme.domain(Domain::Docker),
+            title: "Docker",
+            status: if app.containers.is_empty() {
+                StatusLevel::Idle
+            } else {
+                StatusLevel::Ok
+            },
+            headline: format!("{running} running"),
+            detail: format!("{} total", app.containers.len()),
+        }
+    });
+
+    // Security: active findings by severity.
+    let [crit, high, med, ..] = app.finding_counts();
+    cards.push(DomainCard {
+        accent: app.theme.domain(Domain::Security),
+        title: "Security",
+        status: if crit > 0 {
+            StatusLevel::Crit
+        } else if high > 0 {
+            StatusLevel::Warn
+        } else {
+            StatusLevel::Ok
+        },
+        headline: if crit > 0 {
+            format!("{crit} critical")
+        } else if high > 0 {
+            format!("{high} high")
+        } else {
+            "no critical".to_owned()
+        },
+        detail: format!("{high} high · {med} med"),
+    });
+
+    // Logs: error/critical lines in the visible window.
+    let errors = app.logs.iter().filter(|e| e.is_error()).count();
+    cards.push(if app.logs.is_empty() {
+        DomainCard {
+            accent: app.theme.domain(Domain::Logs),
+            title: "Logs",
+            status: StatusLevel::Idle,
+            headline: "no logs".to_owned(),
+            detail: String::new(),
+        }
+    } else {
+        DomainCard {
+            accent: app.theme.domain(Domain::Logs),
+            title: "Logs",
+            status: if errors > 0 {
+                StatusLevel::Warn
+            } else {
+                StatusLevel::Ok
+            },
+            headline: if errors > 0 {
+                format!("{errors} errors")
+            } else {
+                "no errors".to_owned()
+            },
+            detail: "in window".to_owned(),
+        }
+    });
+
+    // Crons: scheduled jobs + systemd timers (informational).
+    let jobs = app.crons.len();
+    let timers = app.timers.len();
+    cards.push(DomainCard {
+        accent: app.theme.domain(Domain::Crons),
+        title: "Crons",
+        status: if jobs == 0 && timers == 0 {
+            StatusLevel::Idle
+        } else {
+            StatusLevel::Ok
+        },
+        headline: format!("{jobs} jobs"),
+        detail: format!("{timers} timers"),
+    });
+
+    // Databases: detected instances, flagging externally reachable ones.
+    let dbs = app.databases.instances.len();
+    let exposed = app
+        .databases
+        .instances
+        .iter()
+        .filter(|i| i.is_externally_reachable())
+        .count();
+    cards.push(if dbs == 0 {
+        DomainCard {
+            accent: app.theme.domain(Domain::Databases),
+            title: "Databases",
+            status: StatusLevel::Idle,
+            headline: "none".to_owned(),
+            detail: String::new(),
+        }
+    } else {
+        DomainCard {
+            accent: app.theme.domain(Domain::Databases),
+            title: "Databases",
+            status: if exposed > 0 {
+                StatusLevel::Crit
+            } else {
+                StatusLevel::Ok
+            },
+            headline: if exposed > 0 {
+                format!("{exposed} exposed")
+            } else {
+                format!("{dbs} instances")
+            },
+            detail: if exposed > 0 {
+                format!("{dbs} instances")
+            } else {
+                String::new()
+            },
+        }
+    });
+
+    // System: load relative to core count, plus uptime/users context.
+    let load_pct = if snap.cpu.cores > 0 {
+        (snap.load.one / snap.cpu.cores as f64 * 100.0).min(100.0)
+    } else {
+        0.0
+    };
+    cards.push(DomainCard {
+        accent: app.theme.domain(Domain::System),
+        title: "System",
+        status: usage_status(load_pct),
+        headline: format!("load {:.2}", snap.load.one),
+        detail: format!(
+            "up {} · {} users",
+            human_uptime(snap.uptime_secs),
+            snap.users.len()
+        ),
+    });
+
+    // Updates: pending package updates, security ones highlighted. No domain hue
+    // (it spans the host), so it uses the brand accent.
+    let pkg = &app.packages;
+    cards.push(if !pkg.available {
+        DomainCard {
+            accent: app.theme.accent,
+            title: "Updates",
+            status: StatusLevel::Idle,
+            headline: "n/a".to_owned(),
+            detail: String::new(),
+        }
+    } else {
+        DomainCard {
+            accent: app.theme.accent,
+            title: "Updates",
+            status: if pkg.security > 0 {
+                StatusLevel::Crit
+            } else if pkg.pending > 0 {
+                StatusLevel::Warn
+            } else {
+                StatusLevel::Ok
+            },
+            headline: if pkg.security > 0 {
+                format!("{} security", pkg.security)
+            } else if pkg.pending > 0 {
+                format!("{} pending", pkg.pending)
+            } else {
+                "up to date".to_owned()
+            },
+            detail: if pkg.security > 0 {
+                format!("{} pending", pkg.pending)
+            } else {
+                String::new()
+            },
+        }
+    });
+
+    cards
 }
 
 /// Per-host session notes, persisted in the local state store. The newest notes
@@ -2810,118 +3093,6 @@ fn render_findings_panel(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// At-a-glance grid: small headline stats in two columns (spec §14).
-/// The at-a-glance UPDATES cell: pending package count, security highlighted.
-fn updates_value(app: &App, t: Theme) -> Vec<Span<'static>> {
-    let p = &app.packages;
-    if !p.available {
-        return vec![Span::styled("n/a", Style::new().fg(t.fg_dim))];
-    }
-    let color = if p.security > 0 {
-        t.critical
-    } else if p.pending > 0 {
-        t.high
-    } else {
-        t.accent
-    };
-    let mut spans = vec![
-        Span::styled(
-            format!("{}", p.pending),
-            Style::new().fg(color).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" pending", Style::new().fg(t.fg_muted)),
-    ];
-    if p.security > 0 {
-        spans.push(Span::styled(
-            format!(" · {} sec", p.security),
-            Style::new().fg(t.critical),
-        ));
-    }
-    spans
-}
-
-fn render_at_a_glance(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
-    let block = panel_block(&app.theme, "At a glance", app.domain_color());
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let t = app.theme;
-
-    let [crit, high, med, ..] = app.finding_counts();
-    let errors = app.logs.iter().filter(|e| e.is_error()).count();
-    let running = app.containers.iter().filter(|c| c.is_running()).count();
-    let risky = app.risky_exposure_count();
-
-    let stat = |label: &str, value: Vec<Span<'static>>| -> Vec<Line<'static>> {
-        vec![
-            Line::from(Span::styled(label.to_owned(), Style::new().fg(t.fg_dim))),
-            Line::from(value),
-        ]
-    };
-    let count = |n: usize, unit: &str, color| {
-        let c = if n > 0 { color } else { t.accent };
-        vec![
-            Span::styled(
-                format!("{n}"),
-                Style::new().fg(c).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!(" {unit}"), Style::new().fg(t.fg_muted)),
-        ]
-    };
-
-    let docker_value = if app.docker_available {
-        vec![
-            Span::styled(
-                format!("{running}"),
-                Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" running", Style::new().fg(t.fg_muted)),
-        ]
-    } else {
-        vec![Span::styled("n/a", Style::new().fg(t.fg_dim))]
-    };
-    let plain = |text: String| {
-        vec![Span::styled(
-            text,
-            Style::new().fg(t.fg_strong).add_modifier(Modifier::BOLD),
-        )]
-    };
-
-    let stats: Vec<Vec<Line>> = vec![
-        stat(
-            "SERVICES",
-            count(app.failed_units.len(), "failed", t.critical),
-        ),
-        stat("PORTS", count(risky, "risky", t.critical)),
-        stat("DOCKER", docker_value),
-        stat(
-            "SECURITY",
-            vec![
-                Span::styled(
-                    format!("{crit}"),
-                    Style::new().fg(t.critical).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(format!(" / {high} / {med}"), Style::new().fg(t.fg_muted)),
-            ],
-        ),
-        stat("CRONS", count(app.crons.len(), "jobs", t.high)),
-        stat("UPDATES", updates_value(app, t)),
-        stat("LOGS", count(errors, "errors", t.critical)),
-        stat("USERS", plain(format!("{} logged", snap.users.len()))),
-        stat("UPTIME", plain(human_uptime(snap.uptime_secs))),
-    ];
-
-    let half = stats.len().div_ceil(2);
-    let (mut left, mut right): (Vec<Line>, Vec<Line>) = (Vec::new(), Vec::new());
-    for (i, s) in stats.into_iter().enumerate() {
-        let target = if i < half { &mut left } else { &mut right };
-        target.extend(s);
-        target.push(Line::from(""));
-    }
-    let cols =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(inner);
-    frame.render_widget(Paragraph::new(left), cols[0]);
-    frame.render_widget(Paragraph::new(right), cols[1]);
-}
 
 fn finding_line(app: &App, check: &systui_collectors::Check) -> Line<'static> {
     let color = app.theme.severity(check.severity);
@@ -3251,22 +3422,25 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
-    let cols = Layout::horizontal([Constraint::Min(10), Constraint::Length(28)]).split(area);
+    let cols = Layout::horizontal([Constraint::Min(10), Constraint::Length(40)]).split(area);
     frame.render_widget(Paragraph::new(Line::from(spans)), cols[0]);
 
-    // Right: live/attached indicator.
+    // Right: theme + visual style + live/attached indicator.
     let (dot, label, color) = if app.snapshot.is_some() {
         ("●", "live", app.theme.accent)
     } else {
         ("○", "detached", app.theme.fg_dim)
     };
+    let key_style = Style::new()
+        .fg(app.theme.accent)
+        .add_modifier(Modifier::BOLD);
     let right = Line::from(vec![
+        Span::styled("V ", key_style),
         Span::styled(
-            "T ",
-            Style::new()
-                .fg(app.theme.accent)
-                .add_modifier(Modifier::BOLD),
+            format!("{}  ", app.visual_style.label()),
+            Style::new().fg(app.theme.fg_dim),
         ),
+        Span::styled("T ", key_style),
         Span::styled(
             format!("{}  ", app.theme_kind.label()),
             Style::new().fg(app.theme.fg_dim),
@@ -3633,6 +3807,21 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_cockpit_shows_domain_status_cards() {
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.view_state = ViewState::Ready;
+
+        let out = render_to_string(&app, 120, 36);
+        // The cockpit replaces the dense at-a-glance grid with accented cards.
+        assert!(out.contains("Status"));
+        assert!(out.contains("Services"));
+        assert!(out.contains("Security"));
+        // With no failures collected, Services reports a clean verdict.
+        assert!(out.contains("all up"));
+    }
+
+    #[test]
     fn dashboard_shows_health_trend_and_session_notes() {
         use systui_collectors::HealthReport;
         let mut app = App::new("prod-01", ExecutionMode::ReadOnly);
@@ -3684,7 +3873,7 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_at_a_glance_shows_pending_updates() {
+    fn dashboard_updates_card_highlights_security() {
         use systui_collectors::PackageUpdates;
         let mut app = App::new("local", ExecutionMode::ReadOnly);
         app.snapshot = Some(sample_snapshot());
@@ -3697,9 +3886,9 @@ mod tests {
         app.view_state = ViewState::Ready;
 
         let out = render_to_string(&app, 120, 30);
-        assert!(out.contains("UPDATES"));
+        assert!(out.contains("Updates"));
+        assert!(out.contains("2 security"));
         assert!(out.contains("23 pending"));
-        assert!(out.contains("2 sec"));
     }
 
     #[test]
@@ -3719,7 +3908,7 @@ mod tests {
         // The multi-panel dashboard (incl. the session-notes panel) targets a
         // tall terminal like the prototype's; render at a realistic height.
         let out = render_to_string(&app, 120, 36);
-        assert!(out.contains("SERVICES"));
+        assert!(out.contains("Services"));
         assert!(out.contains("1 failed"));
     }
 
@@ -4036,10 +4225,12 @@ mod tests {
         )];
         app.view_state = ViewState::Ready;
 
-        let out = render_to_string(&app, 100, 40);
-        assert!(out.contains("SECURITY"));
-        assert!(out.contains("PORTS"));
-        // The critical finding surfaces in the findings panel.
+        // The cockpit's findings rail targets a wide terminal like the prototype.
+        let out = render_to_string(&app, 120, 40);
+        // The Security cockpit card summarises the critical finding…
+        assert!(out.contains("Security"));
+        assert!(out.contains("1 critical"));
+        // …and the finding itself surfaces in the Top findings panel.
         assert!(out.contains("Sensitive service exposed"));
     }
 

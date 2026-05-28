@@ -76,7 +76,17 @@ omit the panel rather than mock it.
 - **S11.1 — Context** *(this file)* + `release/v1.1` branch + **foundation**: the
   `VisualStyle` selector (enum + config persistence + cycle keybinding + tests) and the
   shared sober widget vocabulary. No large visual change yet.
+  **Done.** `VisualStyle { Sober, Rich }` (`visual_style.rs`) mirrors `ThemeKind`,
+  persists in `[general] visual_style`, cycles with `V`, and shows in the status bar
+  next to the theme. Branched on `release/v1.1` (from `feat/tui-polish`, which carries
+  the multi-theme/cron-builder work not yet in `main`).
 - **S11.2 — Cockpit dashboard**: per-domain status-card grid with one-line verdicts.
+  **Done.** A new `widgets.rs` provides `StatusLevel`, a `status_card` and a `grid`
+  helper. `render_dashboard` now shows the vital tiles (CPU/RAM/DISK/LOAD) over a
+  **Status** panel of nine accented cards (Services, Network, Docker, Security, Logs,
+  Crons, Databases, System, Updates), each with a status dot and a plain-language
+  verdict from real data; a right rail keeps the health score, Top findings and session
+  notes. The dense `at_a_glance` text grid was removed.
 - **S11.3 — Drill-down pilot**: the summary-band → raw-detail pattern and the dense-mode
   toggle on Services, Logs and System.
 - **S11.4 — Drill-down rollout**: the remaining tabs (Network, Docker, Crons, Databases,

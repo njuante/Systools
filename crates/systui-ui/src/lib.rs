@@ -12,6 +12,7 @@ pub mod input;
 pub mod theme;
 pub mod ui;
 pub mod visual_style;
+pub mod widgets;
 
 pub use app::{App, Tab, ViewState};
 pub use fleet::{FleetExit, run_fleet};

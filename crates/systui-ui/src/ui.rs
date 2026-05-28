@@ -18,7 +18,7 @@ use systui_core::{Finding, ModuleId, Severity};
 use crate::app::{ActionStage, App, InputMode, ProcessView, ServiceFilter, Tab, ViewState};
 use crate::theme::{Domain, Theme};
 use crate::widgets::{
-    StatusLevel, grid, history_chart, meter_gauge, severity_bars, status_card,
+    StatusLevel, grid, history_chart, labeled_gauge, meter_gauge, severity_bars, status_card,
 };
 
 /// Draw the whole UI for the current state.
@@ -404,6 +404,11 @@ fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
         .filter(|e| log_matches(e, &app.log_search, regex.as_ref()))
         .collect();
 
+    // A bar chart of events by level sits above the tail on every view.
+    let bands = Layout::vertical([Constraint::Length(8), Constraint::Min(0)]).split(area);
+    render_log_level_chart(frame, app, &filtered, bands[0]);
+    let area = bands[1];
+
     // Clean by default: the live tail full-width. Dense adds the analysis rail
     // (error fingerprints, sources, saved searches).
     if !app.dense {
@@ -423,6 +428,31 @@ fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
     render_log_fingerprints(frame, app, &filtered, right[0]);
     render_log_sources(frame, app, &filtered, right[1]);
     render_saved_searches(frame, app, right[2]);
+}
+
+/// A bar chart of the visible log lines grouped by severity level.
+fn render_log_level_chart(frame: &mut Frame, app: &App, filtered: &[&LogEntry], area: Rect) {
+    let t = app.theme;
+    // priority: 0–3 error, 4 warning, 5 notice, 6 info, 7 debug.
+    let mut buckets = [0u64; 5]; // ERR, WARN, NOTICE, INFO, DEBUG
+    for e in filtered {
+        let idx = match e.priority {
+            0..=3 => 0,
+            4 => 1,
+            5 => 2,
+            6 => 3,
+            _ => 4,
+        };
+        buckets[idx] += 1;
+    }
+    let labels = ["ERR", "WARN", "NOTICE", "INFO", "DEBUG"];
+    let colors = [t.critical, t.high, t.medium, t.accent, t.fg_muted];
+    let items: Vec<(String, u64, ratatui::style::Color)> = labels
+        .iter()
+        .zip(buckets.iter().zip(colors.iter()))
+        .map(|(label, (count, color))| ((*label).to_owned(), *count, *color))
+        .collect();
+    crate::widgets::bar_chart(frame, &t, area, "Lines by level", 7, &items);
 }
 
 /// Persisted log searches. `S` saves the current query; ↑/↓ select and Enter
@@ -963,15 +993,46 @@ fn render_unit_logs(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_processes(frame: &mut Frame, app: &App, area: Rect) {
+    // A CPU bar chart of the top consumers sits above the table on every view.
+    let rows = Layout::vertical([Constraint::Length(8), Constraint::Min(0)]).split(area);
+    render_process_cpu_chart(frame, app, rows[0]);
+
     // Clean by default: the process table full-width. Dense adds the detail pane.
     if !app.dense {
-        render_process_list(frame, app, area);
+        render_process_list(frame, app, rows[1]);
         return;
     }
     let cols =
-        Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).split(area);
+        Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).split(rows[1]);
     render_process_list(frame, app, cols[0]);
     render_process_detail(frame, app, cols[1]);
+}
+
+/// A bar chart of the top processes by CPU — the heaviest consumers at a glance.
+fn render_process_cpu_chart(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let mut procs: Vec<&systui_collectors::Process> = app.processes.iter().collect();
+    procs.sort_by(|a, b| b.cpu_percent.total_cmp(&a.cpu_percent));
+    let items: Vec<(String, u64, ratatui::style::Color)> = procs
+        .iter()
+        .take(10)
+        .map(|p| {
+            let name: String = p.command.split_whitespace().next().unwrap_or(&p.command)
+                .rsplit('/')
+                .next()
+                .unwrap_or("?")
+                .chars()
+                .take(8)
+                .collect();
+            (name, p.cpu_percent.round() as u64, usage_color(&t, p.cpu_percent))
+        })
+        .collect();
+    if items.is_empty() {
+        let block = panel_block(&t, "Top CPU", app.domain_color());
+        frame.render_widget(block, area);
+        return;
+    }
+    crate::widgets::bar_chart(frame, &t, area, "Top CPU %", 8, &items);
 }
 
 /// Left column: a one-line hint plus the process table (flat list or tree),
@@ -1130,6 +1191,30 @@ fn render_process_detail(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
+/// A bar chart of listening exposures grouped by severity.
+fn render_exposure_severity_chart(frame: &mut Frame, app: &App, area: Rect) {
+    let mut counts = [0u64; 5];
+    for e in &app.exposures {
+        let idx = match e.severity {
+            Severity::Critical => 0,
+            Severity::High => 1,
+            Severity::Medium => 2,
+            Severity::Low => 3,
+            Severity::Info => 4,
+        };
+        counts[idx] += 1;
+    }
+    let t = app.theme;
+    let labels = ["CRIT", "HIGH", "MED", "LOW", "INFO"];
+    let colors = [t.critical, t.high, t.medium, t.low, t.fg_muted];
+    let items: Vec<(String, u64, ratatui::style::Color)> = labels
+        .iter()
+        .zip(counts.iter().zip(colors.iter()))
+        .map(|(label, (count, color))| ((*label).to_owned(), *count, *color))
+        .collect();
+    crate::widgets::bar_chart(frame, &t, area, "Exposures by severity", 6, &items);
+}
+
 /// Color for a finding/exposure severity.
 fn severity_color(app: &App, severity: Severity) -> ratatui::style::Color {
     match severity {
@@ -1175,6 +1260,11 @@ fn render_network(frame: &mut Frame, app: &App, area: Rect) {
         );
         return;
     };
+
+    // A bar chart of exposures by severity sits above the map on every view.
+    let bands = Layout::vertical([Constraint::Length(8), Constraint::Min(0)]).split(area);
+    render_exposure_severity_chart(frame, app, bands[0]);
+    let area = bands[1];
 
     // Clean by default: the exposure map full-width — the security-relevant
     // "what is listening". Dense adds connectivity, interfaces, DNS/routes,
@@ -1565,6 +1655,11 @@ fn render_docker(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    // A bar chart of per-container CPU sits above the table on every view.
+    let bands = Layout::vertical([Constraint::Length(8), Constraint::Min(0)]).split(area);
+    render_container_cpu_chart(frame, app, bands[0]);
+    let area = bands[1];
+
     // Clean by default: the container table full-height. Dense adds the risk
     // checks, the selected-container detail, compose projects and image hygiene.
     if !app.dense {
@@ -1587,6 +1682,32 @@ fn render_docker(frame: &mut Frame, app: &App, area: Rect) {
         Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)]).split(rows[2]);
     render_compose_projects(frame, app, bottom[0]);
     render_image_hygiene(frame, app, bottom[1]);
+}
+
+/// A bar chart of per-container CPU usage from `docker stats`.
+fn render_container_cpu_chart(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    if app.container_stats.is_empty() {
+        let block = panel_block(&t, "Container CPU %", app.domain_color());
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        frame.render_widget(
+            Paragraph::new(Span::styled("no stats", Style::new().fg(t.fg_dim))),
+            inner,
+        );
+        return;
+    }
+    let mut stats: Vec<&systui_collectors::ContainerStats> = app.container_stats.iter().collect();
+    stats.sort_by(|a, b| b.cpu_percent.total_cmp(&a.cpu_percent));
+    let items: Vec<(String, u64, ratatui::style::Color)> = stats
+        .iter()
+        .take(10)
+        .map(|s| {
+            let name: String = s.name.trim_start_matches('/').chars().take(10).collect();
+            (name, s.cpu_percent.round() as u64, usage_color(&t, s.cpu_percent))
+        })
+        .collect();
+    crate::widgets::bar_chart(frame, &t, area, "Container CPU %", 10, &items);
 }
 
 /// Discovered Compose projects (`docker compose ls`): name, service count and
@@ -2420,36 +2541,30 @@ fn render_security(frame: &mut Frame, app: &App, area: Rect) {
         );
         return;
     }
-    let rows = Layout::vertical([Constraint::Length(4), Constraint::Min(0)]).split(area);
+    let rows = Layout::vertical([Constraint::Length(10), Constraint::Min(0)]).split(area);
     render_security_header(frame, app, rows[0]);
     render_security_findings(frame, app, rows[1]);
 }
 
-/// Severity-counter header band: one tile per severity with a big count.
+/// Severity distribution as a bar chart, with a week-over-week trend note.
 fn render_security_header(frame: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
-    let block = panel_block(&t, "Security findings", app.domain_color());
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
     let counts = app.finding_counts();
-    let labels = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
-    let colors = [t.critical, t.high, t.medium, t.low, t.fg_muted];
 
-    let split = Layout::horizontal([Constraint::Min(0), Constraint::Length(22)]).split(inner);
-    let cells = Layout::horizontal([Constraint::Ratio(1, 5); 5]).split(split[0]);
-    for (i, label) in labels.iter().enumerate() {
-        let n = counts[i];
-        let count_color = if n > 0 { colors[i] } else { t.fg_dim };
-        let lines = vec![
-            Line::from(Span::styled(
-                format!("{n}"),
-                Style::new().fg(count_color).add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(*label, Style::new().fg(t.fg_dim))),
-        ];
-        frame.render_widget(Paragraph::new(lines), cells[i]);
-    }
+    // Reserve a slim right column for the trend; the bar chart fills the rest.
+    let split = Layout::horizontal([Constraint::Min(0), Constraint::Length(24)]).split(area);
+    severity_bars(
+        frame,
+        &t,
+        split[0],
+        [
+            counts[0] as u64,
+            counts[1] as u64,
+            counts[2] as u64,
+            counts[3] as u64,
+            counts[4] as u64,
+        ],
+    );
 
     // Findings trend vs ~7 days ago, from the persisted snapshots.
     if let Some(base) = app.state.baseline(&app.host_label, app.now.date(), 7) {
@@ -2461,14 +2576,17 @@ fn render_security_header(frame: &mut Frame, app: &App, area: Rect) {
             std::cmp::Ordering::Equal => ("=", 0, t.fg_dim),
         };
         let text = if word == 0 {
-            "no change vs last week".to_owned()
+            "no change\nvs last week".to_owned()
         } else {
-            format!("{arrow}{word} from last week")
+            format!("{arrow}{word}\nfrom last week")
         };
+        let block = panel_block(&t, "Trend", app.domain_color());
+        let inner = block.inner(split[1]);
+        frame.render_widget(block, split[1]);
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(text, Style::new().fg(color))))
-                .alignment(Alignment::Right),
-            split[1],
+            Paragraph::new(Span::styled(text, Style::new().fg(color)))
+                .wrap(Wrap { trim: true }),
+            inner,
         );
     }
 }
@@ -3157,48 +3275,44 @@ fn render_system_memory(frame: &mut Frame, app: &App, snap: &SystemSnapshot, are
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let bar_w = (inner.width as usize).saturating_sub(13).clamp(4, 24);
-    let mut lines = vec![
-        gauge_line(&t, "RAM", snap.memory.used_percent(), bar_w),
-        Line::from(Span::styled(
-            format!(
-                "        {} / {}",
-                human_kb(snap.memory.used_kb()),
-                human_kb(snap.memory.total_kb)
-            ),
-            Style::new().fg(t.fg_dim),
-        )),
-    ];
+    let rows = Layout::vertical([Constraint::Length(1); 2]).split(inner);
+    let ram = snap.memory.used_percent();
+    labeled_gauge(
+        frame,
+        &t,
+        rows[0],
+        "RAM",
+        6,
+        ram,
+        &format!(
+            "{} / {}",
+            human_kb(snap.memory.used_kb()),
+            human_kb(snap.memory.total_kb)
+        ),
+        usage_color(&t, ram),
+    );
     if snap.swap.total_kb > 0 {
-        lines.push(gauge_line(&t, "Swap", snap.swap.used_percent(), bar_w));
-        lines.push(Line::from(Span::styled(
-            format!(
-                "        {} / {}",
+        let swap = snap.swap.used_percent();
+        labeled_gauge(
+            frame,
+            &t,
+            rows[1],
+            "Swap",
+            6,
+            swap,
+            &format!(
+                "{} / {}",
                 human_kb(snap.swap.used_kb()),
                 human_kb(snap.swap.total_kb)
             ),
-            Style::new().fg(t.fg_dim),
-        )));
+            usage_color(&t, swap),
+        );
     } else {
-        lines.push(Line::from(vec![
-            Span::styled("  Swap  ", Style::new().fg(t.dim)),
-            Span::styled("none", Style::new().fg(t.fg_dim)),
-        ]));
+        labeled_gauge(frame, &t, rows[1], "Swap", 6, 0.0, "none", t.fg_dim);
     }
-    frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// A "label ████░░ NN%" gauge line, coloured by utilisation band.
-fn gauge_line(theme: &Theme, label: &str, percent: f64, width: usize) -> Line<'static> {
-    let color = usage_color(theme, percent);
-    Line::from(vec![
-        Span::styled(format!("  {label:<5} "), Style::new().fg(theme.dim)),
-        Span::styled(gauge_bar(percent, width), Style::new().fg(color)),
-        Span::styled(format!(" {percent:.0}%"), Style::new().fg(theme.fg)),
-    ])
-}
-
-/// Disks: per-mount usage with a colour-coded gauge.
+/// Disks: a filled gauge bar per mount, colour-coded by utilisation.
 fn render_system_disks(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
     let t = app.theme;
     let block = panel_block(&t, "Disks", app.domain_color());
@@ -3213,35 +3327,23 @@ fn render_system_disks(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area
         return;
     }
 
-    let header = Row::new(["MOUNT", "USE", "USED / SIZE", "FS"])
-        .style(Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD));
-    let bar_w = 10usize;
-    let rows = snap.disks.iter().map(|d| {
+    let rows = Layout::vertical(
+        std::iter::repeat_n(Constraint::Length(1), snap.disks.len()).collect::<Vec<_>>(),
+    )
+    .split(inner);
+    for (d, row) in snap.disks.iter().zip(rows.iter()) {
         let pct = d.use_percent as f64;
-        let color = usage_color(&t, pct);
-        Row::new(vec![
-            Cell::from(d.mount.clone()),
-            Cell::from(Line::from(vec![
-                Span::styled(gauge_bar(pct, bar_w), Style::new().fg(color)),
-                Span::styled(format!(" {:>3}%", d.use_percent), Style::new().fg(color)),
-            ])),
-            Cell::from(format!("{} / {}", human_kb(d.used_kb), human_kb(d.size_kb))),
-            Cell::from(d.filesystem.clone()),
-        ])
-    });
-    let widths = [
-        Constraint::Length(14),
-        Constraint::Length(bar_w as u16 + 5),
-        Constraint::Length(20),
-        Constraint::Min(6),
-    ];
-    frame.render_widget(
-        Table::new(rows, widths)
-            .header(header)
-            .column_spacing(1)
-            .style(Style::new().fg(t.fg)),
-        inner,
-    );
+        labeled_gauge(
+            frame,
+            &t,
+            *row,
+            &d.mount,
+            13,
+            pct,
+            &format!("{}% · {} / {}", d.use_percent, human_kb(d.used_kb), human_kb(d.size_kb)),
+            usage_color(&t, pct),
+        );
+    }
 }
 
 /// Logged-in users.
@@ -3751,7 +3853,8 @@ mod tests {
         app.dense = true; // the process detail pane lives in dense mode
 
         // Detail panel reflects the selected process (top of the CPU sort: node).
-        let out = render_to_string(&app, 110, 18);
+        // Render tall: a CPU bar chart now sits above the table on this tab.
+        let out = render_to_string(&app, 110, 28);
         assert!(out.contains("Process")); // detail panel title
         assert!(out.contains("Parent")); // parent row
         assert!(out.contains("sshd (880)")); // node's parent resolved by ppid
@@ -3760,7 +3863,7 @@ mod tests {
         app.toggle_process_view();
         assert_eq!(app.process_view, ProcessView::Tree);
         assert_eq!(app.processes_selected, 0); // reset on toggle → systemd
-        let tree = render_to_string(&app, 110, 18);
+        let tree = render_to_string(&app, 110, 28);
         assert!(tree.contains("· tree"));
         assert!(tree.contains("Children")); // systemd has children
         // The tree is drawn with connector glyphs, not bare indentation.
@@ -4186,7 +4289,8 @@ mod tests {
         app.select_tab(5); // Network
         app.dense = true; // firewall panel lives in dense mode
 
-        let out = render_to_string(&app, 130, 30);
+        // Render tall: a severity bar chart now bands the top of the Network tab.
+        let out = render_to_string(&app, 130, 40);
         assert!(out.contains("Firewall"));
         assert!(out.contains("nftables"));
         assert!(out.contains("6 active"));
@@ -4418,7 +4522,8 @@ mod tests {
         app.select_tab(6); // Docker
         app.dense = true; // risk checks + detail pane live in dense mode
 
-        let out = render_to_string(&app, 110, 30);
+        // Render tall: a CPU bar chart now bands the top of the Docker tab.
+        let out = render_to_string(&app, 110, 40);
         assert!(out.contains("redis"));
         assert!(out.contains("redis:latest"));
         assert!(out.contains("unhealthy"));
@@ -4454,7 +4559,8 @@ mod tests {
         app.select_tab(6); // Docker
         app.dense = true; // compose + image hygiene panels live in dense mode
 
-        let out = render_to_string(&app, 120, 36);
+        // Render tall: a CPU bar chart now bands the top of the Docker tab.
+        let out = render_to_string(&app, 120, 44);
         assert!(out.contains("Compose projects"));
         assert!(out.contains("acme-stack"));
         assert!(out.contains("5 services"));

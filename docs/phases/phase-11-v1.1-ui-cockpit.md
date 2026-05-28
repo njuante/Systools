@@ -101,6 +101,19 @@ omit the panel rather than mock it.
   detail/compose/hygiene), Crons (jobs table → +preview/timers/summary) and Databases
   (instances → +operational detail). Security keeps its header + findings layout (it is
   already a summary + list with no secondary rail to hide).
+- **S11.6 — Real graphical widgets (course-correction)**.
+  **Done.** After the user pushed back that the cockpit + dense toggle were still text
+  (`[[feedback-visual-not-text]]`), the screens were made genuinely graphical with
+  ratatui chart widgets: dashboard CPU/RAM/DISK/LOAD and health as filled `Gauge`s, a
+  findings-by-severity `BarChart`, and a CPU/RAM history chart that is stacked
+  `Sparkline`s in **Sober** and real **braille line `Chart`s** in **Rich** (so `V`
+  visibly changes the rendering). Rolled out across tabs: System memory/disks as gauge
+  bars, Processes "Top CPU %" bar chart, Security severity bar chart, Logs lines-by-level
+  bar chart, Network exposures-by-severity bar chart, Docker container-CPU bar chart.
+  Shared helpers in `widgets.rs`: `meter_gauge`, `labeled_gauge`, `history_chart`,
+  `bar_chart`, `severity_bars`. (Crons/Databases stay tabular — schedules/instances do
+  not map naturally to a chart.)
+
 - **S11.5 — Logs aggregation-first + JSON export**.
   **Done (with a scope adjustment).** Shipped the **JSON export**: `e` on the Logs tab
   writes the current view to `~/.local/share/systui/exports/systui-logs-<host>-<ts>.json`

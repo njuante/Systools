@@ -125,6 +125,37 @@ pub fn meter_gauge(
     frame.render_widget(gauge, inner);
 }
 
+/// A single row: a fixed-width text label followed by an inline filled
+/// [`Gauge`] bar (colored by `color`) with `reading` drawn on it. Use it to
+/// turn rows of "label NN%" text into real gauge bars.
+#[allow(clippy::too_many_arguments)]
+pub fn labeled_gauge(
+    frame: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    label: &str,
+    label_width: u16,
+    percent: f64,
+    reading: &str,
+    color: Color,
+) {
+    let cells = Layout::horizontal([Constraint::Length(label_width), Constraint::Min(4)]).split(area);
+    frame.render_widget(
+        Paragraph::new(Span::styled(label.to_owned(), Style::new().fg(theme.fg_muted))),
+        cells[0],
+    );
+    frame.render_widget(
+        Gauge::default()
+            .gauge_style(Style::new().fg(color).bg(theme.bg_elev))
+            .ratio(percent.clamp(0.0, 100.0) / 100.0)
+            .label(Span::styled(
+                reading.to_owned(),
+                Style::new().fg(theme.fg_strong),
+            )),
+        cells[1],
+    );
+}
+
 /// A time-series panel for two %-series (e.g. CPU and RAM history). In the
 /// **Rich** style it draws real braille line charts; in **Sober** it stacks two
 /// labelled [`Sparkline`]s. Either way it is a graph, not a table of numbers.
@@ -207,20 +238,47 @@ pub fn history_chart(
     }
 }
 
-/// A horizontal severity distribution as a [`BarChart`]: one colored bar per
-/// severity (critical → info), each as tall as its count.
-pub fn severity_bars(frame: &mut Frame, theme: &Theme, area: Rect, counts: [u64; 5]) {
+/// A titled vertical [`BarChart`] from labelled, colored values. The shared
+/// primitive behind the severity / top-process / log-volume charts.
+pub fn bar_chart(
+    frame: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    title: &str,
+    bar_width: u16,
+    items: &[(String, u64, Color)],
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(theme.border))
         .title(Span::styled(
-            " Findings by severity ",
+            format!(" {title} "),
             Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    let bars: Vec<Bar> = items
+        .iter()
+        .map(|(label, value, color)| {
+            Bar::default()
+                .value(*value)
+                .label(Line::from(label.clone()))
+                .style(Style::new().fg(*color))
+                .value_style(Style::new().fg(theme.bg).bg(*color))
+        })
+        .collect();
+    let chart = BarChart::default()
+        .data(BarGroup::default().bars(&bars))
+        .bar_width(bar_width)
+        .bar_gap(2)
+        .label_style(Style::new().fg(theme.fg_dim));
+    frame.render_widget(chart, inner);
+}
+
+/// A severity distribution (critical → info) as a colored bar chart.
+pub fn severity_bars(frame: &mut Frame, theme: &Theme, area: Rect, counts: [u64; 5]) {
     let labels = ["CRIT", "HIGH", "MED", "LOW", "INFO"];
     let colors = [
         theme.critical,
@@ -229,23 +287,12 @@ pub fn severity_bars(frame: &mut Frame, theme: &Theme, area: Rect, counts: [u64;
         theme.low,
         theme.fg_muted,
     ];
-    let bars: Vec<Bar> = counts
+    let items: Vec<(String, u64, Color)> = counts
         .iter()
         .zip(labels.iter().zip(colors.iter()))
-        .map(|(count, (label, color))| {
-            Bar::default()
-                .value(*count)
-                .label(Line::from(*label))
-                .style(Style::new().fg(*color))
-                .value_style(Style::new().fg(theme.bg).bg(*color))
-        })
+        .map(|(count, (label, color))| ((*label).to_owned(), *count, *color))
         .collect();
-    let chart = BarChart::default()
-        .data(BarGroup::default().bars(&bars))
-        .bar_width(6)
-        .bar_gap(2)
-        .label_style(Style::new().fg(theme.fg_dim));
-    frame.render_widget(chart, inner);
+    bar_chart(frame, theme, area, "Findings by severity", 6, &items);
 }
 
 /// Lay an area out into a grid of `cols` columns and as many rows as needed for

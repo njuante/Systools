@@ -3305,6 +3305,7 @@ fn render_help(frame: &mut Frame, app: &App) {
         ("/", "search logs (Esc to clear)"),
         ("l", "cycle log level (Logs tab)"),
         ("T", "cycle theme (dark / midnight / light)"),
+        ("V", "cycle visual style (sober / rich)"),
         ("?", "toggle this help"),
         ("q / Ctrl+C", "quit"),
         ("Esc", "close overlay / back"),

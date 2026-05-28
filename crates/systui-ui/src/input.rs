@@ -90,6 +90,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('T') => {
             app.cycle_theme();
         }
+        KeyCode::Char('V') => {
+            app.cycle_visual_style();
+        }
         KeyCode::Char('r') => app.request_refresh(),
         KeyCode::Char('s') => app.toggle_process_sort(),
         KeyCode::Char('/') => app.enter_search(),

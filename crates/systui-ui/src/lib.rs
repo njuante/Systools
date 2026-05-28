@@ -11,10 +11,12 @@ pub mod form;
 pub mod input;
 pub mod theme;
 pub mod ui;
+pub mod visual_style;
 
 pub use app::{App, Tab, ViewState};
 pub use fleet::{FleetExit, run_fleet};
 pub use theme::Theme;
+pub use visual_style::VisualStyle;
 
 use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
@@ -51,6 +53,9 @@ pub fn run(
     let transport: Arc<dyn Transport> = Arc::from(transport);
     let mut app = App::new(host_label, mode);
     app.set_theme_kind(theme::ThemeKind::from_config_name(&config.general.theme));
+    app.set_visual_style(visual_style::VisualStyle::from_config_name(
+        &config.general.visual_style,
+    ));
     app.thresholds = config.thresholds.clone();
     app.cert_warning_days = config.security.cert_expiry_warning_days;
     app.policy_selection = systui_security::PolicySelection::for_host(config, &app.host_label);
@@ -219,6 +224,12 @@ fn event_loop(
             app.theme_persist_requested = false;
             // Best-effort: a failed write just means the choice isn't remembered.
             let _ = systui_storage::save_general_theme(app.theme_kind.config_name());
+        }
+
+        if app.visual_style_persist_requested {
+            app.visual_style_persist_requested = false;
+            // Best-effort: a failed write just means the choice isn't remembered.
+            let _ = systui_storage::save_general_visual_style(app.visual_style.config_name());
         }
     }
     Ok(())

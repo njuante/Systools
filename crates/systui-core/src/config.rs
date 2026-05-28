@@ -27,6 +27,8 @@ pub struct Config {
 pub struct General {
     pub default_refresh_seconds: u64,
     pub theme: String,
+    /// Visual style for the UI ("sober" or "rich"); independent of `theme`.
+    pub visual_style: String,
     pub confirm_dangerous_actions: bool,
     pub audit_log: bool,
 }
@@ -36,6 +38,7 @@ impl Default for General {
         Self {
             default_refresh_seconds: 3,
             theme: "dark".to_owned(),
+            visual_style: "sober".to_owned(),
             confirm_dangerous_actions: true,
             audit_log: true,
         }

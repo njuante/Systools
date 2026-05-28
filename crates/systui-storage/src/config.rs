@@ -82,6 +82,27 @@ pub fn save_general_theme_to(path: &Path, theme: &str) -> Result<()> {
     write_document(path, &doc)
 }
 
+/// Persist the active visual style into `[general] visual_style` of the default
+/// config file, preserving the rest of the file.
+pub fn save_general_visual_style(style: &str) -> Result<()> {
+    save_general_visual_style_to(&paths::config_file()?, style)
+}
+
+/// Persist the active visual style into `[general] visual_style` of a specific
+/// config file. Creates the file and its parent directory when missing.
+pub fn save_general_visual_style_to(path: &Path, style: &str) -> Result<()> {
+    let mut doc = read_document(path)?;
+    let general = doc
+        .entry("general")
+        .or_insert(Item::Table(Table::new()))
+        .as_table_mut()
+        .ok_or_else(|| {
+            CoreError::Config(format!("{}: `general` is not a table", path.display()))
+        })?;
+    general["visual_style"] = value(style);
+    write_document(path, &doc)
+}
+
 /// Remove the `[hosts.<id>]` entry from the default config file. Returns whether
 /// it existed.
 pub fn remove_host(id: &str) -> Result<bool> {
@@ -344,6 +365,25 @@ mod tests {
         let path = tmp_path("theme-new.toml");
         save_general_theme_to(&path, "dark").unwrap();
         assert_eq!(load_from(&path).unwrap().general.theme, "dark");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn save_visual_style_sets_general_key_and_preserves_theme() {
+        let path = tmp_path("style.toml");
+        save_general_theme_to(&path, "midnight").unwrap();
+
+        save_general_visual_style_to(&path, "rich").unwrap();
+
+        let cfg = load_from(&path).unwrap();
+        assert_eq!(cfg.general.visual_style, "rich");
+        // The theme key set earlier survives the style edit.
+        assert_eq!(cfg.general.theme, "midnight");
+
+        // Switching again overwrites the previous value.
+        save_general_visual_style_to(&path, "sober").unwrap();
+        assert_eq!(load_from(&path).unwrap().general.visual_style, "sober");
+
         std::fs::remove_file(&path).unwrap();
     }
 

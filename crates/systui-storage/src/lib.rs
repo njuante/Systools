@@ -12,6 +12,7 @@ pub mod store;
 pub use audit::AuditLog;
 pub use config::{
     load as load_config, load_from as load_config_from, remove_host, remove_host_from,
-    save_general_theme, save_general_theme_to, save_host, save_host_to,
+    save_general_theme, save_general_theme_to, save_general_visual_style,
+    save_general_visual_style_to, save_host, save_host_to,
 };
 pub use store::{HealthSnapshot, PersistentState, SavedSearch, SessionNote, StateStore};

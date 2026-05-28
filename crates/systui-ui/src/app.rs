@@ -17,6 +17,7 @@ use systui_storage::PersistentState;
 
 use crate::cron_builder::CronBuilder;
 use crate::theme::{Theme, ThemeKind};
+use crate::visual_style::VisualStyle;
 
 /// A concrete action queued for the engine. An enum (not a trait object) so
 /// [`App`] stays `Debug`.
@@ -311,6 +312,9 @@ pub struct App {
     pub theme: Theme,
     /// Which palette is active; cycled with the theme key and persisted.
     pub theme_kind: ThemeKind,
+    /// Active visual style (density/ornateness); cycled with the style key and
+    /// persisted. Independent of the color palette.
+    pub visual_style: VisualStyle,
     pub active_tab: usize,
     pub view_state: ViewState,
     pub snapshot: Option<SystemSnapshot>,
@@ -383,6 +387,8 @@ pub struct App {
     pub action_exec_requested: bool,
     /// The active theme changed and the choice should be flushed to the config.
     pub theme_persist_requested: bool,
+    /// The active visual style changed and should be flushed to the config.
+    pub visual_style_persist_requested: bool,
     /// Recent CPU busy% samples for the dashboard sparkline (oldest first).
     pub cpu_history: Vec<u64>,
     /// Recent RAM used% samples for the dashboard sparkline (oldest first).
@@ -409,6 +415,7 @@ impl App {
             capabilities: None,
             theme: Theme::dark(),
             theme_kind: ThemeKind::DarkRich,
+            visual_style: VisualStyle::Sober,
             active_tab: 0,
             view_state: ViewState::Empty,
             snapshot: None,
@@ -466,6 +473,7 @@ impl App {
             action_plan_requested: false,
             action_exec_requested: false,
             theme_persist_requested: false,
+            visual_style_persist_requested: false,
             cpu_history: Vec::new(),
             mem_history: Vec::new(),
             state: PersistentState::default(),
@@ -511,6 +519,19 @@ impl App {
         self.set_theme_kind(self.theme_kind.next());
         self.theme_persist_requested = true;
         self.theme_kind
+    }
+
+    /// Set the active visual style.
+    pub fn set_visual_style(&mut self, style: VisualStyle) {
+        self.visual_style = style;
+    }
+
+    /// Switch to the next visual style in the cycle. Returns the new style so the
+    /// caller can persist the choice.
+    pub fn cycle_visual_style(&mut self) -> VisualStyle {
+        self.set_visual_style(self.visual_style.next());
+        self.visual_style_persist_requested = true;
+        self.visual_style
     }
 
     /// Move to the next tab, wrapping around.

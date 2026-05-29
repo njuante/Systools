@@ -314,43 +314,71 @@ fn score_color(app: &App, score: u8) -> ratatui::style::Color {
     }
 }
 
-/// Numbered tab bar with key chips and per-tab count badges (design `app.jsx`).
+/// Key-chip tab bar with per-tab count badges (design `app.jsx`). With 14 tabs
+/// the bar scrolls horizontally so the active tab is always visible.
 fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
     let t = &app.theme;
     frame.render_widget(Block::default().style(Style::new().bg(t.bg_elev)), area);
 
-    let mut spans: Vec<Span> = vec![Span::raw(" ")];
+    // Build each tab's spans and measure its rendered width.
+    let mut segments: Vec<(Vec<Span>, u16)> = Vec::with_capacity(Tab::ALL.len());
     for (i, tab) in Tab::ALL.iter().enumerate() {
         let active = i == app.active_tab;
-        let key = if i < 9 { (b'1' + i as u8) as char } else { '0' };
-
-        // Key chip: a small bordered-looking cell.
         let (key_fg, key_bg) = if active {
             (t.bg, t.accent)
         } else {
             (t.fg_dim, t.bg_hover)
         };
-        spans.push(Span::styled(
-            format!(" {key} "),
+        let mut spans = vec![Span::styled(
+            format!(" {} ", tab.key()),
             Style::new().fg(key_fg).bg(key_bg).add_modifier(Modifier::BOLD),
-        ));
-
+        )];
         let name_style = if active {
             Style::new().fg(t.accent).add_modifier(Modifier::BOLD)
         } else {
             Style::new().fg(t.fg_muted)
         };
         spans.push(Span::styled(tab.title().to_lowercase(), name_style));
-
         if let Some((count, color)) = tab_badge(app, *tab) {
             spans.push(Span::styled(
                 format!(" {count} "),
                 Style::new().fg(t.bg).bg(color).add_modifier(Modifier::BOLD),
             ));
         }
-        spans.push(Span::styled(" ", Style::new().fg(t.fg_dim)));
+        spans.push(Span::raw(" "));
+        let width: u16 = spans
+            .iter()
+            .map(|s| s.content.chars().count() as u16)
+            .sum();
+        segments.push((spans, width));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+
+    // Scroll: pick the smallest start index so the active tab fits within `area`.
+    let avail = area.width.saturating_sub(1);
+    let active = app.active_tab;
+    let mut start = 0usize;
+    loop {
+        let used: u16 = segments[start..=active].iter().map(|(_, w)| *w).sum();
+        if used <= avail || start == active {
+            break;
+        }
+        start += 1;
+    }
+
+    let mut line: Vec<Span> = vec![Span::raw(" ")];
+    if start > 0 {
+        line.push(Span::styled("‹ ", Style::new().fg(t.fg_dim)));
+    }
+    let mut used: u16 = 0;
+    for (spans, width) in &segments[start..] {
+        if used + width > avail {
+            line.push(Span::styled("›", Style::new().fg(t.fg_dim)));
+            break;
+        }
+        line.extend(spans.iter().cloned());
+        used += width;
+    }
+    frame.render_widget(Paragraph::new(Line::from(line)), area);
 }
 
 /// The "needs attention" count badge for a tab, with its color. `None` hides it.
@@ -370,9 +398,17 @@ fn tab_badge(app: &App, tab: Tab) -> Option<(usize, ratatui::style::Color)> {
             let errors = app.logs.iter().filter(|e| e.is_error()).count();
             (errors > 0).then_some((errors, app.theme.critical))
         }
-        Tab::Network => {
+        Tab::Exposure => {
             let risky = app.risky_exposure_count();
             (risky > 0).then_some((risky, app.theme.critical))
+        }
+        Tab::Firewall => {
+            let n = module_findings(ModuleId::Firewall);
+            (n > 0).then_some((n, app.theme.high))
+        }
+        Tab::Packages => {
+            let n = app.packages.security;
+            (n > 0).then_some((n, app.theme.critical))
         }
         Tab::Docker => {
             let n = module_findings(ModuleId::Docker);
@@ -414,9 +450,13 @@ fn render_content(frame: &mut Frame, app: &App, area: Rect) {
         (ViewState::Ready, _, Tab::Services) => render_services(frame, app, inner),
         (ViewState::Ready, _, Tab::Logs) => render_logs(frame, app, inner),
         (ViewState::Ready, _, Tab::Network) => render_network(frame, app, inner),
+        (ViewState::Ready, _, Tab::Exposure) => render_exposure_tab(frame, app, inner),
+        (ViewState::Ready, _, Tab::Firewall) => render_firewall_tab(frame, app, inner),
+        (ViewState::Ready, _, Tab::Connectivity) => render_connectivity_tab(frame, app, inner),
         (ViewState::Ready, _, Tab::Docker) => render_docker(frame, app, inner),
         (ViewState::Ready, _, Tab::Crons) => render_crons(frame, app, inner),
         (ViewState::Ready, _, Tab::Databases) => render_databases(frame, app, inner),
+        (ViewState::Ready, _, Tab::Packages) => render_packages(frame, app, inner),
         (ViewState::Ready, _, Tab::Security) => render_security(frame, app, inner),
         _ => render_message(frame, app, tab, inner),
     }
@@ -1333,35 +1373,125 @@ fn render_network(frame: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
-    // A bar chart of exposures by severity sits above the map on every view.
+    // Clean by default: interfaces full, routes/DNS beneath. Dense adds the
+    // established-connections panel alongside.
+    if !app.dense {
+        let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(9)]).split(area);
+        render_net_interfaces(frame, app, net, rows[0]);
+        render_net_dns_routes(frame, app, net, rows[1]);
+        return;
+    }
+    let cols =
+        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).split(area);
+    let left = Layout::vertical([Constraint::Min(0), Constraint::Length(9)]).split(cols[0]);
+    render_net_interfaces(frame, app, net, left[0]);
+    render_net_connections(frame, app, net, left[1]);
+    render_net_dns_routes(frame, app, net, cols[1]);
+}
+
+/// EXPOSURE tab: the by-severity chart over the risk-ranked listening sockets.
+fn render_exposure_tab(frame: &mut Frame, app: &App, area: Rect) {
+    if app.network.is_none() && app.exposures.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No exposure data — `ss` unavailable.",
+                Style::new().fg(app.theme.fg_dim),
+            ))
+            .alignment(Alignment::Center),
+            area,
+        );
+        return;
+    }
     let bands = Layout::vertical([Constraint::Length(8), Constraint::Min(0)]).split(area);
     render_exposure_severity_chart(frame, app, bands[0]);
-    let area = bands[1];
+    render_exposure_panel(frame, app, bands[1]);
+}
 
-    // Clean by default: the exposure map full-width — the security-relevant
-    // "what is listening". Dense adds connectivity, interfaces, DNS/routes,
-    // connections and firewall panels.
-    if !app.dense {
-        render_exposure_panel(frame, app, area);
+/// FIREWALL tab: the active backend, chains and rule counts.
+fn render_firewall_tab(frame: &mut Frame, app: &App, area: Rect) {
+    render_firewall_panel(frame, app, area);
+}
+
+/// CONNECTIVITY tab: reachability probe results (press `a` to run).
+fn render_connectivity_tab(frame: &mut Frame, app: &App, area: Rect) {
+    render_connectivity_panel(frame, app, area);
+}
+
+/// PACKAGES tab: a snapshot of pending updates from the system package manager.
+fn render_packages(frame: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let block = panel_block(t, "packages · updates", app.domain_color());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let pkg = &app.packages;
+    if !pkg.available {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "no known package manager detected",
+                Style::new().fg(t.fg_dim),
+            )),
+            inner,
+        );
         return;
     }
 
-    let cols =
-        Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).split(area);
-    let left = Layout::vertical([Constraint::Min(0), Constraint::Length(7)]).split(cols[0]);
-    render_exposure_panel(frame, app, left[0]);
-    render_connectivity_panel(frame, app, left[1]);
-    let right = Layout::vertical([
-        Constraint::Percentage(26),
-        Constraint::Percentage(20),
-        Constraint::Percentage(24),
-        Constraint::Percentage(30),
-    ])
-    .split(cols[1]);
-    render_net_interfaces(frame, app, net, right[0]);
-    render_net_dns_routes(frame, app, net, right[1]);
-    render_net_connections(frame, app, net, right[2]);
-    render_firewall_panel(frame, app, right[3]);
+    let pending = pkg.pending;
+    let security = pkg.security;
+    let other = pending.saturating_sub(security);
+    let tiles = [
+        ("PENDING", format!("{pending}"), if pending > 0 { t.high } else { t.accent }),
+        ("SECURITY", format!("{security}"), if security > 0 { t.critical } else { t.accent }),
+        ("REGULAR", format!("{other}"), t.fg),
+        ("MANAGER", pkg.manager.clone(), t.low),
+    ];
+    let rows = Layout::vertical([Constraint::Length(4), Constraint::Min(0)]).split(inner);
+    let cells = Layout::horizontal(vec![Constraint::Ratio(1, tiles.len() as u32); tiles.len()])
+        .split(rows[0]);
+    for ((label, value, color), cell) in tiles.iter().zip(cells.iter()) {
+        let r = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(*cell);
+        frame.render_widget(
+            Paragraph::new(Span::styled(*label, Style::new().fg(t.fg_dim))),
+            r[0],
+        );
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                value.clone(),
+                Style::new().fg(*color).add_modifier(Modifier::BOLD),
+            )),
+            r[1],
+        );
+    }
+
+    let summary = if security > 0 {
+        Line::from(vec![
+            Span::styled("⚠ ", Style::new().fg(t.critical)),
+            Span::styled(
+                format!("{security} security update(s) pending — install soon."),
+                Style::new().fg(t.fg),
+            ),
+        ])
+    } else if pending > 0 {
+        Line::from(Span::styled(
+            format!("{pending} update(s) available via {}.", pkg.manager),
+            Style::new().fg(t.fg_muted),
+        ))
+    } else {
+        Line::from(Span::styled("✓ system is up to date.", Style::new().fg(t.accent)))
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(""),
+            summary,
+            Line::from(""),
+            Line::from(Span::styled(
+                "snapshot from the local cache — refresh with the manager to update.",
+                Style::new().fg(t.fg_dim),
+            )),
+        ])
+        .wrap(Wrap { trim: true }),
+        rows[1],
+    );
 }
 
 /// Firewall summary: the active manager/engine, table & chain names and the rule
@@ -1436,7 +1566,7 @@ fn render_connectivity_panel(frame: &mut Frame, app: &App, area: Rect) {
         let msg = if app.connectivity_running {
             "probing gateway · DNS…"
         } else {
-            "press c to test reachability (gateway · DNS)"
+            "press a to test reachability (gateway · DNS)"
         };
         frame.render_widget(
             Paragraph::new(Span::styled(msg, Style::new().fg(t.fg_dim))),
@@ -3505,7 +3635,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             ("r", "refresh"),
             ("a", "add"),
             ("e", "edit"),
-            ("d", "delete"),
+            ("k", "delete"),
             ("x", "toggle"),
             ("n", "run now"),
             ("?", "help"),
@@ -3529,7 +3659,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         ],
         Tab::Processes => &[
             ("r", "refresh"),
-            ("s", "sort"),
+            ("o", "sort"),
             ("t", "list/tree"),
             ("a", "signal"),
             ("?", "help"),
@@ -3542,16 +3672,16 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             ("?", "help"),
             ("q", "quit"),
         ],
-        Tab::Network => &[
+        Tab::Connectivity => &[
             ("r", "refresh"),
-            ("c", "connectivity"),
+            ("a", "run probes"),
             ("?", "help"),
             ("q", "quit"),
         ],
         Tab::Docker => &[
             ("r", "refresh"),
             ("a", "actions"),
-            ("p", "prune images"),
+            ("P", "prune images"),
             ("?", "help"),
             ("q", "quit"),
         ],
@@ -3647,17 +3777,17 @@ fn render_help(frame: &mut Frame, app: &App) {
     let keys = [
         ("Tab / →", "next tab"),
         ("Shift+Tab / ←", "previous tab"),
-        ("1–9", "jump to tab"),
+        ("1–9 / 0", "jump to tab (overview … docker)"),
+        ("c / d / p / s", "jump to crons / databases / packages / security"),
         ("↑ / ↓", "move selection (services/processes/docker/crons)"),
-        ("a", "act on selection; add cron job on Crons"),
-        ("e / d / x", "edit, delete or toggle a user crontab entry"),
+        ("a", "act on selection; add cron · run probes (Connectivity)"),
+        ("e / k / x", "edit, delete or toggle a user crontab entry"),
         ("n", "run the selected user cron job now (Crons tab)"),
         ("r", "refresh"),
-        ("s", "sort processes by CPU/memory (Processes)"),
+        ("o", "sort processes by CPU/memory (Processes)"),
         ("t", "Processes: toggle list/tree · Logs: time window"),
         ("f", "cycle Services filter (all/failed/running/…)"),
-        ("c", "run connectivity probes (Network tab)"),
-        ("p", "prune dangling images (Docker tab)"),
+        ("P", "prune dangling images (Docker tab)"),
         ("n", "add a session note (Dashboard)"),
         ("S / ↵", "save / apply a log search (Logs tab)"),
         ("/", "search logs (Esc to clear)"),
@@ -3730,7 +3860,7 @@ mod tests {
         let mut app = App::new("local", ExecutionMode::Privileged);
         app.snapshot = Some(sample_snapshot());
         app.view_state = ViewState::Ready;
-        app.select_tab(7); // Crons
+        app.select_tab(10); // Crons
         app.open_add_cron_form();
         assert!(app.cron_builder.is_some());
 
@@ -3758,15 +3888,24 @@ mod tests {
     #[test]
     fn renders_chrome_and_empty_state() {
         let app = App::new("prod-01", ExecutionMode::ReadOnly);
-        // 120 cols so the full 10-tab bar (through "security") is visible.
         let out = render_to_string(&app, 120, 24);
         assert!(out.contains('█')); // ASCII SYSTOOLS wordmark
         assert!(out.contains("prod-01"));
         assert!(out.contains("READ-ONLY"));
+        // The 14-tab bar scrolls; the leading tabs are visible from Dashboard.
         assert!(out.contains("dashboard"));
-        assert!(out.contains("security"));
+        assert!(out.contains("network"));
         assert!(out.contains("q quit"));
         assert!(out.contains("No data yet"));
+    }
+
+    #[test]
+    fn tab_bar_scrolls_to_keep_active_tab_visible() {
+        let mut app = App::new("prod-01", ExecutionMode::ReadOnly);
+        app.select_tab(13); // Security (last tab)
+        let out = render_to_string(&app, 120, 24);
+        // The active trailing tab is shown even though the bar overflows.
+        assert!(out.contains("security"));
     }
 
     #[test]
@@ -3917,7 +4056,7 @@ mod tests {
             .and_hms_opt(8, 49, 0)
             .unwrap();
         app.view_state = ViewState::Ready;
-        app.select_tab(7); // Crons
+        app.select_tab(10); // Crons
         println!("\n{}", render_to_string(&app, 120, 38));
     }
 
@@ -4449,18 +4588,30 @@ mod tests {
         app.select_tab(5); // Network
         app.dense = true; // interfaces/connections panels live in dense mode
 
-        // The exposure map is information-dense; render wide (the prototype is 200 cols).
         let out = render_to_string(&app, 130, 34);
         assert!(out.contains("INTERFACES"));
         assert!(out.contains("eth0"));
         assert!(out.contains("192.168.1.1")); // gateway
-        assert!(out.contains("EXPOSURE MAP"));
-        assert!(out.contains("CRIT")); // redis on 0.0.0.0:6379
-        assert!(out.contains("6379"));
-        assert!(out.contains("redis.service"));
         // Connections panel lists the real established peer, not just a count.
         assert!(out.contains("CONNECTIONS"));
         assert!(out.contains("10.0.0.2:51000"));
+    }
+
+    #[test]
+    fn exposure_tab_shows_risk_ranked_listeners() {
+        use systui_collectors::exposure_map;
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        let net = sample_network();
+        app.exposures = exposure_map(&net.listeners);
+        app.network = Some(net);
+        app.view_state = ViewState::Ready;
+        app.select_tab(6); // Exposure
+
+        let out = render_to_string(&app, 130, 30);
+        assert!(out.contains("EXPOSURE MAP"));
+        assert!(out.contains("6379")); // redis on 0.0.0.0:6379
+        assert!(out.contains("redis.service"));
     }
 
     #[test]
@@ -4475,16 +4626,14 @@ mod tests {
         app.select_tab(5); // Network, clean default (dense off)
 
         let out = render_to_string(&app, 130, 30);
-        // The primary exposure map is shown…
-        assert!(out.contains("EXPOSURE MAP"));
-        assert!(out.contains("6379"));
-        // …but the secondary rail panels are hidden until dense mode.
-        assert!(!out.contains("INTERFACES"));
-        assert!(!out.contains("Connections"));
+        // Interfaces are the primary panel…
+        assert!(out.contains("INTERFACES"));
+        // …but the established-connections rail is hidden until dense mode.
+        assert!(!out.contains("CONNECTIONS"));
     }
 
     #[test]
-    fn network_tab_shows_firewall_panel() {
+    fn firewall_tab_shows_backend_and_chains() {
         use systui_collectors::FirewallSnapshot;
         let mut app = App::new("local", ExecutionMode::ReadOnly);
         app.snapshot = Some(sample_snapshot());
@@ -4498,10 +4647,8 @@ mod tests {
             notes: Vec::new(),
         };
         app.view_state = ViewState::Ready;
-        app.select_tab(5); // Network
-        app.dense = true; // firewall panel lives in dense mode
+        app.select_tab(7); // Firewall
 
-        // Render tall: a severity bar chart now bands the top of the Network tab.
         let out = render_to_string(&app, 130, 40);
         assert!(out.contains("FIREWALL"));
         assert!(out.contains("nftables"));
@@ -4509,19 +4656,18 @@ mod tests {
     }
 
     #[test]
-    fn network_tab_shows_connectivity_panel() {
+    fn connectivity_tab_shows_probe_results() {
         use crate::app::ConnectivityResult;
         let mut app = App::new("local", ExecutionMode::ReadOnly);
         app.snapshot = Some(sample_snapshot());
         app.network = Some(sample_network());
         app.view_state = ViewState::Ready;
-        app.select_tab(5); // Network
-        app.dense = true; // connectivity panel lives in dense mode
+        app.select_tab(8); // Connectivity
 
         // Before running, the panel invites the user to probe.
         let out = render_to_string(&app, 130, 30);
         assert!(out.contains("CONNECTIVITY TESTS"));
-        assert!(out.contains("press c to test"));
+        assert!(out.contains("press a to test"));
 
         // After a run, results are listed with their reachability.
         app.connectivity = vec![
@@ -4566,7 +4712,7 @@ mod tests {
             ),
         ];
         app.view_state = ViewState::Ready;
-        app.select_tab(9); // Security
+        app.select_tab(13); // Security
 
         let out = render_to_string(&app, 100, 30);
         assert!(out.contains("SSH permits direct root login"));
@@ -4583,7 +4729,7 @@ mod tests {
         let mut app = App::new("local", ExecutionMode::ReadOnly);
         app.snapshot = Some(sample_snapshot());
         app.view_state = ViewState::Ready;
-        app.select_tab(9);
+        app.select_tab(13);
         let out = render_to_string(&app, 100, 24);
         assert!(out.contains("no findings"));
     }
@@ -4709,7 +4855,7 @@ mod tests {
         app.containers = vec![sample_container()];
         app.container_inspects = vec![sample_inspect()];
         app.view_state = ViewState::Ready;
-        app.select_tab(6); // Docker
+        app.select_tab(9); // Docker
         app.dense = true; // risk checks + detail pane live in dense mode
 
         // Render tall: a CPU bar chart now bands the top of the Docker tab.
@@ -4746,7 +4892,7 @@ mod tests {
             dangling: 2,
         };
         app.view_state = ViewState::Ready;
-        app.select_tab(6); // Docker
+        app.select_tab(9); // Docker
         app.dense = true; // compose + image hygiene panels live in dense mode
 
         // Render tall: a CPU bar chart now bands the top of the Docker tab.
@@ -4767,7 +4913,7 @@ mod tests {
         app.snapshot = Some(sample_snapshot());
         app.docker_available = false;
         app.view_state = ViewState::Ready;
-        app.select_tab(6);
+        app.select_tab(9);
 
         let out = render_to_string(&app, 100, 24);
         assert!(out.contains("Docker unavailable"));
@@ -4803,7 +4949,7 @@ mod tests {
             "Cron job output is not captured",
         )];
         app.view_state = ViewState::Ready;
-        app.select_tab(7); // Crons
+        app.select_tab(10); // Crons
         app.dense = true; // preview/timers/summary panels live in dense mode
 
         let out = render_to_string(&app, 110, 36);
@@ -4869,7 +5015,7 @@ mod tests {
             "Redis is reachable on a non-loopback address",
         )];
         app.view_state = ViewState::Ready;
-        app.select_tab(8); // Databases
+        app.select_tab(11); // Databases
         app.dense = true; // the operational detail pane lives in dense mode
 
         // Taller CRT header → render a bit taller so the dense panels all fit.

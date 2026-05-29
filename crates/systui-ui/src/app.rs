@@ -119,24 +119,32 @@ pub enum Tab {
     Services,
     Logs,
     Network,
+    Exposure,
+    Firewall,
+    Connectivity,
     Docker,
     Crons,
     Databases,
+    Packages,
     Security,
 }
 
 impl Tab {
-    /// All tabs, in display order.
-    pub const ALL: [Tab; 10] = [
+    /// All tabs, in display order (mirrors the design's tab bar).
+    pub const ALL: [Tab; 14] = [
         Tab::Dashboard,
         Tab::System,
         Tab::Processes,
         Tab::Services,
         Tab::Logs,
         Tab::Network,
+        Tab::Exposure,
+        Tab::Firewall,
+        Tab::Connectivity,
         Tab::Docker,
         Tab::Crons,
         Tab::Databases,
+        Tab::Packages,
         Tab::Security,
     ];
 
@@ -149,14 +157,45 @@ impl Tab {
             Tab::Services => "Services",
             Tab::Logs => "Logs",
             Tab::Network => "Network",
+            Tab::Exposure => "Exposure",
+            Tab::Firewall => "Firewall",
+            Tab::Connectivity => "Connectivity",
             Tab::Docker => "Docker",
             Tab::Crons => "Crons",
             Tab::Databases => "Databases",
+            Tab::Packages => "Packages",
             Tab::Security => "Security",
         }
     }
 
-    /// The module this tab maps to.
+    /// The single-character key chip shown in the tab bar and bound to this tab:
+    /// `1`–`9`, `0` for the first ten, then `c`/`d`/`p`/`s` for the rest.
+    pub fn key(self) -> char {
+        match self {
+            Tab::Dashboard => '1',
+            Tab::System => '2',
+            Tab::Processes => '3',
+            Tab::Services => '4',
+            Tab::Logs => '5',
+            Tab::Network => '6',
+            Tab::Exposure => '7',
+            Tab::Firewall => '8',
+            Tab::Connectivity => '9',
+            Tab::Docker => '0',
+            Tab::Crons => 'c',
+            Tab::Databases => 'd',
+            Tab::Packages => 'p',
+            Tab::Security => 's',
+        }
+    }
+
+    /// Resolve a key chip to its tab, for keyboard navigation.
+    pub fn from_key(c: char) -> Option<Tab> {
+        Tab::ALL.into_iter().find(|t| t.key() == c)
+    }
+
+    /// The module this tab maps to. Exposure/Connectivity derive from the
+    /// network collector, so they report the Network module.
     pub fn module(self) -> ModuleId {
         match self {
             Tab::Dashboard => ModuleId::Dashboard,
@@ -165,9 +204,13 @@ impl Tab {
             Tab::Services => ModuleId::Services,
             Tab::Logs => ModuleId::Logs,
             Tab::Network => ModuleId::Network,
+            Tab::Exposure => ModuleId::Network,
+            Tab::Firewall => ModuleId::Firewall,
+            Tab::Connectivity => ModuleId::Network,
             Tab::Docker => ModuleId::Docker,
             Tab::Crons => ModuleId::Crons,
             Tab::Databases => ModuleId::Databases,
+            Tab::Packages => ModuleId::Packages,
             Tab::Security => ModuleId::Security,
         }
     }
@@ -182,9 +225,13 @@ impl Tab {
             Tab::Services => Domain::Services,
             Tab::Logs => Domain::Logs,
             Tab::Network => Domain::Network,
+            Tab::Exposure => Domain::Security,
+            Tab::Firewall => Domain::Network,
+            Tab::Connectivity => Domain::Network,
             Tab::Docker => Domain::Docker,
             Tab::Crons => Domain::Crons,
             Tab::Databases => Domain::Databases,
+            Tab::Packages => Domain::Logs,
             Tab::Security => Domain::Security,
         }
     }
@@ -1343,7 +1390,7 @@ mod tests {
             created: String::new(),
         };
         let mut app = App::new("local", ExecutionMode::Privileged);
-        app.select_tab(6); // Docker
+        app.select_tab(9); // Docker
         app.containers = vec![container("web", "running"), container("db", "exited")];
 
         app.request_action();

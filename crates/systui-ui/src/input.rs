@@ -98,20 +98,17 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('D') => app.toggle_dense(),
         KeyCode::Char('r') => app.request_refresh(),
-        KeyCode::Char('s') => app.toggle_process_sort(),
         KeyCode::Char('/') => app.enter_search(),
         KeyCode::Char('l') => app.cycle_log_level(),
+        KeyCode::Char('o') if app.current_tab() == Tab::Processes => app.toggle_process_sort(),
         KeyCode::Char('t') if app.current_tab() == Tab::Processes => app.toggle_process_view(),
         KeyCode::Char('t') => app.cycle_log_window(),
-        KeyCode::Char('a') => {
-            if app.current_tab() == Tab::Security {
-                app.set_selected_finding_status(FindingStatus::Accepted);
-            } else if app.current_tab() == Tab::Crons {
-                app.open_add_cron_form();
-            } else {
-                app.request_action();
-            }
-        }
+        KeyCode::Char('a') => match app.current_tab() {
+            Tab::Security => app.set_selected_finding_status(FindingStatus::Accepted),
+            Tab::Crons => app.open_add_cron_form(),
+            Tab::Connectivity => app.request_connectivity(),
+            _ => app.request_action(),
+        },
         KeyCode::Char('o') if app.current_tab() == Tab::Security => {
             app.set_selected_finding_status(FindingStatus::Open);
         }
@@ -126,12 +123,11 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('e') if app.current_tab() == Tab::Crons => app.open_edit_cron_form(),
         KeyCode::Char('e') if app.current_tab() == Tab::Logs => app.request_log_export(),
-        KeyCode::Char('d') if app.current_tab() == Tab::Crons => app.request_delete_cron(),
+        KeyCode::Char('k') if app.current_tab() == Tab::Crons => app.request_delete_cron(),
         KeyCode::Char('x') if app.current_tab() == Tab::Crons => app.request_toggle_cron(),
         KeyCode::Char('n') if app.current_tab() == Tab::Crons => app.request_run_cron(),
         KeyCode::Char('f') if app.current_tab() == Tab::Services => app.cycle_service_filter(),
-        KeyCode::Char('c') if app.current_tab() == Tab::Network => app.request_connectivity(),
-        KeyCode::Char('p') if app.current_tab() == Tab::Docker => app.request_prune_images(),
+        KeyCode::Char('P') if app.current_tab() == Tab::Docker => app.request_prune_images(),
         KeyCode::Char('n') if app.current_tab() == Tab::Dashboard => app.open_note(),
         KeyCode::Char('S') if app.current_tab() == Tab::Logs => app.save_current_search(),
         KeyCode::Up if app.current_tab() == Tab::Logs => app.saved_search_up(),
@@ -141,8 +137,14 @@ pub fn handle_key(app: &mut App, key: KeyEvent) {
         KeyCode::Down => app.select_down(),
         KeyCode::Tab | KeyCode::Right => app.next_tab(),
         KeyCode::BackTab | KeyCode::Left => app.prev_tab(),
-        KeyCode::Char(c @ '1'..='9') => app.select_tab(c as usize - '1' as usize),
-        KeyCode::Char('0') => app.select_tab(9),
+        // Tab switches: digits 1–9/0 and the c/d/p/s letter keys.
+        KeyCode::Char(c) => {
+            if let Some(tab) = Tab::from_key(c) {
+                if let Some(idx) = Tab::ALL.iter().position(|x| *x == tab) {
+                    app.select_tab(idx);
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -207,15 +209,30 @@ mod tests {
         handle_key(&mut app, press(KeyCode::Char('4')));
         assert_eq!(app.current_tab(), crate::app::Tab::Services);
         handle_key(&mut app, press(KeyCode::Char('0')));
-        assert_eq!(app.current_tab(), crate::app::Tab::Security);
+        assert_eq!(app.current_tab(), crate::app::Tab::Docker);
     }
 
     #[test]
-    fn s_toggles_process_sort() {
+    fn letter_keys_jump_to_trailing_tabs() {
+        use crate::app::Tab;
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        handle_key(&mut app, press(KeyCode::Char('c')));
+        assert_eq!(app.current_tab(), Tab::Crons);
+        handle_key(&mut app, press(KeyCode::Char('d')));
+        assert_eq!(app.current_tab(), Tab::Databases);
+        handle_key(&mut app, press(KeyCode::Char('p')));
+        assert_eq!(app.current_tab(), Tab::Packages);
+        handle_key(&mut app, press(KeyCode::Char('s')));
+        assert_eq!(app.current_tab(), Tab::Security);
+    }
+
+    #[test]
+    fn o_toggles_process_sort() {
         use crate::app::ProcessSort;
         let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.select_tab(2); // Processes
         assert_eq!(app.process_sort, ProcessSort::Cpu);
-        handle_key(&mut app, press(KeyCode::Char('s')));
+        handle_key(&mut app, press(KeyCode::Char('o')));
         assert_eq!(app.process_sort, ProcessSort::Mem);
     }
 
@@ -231,7 +248,7 @@ mod tests {
     #[test]
     fn security_keys_set_finding_state() {
         let mut app = App::new("local", ExecutionMode::ReadOnly);
-        app.select_tab(9);
+        app.select_tab(13); // Security
         app.findings = vec![systui_core::Finding::new(
             "policy.port.forbidden.prod-web.6379",
             systui_core::Severity::High,

@@ -1463,33 +1463,49 @@ fn render_packages(frame: &mut Frame, app: &App, area: Rect) {
         );
     }
 
-    let summary = if security > 0 {
-        Line::from(vec![
-            Span::styled("⚠ ", Style::new().fg(t.critical)),
-            Span::styled(
-                format!("{security} security update(s) pending — install soon."),
-                Style::new().fg(t.fg),
-            ),
-        ])
-    } else if pending > 0 {
-        Line::from(Span::styled(
-            format!("{pending} update(s) available via {}.", pkg.manager),
-            Style::new().fg(t.fg_muted),
-        ))
-    } else {
-        Line::from(Span::styled("✓ system is up to date.", Style::new().fg(t.accent)))
-    };
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(""),
-            summary,
-            Line::from(""),
+    // When the manager gave us the package list, show it as a table; otherwise
+    // fall back to a one-line summary of the counts.
+    if pkg.packages.is_empty() {
+        let summary = if pending == 0 {
+            Line::from(Span::styled("✓ system is up to date.", Style::new().fg(t.accent)))
+        } else {
             Line::from(Span::styled(
-                "snapshot from the local cache — refresh with the manager to update.",
-                Style::new().fg(t.fg_dim),
-            )),
+                format!("{pending} update(s) available via {}.", pkg.manager),
+                Style::new().fg(t.fg_muted),
+            ))
+        };
+        frame.render_widget(Paragraph::new(vec![Line::from(""), summary]), rows[1]);
+        return;
+    }
+
+    let header = Row::new(["PACKAGE", "CURRENT", "CANDIDATE", "FLAG"])
+        .style(Style::new().fg(t.fg_dim).add_modifier(Modifier::BOLD));
+    let body = pkg.packages.iter().map(|p| {
+        let flag = if p.security {
+            Span::styled(
+                " SECURITY ",
+                Style::new().fg(t.bg).bg(t.critical).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled("upgrade", Style::new().fg(t.fg_dim))
+        };
+        Row::new([
+            Cell::from(Span::styled(p.name.clone(), Style::new().fg(t.fg_strong))),
+            Cell::from(Span::styled(p.current.clone(), Style::new().fg(t.fg_dim))),
+            Cell::from(Span::styled(p.candidate.clone(), Style::new().fg(t.low))),
+            Cell::from(flag),
         ])
-        .wrap(Wrap { trim: true }),
+    });
+    let widths = [
+        Constraint::Min(16),
+        Constraint::Length(16),
+        Constraint::Length(16),
+        Constraint::Length(10),
+    ];
+    frame.render_widget(
+        Table::new(body, widths)
+            .header(header)
+            .style(Style::new().fg(t.fg)),
         rows[1],
     );
 }
@@ -4089,6 +4105,36 @@ mod tests {
         app.view_state = ViewState::Ready;
         app.select_tab(2);
         println!("\n{}", render_to_string(&app, 120, 38));
+    }
+
+    #[test]
+    #[ignore = "manual: prints the rendered packages tab to stdout"]
+    fn dump_packages() {
+        use systui_collectors::{PackageUpdate, PackageUpdates};
+        let mut app = App::new("aurora-prod-01", ExecutionMode::Privileged);
+        app.snapshot = Some(sample_snapshot());
+        let u = |name: &str, cur: &str, cand: &str, sec| PackageUpdate {
+            name: name.to_owned(),
+            current: cur.to_owned(),
+            candidate: cand.to_owned(),
+            security: sec,
+        };
+        app.packages = PackageUpdates {
+            manager: "apt".to_owned(),
+            pending: 5,
+            security: 2,
+            available: true,
+            packages: vec![
+                u("linux-image-amd64", "6.1.0-21", "6.1.0-22", true),
+                u("openssl", "3.0.13", "3.0.14", true),
+                u("curl", "8.6.0", "8.7.1", false),
+                u("docker-ce", "25.0.3", "25.0.5", false),
+                u("nginx", "1.24.0", "1.24.1", false),
+            ],
+        };
+        app.view_state = ViewState::Ready;
+        app.select_tab(12);
+        println!("\n{}", render_to_string(&app, 120, 30));
     }
 
     fn sample_snapshot() -> SystemSnapshot {

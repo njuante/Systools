@@ -46,7 +46,7 @@ pub use network::{
     AddrFamily, Connection, DnsConfig, InterfaceAddr, Listener, NetInterface, NetStatics,
     NetworkCollector, NetworkSnapshot, ProcessRef, Protocol, Route, correlate_units,
 };
-pub use packages::{PackageUpdates, PackagesCollector};
+pub use packages::{PackageUpdate, PackageUpdates, PackagesCollector};
 pub use process::{
     Process, ProcessCollector, ProcessDetail, TreeRow, build_process_tree, process_detail,
 };

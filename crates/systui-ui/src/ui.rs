@@ -1467,6 +1467,33 @@ fn render_connectivity_panel(frame: &mut Frame, app: &App, area: Rect) {
 
 /// The ranked exposure map: one row per listening socket, address colour-coded
 /// by bind scope and a severity RISK badge (spec §14).
+/// A severity's rung on the 4-step risk ladder (Info=0 … Critical=4).
+fn severity_rung(s: Severity) -> u8 {
+    match s {
+        Severity::Info => 0,
+        Severity::Low => 1,
+        Severity::Medium => 2,
+        Severity::High => 3,
+        Severity::Critical => 4,
+    }
+}
+
+/// The design's 4-step risk ladder: filled rungs colored low→crit (green/cyan/
+/// amber/red), empty rungs dim. Returns spans for inline use in a table cell.
+fn risk_ladder(theme: &Theme, severity: Severity) -> Vec<Span<'static>> {
+    let lvl = severity_rung(severity);
+    let tiers = [theme.accent, theme.low, theme.high, theme.critical];
+    (0..4u8)
+        .map(|i| {
+            if i < lvl {
+                Span::styled("▰", Style::new().fg(tiers[i as usize]))
+            } else {
+                Span::styled("▱", Style::new().fg(theme.fg_dim))
+            }
+        })
+        .collect()
+}
+
 fn render_exposure_panel(frame: &mut Frame, app: &App, area: Rect) {
     let t = app.theme;
     let block = panel_block(
@@ -1506,17 +1533,6 @@ fn render_exposure_panel(frame: &mut Frame, app: &App, area: Rect) {
             (None, _) => "—".to_owned(),
         };
         let service = e.sensitive_service.unwrap_or("—").to_owned();
-        let risk = if e.severity > Severity::Info {
-            Span::styled(
-                format!(" {} ", severity_abbr(e.severity)),
-                Style::new()
-                    .fg(t.bg)
-                    .bg(t.severity(e.severity))
-                    .add_modifier(Modifier::BOLD),
-            )
-        } else {
-            Span::styled("ok", Style::new().fg(t.fg_dim))
-        };
         Row::new([
             Cell::from(Span::styled(proto, Style::new().fg(t.fg_muted))),
             Cell::from(Span::styled(
@@ -1525,7 +1541,7 @@ fn render_exposure_panel(frame: &mut Frame, app: &App, area: Rect) {
             )),
             Cell::from(Span::styled(owner, Style::new().fg(t.fg))),
             Cell::from(Span::styled(service, Style::new().fg(t.fg_muted))),
-            Cell::from(risk),
+            Cell::from(Line::from(risk_ladder(&t, e.severity))),
         ])
     });
     let widths = [
@@ -1533,7 +1549,7 @@ fn render_exposure_panel(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(20),
         Constraint::Min(12),
         Constraint::Length(10),
-        Constraint::Length(7),
+        Constraint::Length(6),
     ];
     frame.render_widget(
         Table::new(body, widths)
@@ -1541,17 +1557,6 @@ fn render_exposure_panel(frame: &mut Frame, app: &App, area: Rect) {
             .style(Style::new().fg(t.fg)),
         inner,
     );
-}
-
-/// A short severity tag for tight badge columns: CRIT/HIGH/MED/LOW/INFO.
-fn severity_abbr(severity: Severity) -> &'static str {
-    match severity {
-        Severity::Critical => "CRIT",
-        Severity::High => "HIGH",
-        Severity::Medium => "MED",
-        Severity::Low => "LOW",
-        Severity::Info => "INFO",
-    }
 }
 
 fn render_net_interfaces(frame: &mut Frame, app: &App, net: &NetworkSnapshot, area: Rect) {
@@ -3029,7 +3034,6 @@ fn render_exposure_overview(frame: &mut Frame, app: &App, area: Rect) {
     });
     let mut lines = Vec::new();
     for e in ex.iter().take(inner.height as usize) {
-        let color = t.severity(e.severity);
         let proto = match e.listener.protocol {
             Protocol::Tcp => "tcp",
             Protocol::Udp => "udp",
@@ -3051,15 +3055,14 @@ fn render_exposure_overview(frame: &mut Frame, app: &App, area: Rect) {
             .as_ref()
             .map(|p| p.name.clone())
             .unwrap_or_else(|| "—".to_owned());
-        lines.push(Line::from(vec![
-            Span::styled("● ", Style::new().fg(color)),
-            Span::styled(
-                format!("{proto}:{:<5}", e.listener.port),
-                Style::new().fg(t.fg).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!(" {scope:<6} "), Style::new().fg(scope_color)),
-            Span::styled(clip(&proc, 14), Style::new().fg(t.magenta)),
-        ]));
+        let mut spans = risk_ladder(t, e.severity);
+        spans.push(Span::styled(
+            format!(" {proto}:{:<5}", e.listener.port),
+            Style::new().fg(t.fg).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(format!(" {scope:<6} "), Style::new().fg(scope_color)));
+        spans.push(Span::styled(clip(&proc, 14), Style::new().fg(t.magenta)));
+        lines.push(Line::from(spans));
     }
     frame.render_widget(Paragraph::new(lines), inner);
 }

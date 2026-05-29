@@ -1053,7 +1053,7 @@ fn render_process_treemap(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     let mut procs: Vec<_> = app.processes.iter().collect();
-    procs.sort_by(|a, b| b.rss_kb.cmp(&a.rss_kb));
+    procs.sort_by_key(|p| std::cmp::Reverse(p.rss_kb));
     // Domain hues cycled across tiles so adjacent processes are distinguishable.
     let palette = [t.teal, t.cyan, t.blue, t.indigo, t.violet, t.magenta, t.rose, t.high];
     let items: Vec<(String, String, u64, ratatui::style::Color)> = procs

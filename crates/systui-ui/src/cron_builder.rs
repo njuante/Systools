@@ -324,7 +324,7 @@ pub fn render_cron_builder(frame: &mut Frame, b: &CronBuilder, theme: &Theme, no
     // (and theme fg) so it reads correctly under any theme, including light.
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(Style::new().fg(theme.violet))
         .style(Style::new().bg(theme.bg_elev).fg(theme.fg))
         .title(Span::styled(

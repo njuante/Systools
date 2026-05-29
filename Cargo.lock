@@ -1454,6 +1454,7 @@ dependencies = [
  "chrono",
  "ratatui",
  "regex",
+ "serde_json",
  "systui-actions",
  "systui-collectors",
  "systui-core",

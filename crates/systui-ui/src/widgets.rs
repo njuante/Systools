@@ -65,10 +65,10 @@ pub fn status_card(
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(Style::new().fg(theme.border))
         .title(Span::styled(
-            format!(" {title} "),
+            format!(" {} ", title.to_uppercase()),
             Style::new().fg(accent).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);
@@ -104,10 +104,10 @@ pub fn meter_gauge(
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(Style::new().fg(theme.border))
         .title(Span::styled(
-            format!(" {title} "),
+            format!(" {} ", title.to_uppercase()),
             Style::new().fg(color).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);
@@ -170,10 +170,10 @@ pub fn history_chart(
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(Style::new().fg(theme.border))
         .title(Span::styled(
-            format!(" {title} "),
+            format!(" {} ", title.to_uppercase()),
             Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);
@@ -250,10 +250,10 @@ pub fn bar_chart(
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(Style::new().fg(theme.border))
         .title(Span::styled(
-            format!(" {title} "),
+            format!(" {} ", title.to_uppercase()),
             Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(area);

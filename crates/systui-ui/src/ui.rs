@@ -6,20 +6,18 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Clear, Gauge, Paragraph, Row, Table, Wrap,
+    Block, BorderType, Borders, Cell, Clear, Gauge, Paragraph, Row, Sparkline, Table, Wrap,
 };
 use regex::RegexBuilder;
 use systui_collectors::{
     BindScope, Connection, Container, CronEntry, CronSource, DatabaseInstance, LogEntry,
-    NetworkSnapshot, ServiceUnit, SystemSnapshot, parse_schedule,
+    NetworkSnapshot, Protocol, ServiceUnit, SystemSnapshot, parse_schedule,
 };
 use systui_core::{Finding, ModuleId, Severity};
 
 use crate::app::{ActionStage, App, InputMode, ProcessView, ServiceFilter, Tab, ViewState};
-use crate::theme::{Domain, Theme};
-use crate::widgets::{
-    StatusLevel, grid, history_chart, labeled_gauge, meter_gauge, severity_bars, status_card,
-};
+use crate::theme::Theme;
+use crate::widgets::{labeled_gauge, severity_bars};
 
 /// Draw the whole UI for the current state.
 pub fn render(frame: &mut Frame, app: &App) {
@@ -31,7 +29,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     );
 
     let rows = Layout::vertical([
-        Constraint::Length(3), // top bar
+        Constraint::Length(6), // top bar (ASCII wordmark + meta + status)
         Constraint::Length(1), // tabs
         Constraint::Min(0),    // body
         Constraint::Length(1), // status bar
@@ -64,7 +62,7 @@ fn render_note_input(frame: &mut Frame, app: &App, draft: &str) {
     frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(Style::new().fg(t.accent))
         .title(" New session note ");
     let lines = vec![
@@ -150,97 +148,146 @@ fn render_action_modal(frame: &mut Frame, app: &App) {
     );
 }
 
-/// The 3-row top bar: brand + host-attached pill on the left, health gauge and
-/// execution-mode badge on the right, inside a rounded panel (spec §13).
+/// ASCII block wordmark for "SYSTOOLS" — five rows, ~31 cols.
+const WORDMARK: [&str; 5] = [
+    "███ █ █ ███ ███ ███ ███ █   ███",
+    "█   █ █ █    █  █ █ █ █ █   █  ",
+    "███ ███ ███  █  █ █ █ █ █   ███",
+    "  █  █    █  █  █ █ █ █ █     █",
+    "███  █  ███  █  ███ ███ ███ ███",
+];
+
+/// Format an uptime in seconds as `47d 12h 09m`.
+fn fmt_uptime(secs: u64) -> String {
+    let d = secs / 86_400;
+    let h = (secs % 86_400) / 3_600;
+    let m = (secs % 3_600) / 60;
+    if d > 0 {
+        format!("{d}d {h:02}h {m:02}m")
+    } else {
+        format!("{h}h {m:02}m")
+    }
+}
+
+/// The top bar: ASCII SYSTOOLS wordmark on the left, a host/os/kernel/uptime/load
+/// meta grid in the middle, and a health/checks/caps/clock status block on the
+/// right, divided by a bottom rule (spec §13; design `app.jsx` topbar).
 fn render_top_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    // Bottom rule under the whole bar.
     let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(app.theme.border));
+        .borders(Borders::BOTTOM)
+        .border_style(Style::new().fg(t.border))
+        .style(Style::new().bg(t.bg_elev));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Brand + host pill on a single, vertically-centered line.
-    let mut left = vec![
+    let cols = Layout::horizontal([
+        Constraint::Length(34), // wordmark
+        Constraint::Min(28),    // meta grid
+        Constraint::Length(40), // status block
+    ])
+    .split(inner);
+
+    // ── Wordmark ───────────────────────────────────────────────
+    let logo: Vec<Line> = WORDMARK
+        .iter()
+        .map(|row| {
+            Line::from(Span::styled(
+                format!(" {row}"),
+                Style::new().fg(t.accent).add_modifier(Modifier::BOLD),
+            ))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(logo), cols[0]);
+
+    // ── Meta grid ──────────────────────────────────────────────
+    let snap = app.snapshot.as_ref();
+    let os = snap
+        .and_then(|s| s.os.clone())
+        .unwrap_or_else(|| "—".to_owned());
+    let kernel = snap.map(|s| s.kernel.clone()).unwrap_or_default();
+    let cores = snap.map(|s| s.cpu.cores).unwrap_or(0);
+    let uptime = snap.map(|s| fmt_uptime(s.uptime_secs)).unwrap_or_default();
+    let load = snap
+        .map(|s| {
+            format!(
+                "{:.2} · {:.2} · {:.2}",
+                s.load.one, s.load.five, s.load.fifteen
+            )
+        })
+        .unwrap_or_default();
+    let host = snap
+        .map(|s| s.hostname.clone())
+        .unwrap_or_else(|| app.host_label.clone());
+
+    let k = |s: &str| Span::styled(format!("{s:<7}"), Style::new().fg(t.fg_dim));
+    let v = |s: String| Span::styled(s, Style::new().fg(t.fg));
+    let vhi = |s: String| {
         Span::styled(
-            "SysTUI",
-            Style::new()
-                .fg(app.theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!(" v{}  ", env!("CARGO_PKG_VERSION")),
-            Style::new().fg(app.theme.fg_dim),
-        ),
-    ];
-    // Host-attached pill: status dot · label · transport/mode.
-    let attached = app.snapshot.is_some();
-    let dot_color = match &app.health {
-        Some(h) if h.score >= 80 => app.theme.accent,
-        Some(h) if h.score >= 50 => app.theme.high,
-        Some(_) => app.theme.critical,
-        None => app.theme.fg_dim,
+            s,
+            Style::new().fg(t.accent).add_modifier(Modifier::BOLD),
+        )
     };
-    left.push(Span::styled("● ", Style::new().fg(dot_color)));
-    left.push(Span::styled(
-        app.host_label.clone(),
-        Style::new()
-            .fg(app.theme.fg_strong)
-            .add_modifier(Modifier::BOLD),
-    ));
-    if let Some(caps) = &app.capabilities {
-        left.push(Span::styled(
-            format!("  {}", caps.label()),
-            Style::new().fg(app.theme.fg_muted),
-        ));
+    let meta = vec![
+        Line::from(vec![k("host"), vhi(host)]),
+        Line::from(vec![k("os"), v(os)]),
+        Line::from(vec![k("kernel"), v(kernel)]),
+        Line::from(vec![k("uptime"), v(uptime)]),
+        Line::from(vec![
+            k("load"),
+            v(load),
+            Span::styled(format!("   {cores}c"), Style::new().fg(t.fg_muted)),
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(meta), cols[1]);
+
+    // ── Status block ───────────────────────────────────────────
+    let pill = |s: String, fg, bg| {
+        Span::styled(
+            format!(" {s} "),
+            Style::new().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+        )
+    };
+    let mut status: Vec<Line> = Vec::new();
+
+    if let Some(h) = &app.health {
+        let color = score_color(app, h.score);
+        let issues = h.checks.len();
+        let checks_span = if issues == 0 {
+            Span::styled("✓ all clear", Style::new().fg(t.accent))
+        } else {
+            Span::styled(format!("{issues} ✗"), Style::new().fg(t.critical))
+        };
+        status.push(Line::from(vec![
+            Span::styled("health ", Style::new().fg(t.fg_dim)),
+            pill(format!("{}/100", h.score), t.bg, color),
+            Span::styled("  checks ", Style::new().fg(t.fg_dim)),
+            checks_span,
+        ]));
     }
-    left.push(Span::styled(
-        if attached { " · live" } else { " · detached" },
-        Style::new().fg(app.theme.fg_dim),
-    ));
+
+    status.push(Line::from(Span::styled(
+        app.now.format("%Y-%m-%d %H:%M:%S").to_string(),
+        Style::new().fg(t.fg_muted),
+    )));
+
+    let (badge_text, badge_color) = mode_badge(t, app.mode);
+    let caps = app
+        .capabilities
+        .as_ref()
+        .map(|c| c.label())
+        .unwrap_or_else(|| "—".to_owned());
+    let mut line3 = vec![
+        Span::styled("caps ", Style::new().fg(t.fg_dim)),
+        Span::styled(format!("{caps}  "), Style::new().fg(t.low)),
+        pill(badge_text.to_owned(), t.bg, badge_color),
+    ];
     if app.refreshing {
-        left.push(Span::styled(
-            " · ⟳ refreshing",
-            Style::new().fg(app.theme.accent),
-        ));
+        line3.push(Span::styled(" ⟳", Style::new().fg(t.accent)));
     }
-
-    let (badge_text, badge_color) = mode_badge(&app.theme, app.mode);
-    let health_score = app.health.as_ref().map(|h| h.score);
-
-    // Right side: HEALTH nn/100 [gauge]  [MODE]. Built as spans so it lives on
-    // the same centered row as the brand/host pill.
-    let mut right: Vec<Span> = Vec::new();
-    if let Some(score) = health_score {
-        let color = score_color(app, score);
-        right.push(Span::styled("HEALTH ", Style::new().fg(app.theme.fg_muted)));
-        right.push(Span::styled(
-            format!("{score}"),
-            Style::new().fg(color).add_modifier(Modifier::BOLD),
-        ));
-        right.push(Span::styled("/100 ", Style::new().fg(app.theme.fg_dim)));
-        right.push(Span::styled(
-            gauge_bar(score as f64, 10),
-            Style::new().fg(color),
-        ));
-        right.push(Span::raw("  "));
-    }
-    right.push(Span::styled(
-        format!(" {badge_text} "),
-        Style::new()
-            .fg(app.theme.bg)
-            .bg(badge_color)
-            .add_modifier(Modifier::BOLD),
-    ));
-
-    // Vertically center within the 3-row panel (inner is 1 row tall here).
-    let cols = Layout::horizontal([Constraint::Min(10), Constraint::Length(right_width(&right))])
-        .split(inner);
-    frame.render_widget(Paragraph::new(Line::from(left)), cols[0]);
-    frame.render_widget(
-        Paragraph::new(Line::from(right)).alignment(Alignment::Right),
-        cols[1],
-    );
+    status.push(Line::from(line3));
+    frame.render_widget(Paragraph::new(status).alignment(Alignment::Left), cols[2]);
 }
 
 /// Badge label and color for an execution mode.
@@ -256,15 +303,6 @@ fn mode_badge(
     }
 }
 
-/// Approximate rendered width of a span run, for right-alignment sizing.
-fn right_width(spans: &[Span]) -> u16 {
-    spans
-        .iter()
-        .map(|s| s.content.chars().count() as u16)
-        .sum::<u16>()
-        .saturating_add(1)
-}
-
 /// Color for a 0–100 score: green/amber/red by band.
 fn score_color(app: &App, score: u8) -> ratatui::style::Color {
     if score >= 80 {
@@ -276,45 +314,41 @@ fn score_color(app: &App, score: u8) -> ratatui::style::Color {
     }
 }
 
-/// A solid block-character gauge of `width` cells filled to `percent`.
-fn gauge_bar(percent: f64, width: usize) -> String {
-    let filled = ((percent.clamp(0.0, 100.0) / 100.0) * width as f64).round() as usize;
-    let filled = filled.min(width);
-    let mut s = String::with_capacity(width);
-    s.extend(std::iter::repeat_n('█', filled));
-    s.extend(std::iter::repeat_n('░', width - filled));
-    s
-}
-
-/// Numbered tab bar with per-tab count badges (spec §13/§14).
+/// Numbered tab bar with key chips and per-tab count badges (design `app.jsx`).
 fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    frame.render_widget(Block::default().style(Style::new().bg(t.bg_elev)), area);
+
     let mut spans: Vec<Span> = vec![Span::raw(" ")];
     for (i, tab) in Tab::ALL.iter().enumerate() {
         let active = i == app.active_tab;
         let key = if i < 9 { (b'1' + i as u8) as char } else { '0' };
-        spans.push(Span::styled(
-            format!("{key} "),
-            Style::new().fg(app.theme.fg_dim),
-        ));
-        let name_style = if active {
-            Style::new()
-                .fg(app.theme.domain(tab.domain()))
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+
+        // Key chip: a small bordered-looking cell.
+        let (key_fg, key_bg) = if active {
+            (t.bg, t.accent)
         } else {
-            Style::new().fg(app.theme.fg_muted)
+            (t.fg_dim, t.bg_hover)
         };
-        spans.push(Span::styled(tab.title(), name_style));
+        spans.push(Span::styled(
+            format!(" {key} "),
+            Style::new().fg(key_fg).bg(key_bg).add_modifier(Modifier::BOLD),
+        ));
+
+        let name_style = if active {
+            Style::new().fg(t.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(t.fg_muted)
+        };
+        spans.push(Span::styled(tab.title().to_lowercase(), name_style));
+
         if let Some((count, color)) = tab_badge(app, *tab) {
-            spans.push(Span::raw(" "));
             spans.push(Span::styled(
                 format!(" {count} "),
-                Style::new()
-                    .fg(app.theme.bg)
-                    .bg(color)
-                    .add_modifier(Modifier::BOLD),
+                Style::new().fg(t.bg).bg(color).add_modifier(Modifier::BOLD),
             ));
         }
-        spans.push(Span::styled("  ", Style::new().fg(app.theme.fg_dim)));
+        spans.push(Span::styled(" ", Style::new().fg(t.fg_dim)));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -2048,15 +2082,20 @@ fn render_container_detail(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_crons(frame: &mut Frame, app: &App, area: Rect) {
-    // Clean by default: the scheduled-jobs table full-width. Dense adds the
-    // schedule preview, systemd timers and the cron-health summary.
+    // The 24h schedule timeline tops the tab (design `cron.jsx`); the scheduled
+    // jobs table sits below. Dense adds the preview, timers and health panels.
+    let timeline_h = (app.crons.len().min(8) as u16 + 3).clamp(4, 11);
+    let rows = Layout::vertical([Constraint::Length(timeline_h), Constraint::Min(0)]).split(area);
+    render_cron_timeline(frame, app, rows[0]);
+    let body = rows[1];
+
     if !app.dense {
-        render_cron_table(frame, app, area);
+        render_cron_table(frame, app, body);
         return;
     }
 
     let cols =
-        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).split(area);
+        Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)]).split(body);
     render_cron_table(frame, app, cols[0]);
     let right = Layout::vertical([
         Constraint::Percentage(42),
@@ -2067,6 +2106,76 @@ fn render_crons(frame: &mut Frame, app: &App, area: Rect) {
     render_cron_preview(frame, app, right[0]);
     render_cron_timers_panel(frame, app, right[1]);
     render_cron_summary(frame, app, right[2]);
+}
+
+/// CRON · TIMELINE (LAST 24H): a per-job heatmap of when each job is *scheduled*
+/// to run across the next 24 hours, derived from its real cron expression. (Cron
+/// keeps no run history, so this is the schedule, not recorded executions.)
+fn render_cron_timeline(frame: &mut Frame, app: &App, area: Rect) {
+    use chrono::Timelike;
+    let t = app.theme;
+    let block = panel_block(&t, "cron · timeline (next 24h)", app.domain_color());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.crons.is_empty() || inner.height < 2 {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no cron jobs", Style::new().fg(t.fg_dim))),
+            inner,
+        );
+        return;
+    }
+
+    const LABEL_W: usize = 14;
+    // Header: hour ruler, two cols per hour to match the cells below.
+    let mut header = format!("{:>w$} ", "hour →", w = LABEL_W);
+    for h in 0..24 {
+        header.push_str(&format!("{h:02}"));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(header, Style::new().fg(t.fg_dim)))),
+        Rect { height: 1, ..inner },
+    );
+
+    let end = app.now + chrono::Duration::hours(24);
+    let body_area = Rect {
+        y: inner.y + 1,
+        height: inner.height.saturating_sub(1),
+        ..inner
+    };
+    let max_rows = body_area.height as usize;
+    let job_rows = Layout::vertical(vec![Constraint::Length(1); max_rows.max(1)]).split(body_area);
+
+    for (e, row) in app.crons.iter().take(max_rows).zip(job_rows.iter()) {
+        // Bucket scheduled runs by hour-of-day across the 24h window.
+        let mut buckets = [0u32; 24];
+        if let Ok(sched) = parse_schedule(&e.schedule) {
+            let mut cursor = app.now;
+            for _ in 0..4000 {
+                match sched.next_after(cursor) {
+                    Some(next) if next <= end => {
+                        buckets[next.hour() as usize] += 1;
+                        cursor = next;
+                    }
+                    _ => break,
+                }
+            }
+        }
+        let name = clip(&short_cmd(&e.command), LABEL_W);
+        let mut spans = vec![Span::styled(
+            format!("{name:>LABEL_W$} "),
+            Style::new().fg(if e.enabled { t.fg_muted } else { t.fg_dim }),
+        )];
+        for count in buckets {
+            let (glyph, color) = match count {
+                0 => ("··", t.fg_dim),
+                1 => ("▓▓", if e.enabled { t.accent_dim } else { t.fg_dim }),
+                _ => ("██", if e.enabled { t.accent } else { t.fg_dim }),
+            };
+            spans.push(Span::styled(glyph, Style::new().fg(color)));
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), *row);
+    }
 }
 
 fn render_cron_timers_panel(frame: &mut Frame, app: &App, area: Rect) {
@@ -2687,330 +2796,275 @@ fn content_message(app: &App, tab: Tab) -> (String, String) {
 /// The prioritized overview: header, CPU/RAM/swap bars and disk usage.
 /// Dashboard: metric tiles + health score + critical findings + at-a-glance,
 /// laid out as a two-column multi-panel screen (spec §14).
+/// The overview cockpit: a dense, fully-graphical grid (design `tabs1.jsx`
+/// `TabOverview`). A full-width pulse row of live stat tiles, then a 3×2 grid of
+/// memory/disk gauges, top processes by memory, the health ring, exposure by
+/// risk, recent alerts and session notes. Every value is real collector data.
 fn render_dashboard(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
-    let cols =
-        Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).split(area);
-    let left = Layout::vertical([
-        Constraint::Length(5),  // gauge meters
-        Constraint::Length(9),  // history chart
-        Constraint::Min(0),     // domain status cards
-    ])
-    .split(cols[0]);
-    let right = Layout::vertical([
-        Constraint::Length(8),  // health gauge + deductions
-        Constraint::Length(10), // severity bar chart
-        Constraint::Min(0),     // top findings
-        Constraint::Length(5),  // session notes
-    ])
-    .split(cols[1]);
+    let rows = Layout::vertical([Constraint::Length(6), Constraint::Min(0)]).split(area);
+    render_pulse(frame, app, snap, rows[0]);
 
-    render_metric_tiles(frame, app, snap, left[0]);
-    history_chart(
-        frame,
-        &app.theme,
-        left[1],
-        app.visual_style,
-        "CPU / RAM history",
-        &app.cpu_history,
-        &app.mem_history,
-    );
-    render_domain_cards(frame, app, snap, left[2]);
+    let cols = Layout::horizontal([Constraint::Ratio(1, 3); 3]).split(rows[1]);
+    let c1 = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).split(cols[0]);
+    let c2 = Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).split(cols[1]);
+    let c3 = Layout::vertical([Constraint::Min(0), Constraint::Length(5)]).split(cols[2]);
 
-    render_health_panel(frame, app, right[0]);
-    let [crit, high, med, low, info] = app.finding_counts();
-    severity_bars(
-        frame,
-        &app.theme,
-        right[1],
-        [crit as u64, high as u64, med as u64, low as u64, info as u64],
-    );
-    render_findings_panel(frame, app, right[2]);
-    render_session_notes(frame, app, right[3]);
+    render_mem_disks(frame, app, snap, c1[0]);
+    render_top_processes(frame, app, c1[1]);
+    render_health_panel(frame, app, c2[0]);
+    render_exposure_overview(frame, app, c2[1]);
+    render_recent_alerts(frame, app, c3[0]);
+    render_session_notes(frame, app, c3[1]);
 }
 
-/// Map a 0–100 utilisation to a cockpit status band.
-fn usage_status(percent: f64) -> StatusLevel {
-    if percent >= 85.0 {
-        StatusLevel::Crit
-    } else if percent >= 60.0 {
-        StatusLevel::Warn
-    } else {
-        StatusLevel::Ok
+/// Clip a string to `max` display columns, appending `…` when truncated.
+fn clip(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
     }
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        return s.to_owned();
+    }
+    let take = max.saturating_sub(1);
+    format!("{}…", chars[..take].iter().collect::<String>())
 }
 
-/// A per-domain status card with its computed verdict.
-struct DomainCard {
-    accent: ratatui::style::Color,
-    title: &'static str,
-    status: StatusLevel,
-    headline: String,
-    detail: String,
+/// The short, human name of a process: the basename of its first argv token.
+fn short_cmd(cmd: &str) -> String {
+    let first = cmd.split_whitespace().next().unwrap_or(cmd);
+    first.rsplit('/').next().unwrap_or(first).to_owned()
 }
 
-/// The cockpit's per-domain status cards: one accented card per area, each with
-/// a status dot and a one-line, plain-language verdict derived from the real
-/// snapshot. Replaces a dense text grid — the landing answers "is this host OK?"
-/// at a glance; detail lives one keystroke away in each tab.
-fn render_domain_cards(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
-    let block = panel_block(&app.theme, "Status", app.domain_color());
+/// SYSTEM · PULSE: a full-width row of live stat tiles with sparklines.
+fn render_pulse(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
+    let t = &app.theme;
+    let block = panel_block(t, "system · pulse", app.domain_color());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let cards = domain_cards(app, snap);
-    let cells = grid(inner, 4, cards.len());
-    for (card, cell) in cards.iter().zip(cells.iter()) {
-        // Clean by default: just the verdict. Dense mode reveals the secondary
-        // breakdown/totals line.
-        let detail = if app.dense { card.detail.as_str() } else { "" };
-        status_card(
+    let cpu = snap.cpu.busy_percent;
+    let mem = snap.memory.used_percent();
+    let swap = snap.swap.used_percent();
+    let mem_used_g = snap.memory.used_kb() as f64 / 1_048_576.0;
+    let mem_total_g = snap.memory.total_kb as f64 / 1_048_576.0;
+    let worst_disk = snap.disks.iter().max_by_key(|d| d.use_percent);
+    let disk_pct = worst_disk.map(|d| d.use_percent as f64).unwrap_or(0.0);
+
+    struct Tile<'a> {
+        label: String,
+        value: String,
+        color: ratatui::style::Color,
+        spark: Option<&'a [u64]>,
+        sub: String,
+    }
+    let tiles = [
+        Tile { label: "CPU".into(), value: format!("{cpu:.0}%"), color: usage_color(t, cpu), spark: Some(&app.cpu_history), sub: String::new() },
+        Tile { label: format!("MEM {mem_used_g:.1}/{mem_total_g:.0}G"), value: format!("{mem:.0}%"), color: usage_color(t, mem), spark: Some(&app.mem_history), sub: String::new() },
+        Tile { label: "SWAP".into(), value: format!("{swap:.0}%"), color: usage_color(t, swap), spark: None, sub: format!("{:.1}/{:.0}G", snap.swap.used_kb() as f64 / 1_048_576.0, snap.swap.total_kb as f64 / 1_048_576.0) },
+        Tile { label: "LOAD 1·5·15".into(), value: format!("{:.2}", snap.load.one), color: t.fg_strong, spark: None, sub: format!("{:.2} · {:.2}", snap.load.five, snap.load.fifteen) },
+        Tile { label: "DISK".into(), value: format!("{disk_pct:.0}%"), color: usage_color(t, disk_pct), spark: None, sub: worst_disk.map(|d| d.mount.clone()).unwrap_or_default() },
+        Tile { label: "PROCS".into(), value: format!("{}", app.processes.len()), color: t.low, spark: None, sub: format!("{} cores", snap.cpu.cores) },
+        Tile { label: "UPTIME".into(), value: fmt_uptime(snap.uptime_secs), color: t.accent, spark: None, sub: String::new() },
+    ];
+
+    let cells = Layout::horizontal(vec![Constraint::Ratio(1, tiles.len() as u32); tiles.len()]).split(inner);
+    for (tile, cell) in tiles.iter().zip(cells.iter()) {
+        let r = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(*cell);
+        frame.render_widget(
+            Paragraph::new(Span::styled(tile.label.clone(), Style::new().fg(t.fg_dim))),
+            r[0],
+        );
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                tile.value.clone(),
+                Style::new().fg(tile.color).add_modifier(Modifier::BOLD),
+            )),
+            r[1],
+        );
+        if let Some(data) = tile.spark {
+            frame.render_widget(
+                Sparkline::default()
+                    .data(data)
+                    .max(100)
+                    .style(Style::new().fg(tile.color)),
+                r[2],
+            );
+        } else if !tile.sub.is_empty() {
+            frame.render_widget(
+                Paragraph::new(Span::styled(tile.sub.clone(), Style::new().fg(t.fg_muted))),
+                r[2],
+            );
+        }
+    }
+}
+
+/// MEMORY · DISKS: RAM/swap and per-filesystem usage as inline gauge bars.
+fn render_mem_disks(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
+    let t = &app.theme;
+    let block = panel_block(t, "memory · disks", app.domain_color());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut items: Vec<(String, f64, String, ratatui::style::Color)> = Vec::new();
+    let ram = snap.memory.used_percent();
+    items.push(("RAM".into(), ram, format!("{ram:.0}%"), usage_color(t, ram)));
+    if snap.swap.total_kb > 0 {
+        let sw = snap.swap.used_percent();
+        items.push(("swap".into(), sw, format!("{sw:.0}%"), usage_color(t, sw)));
+    }
+    for d in &snap.disks {
+        let p = d.use_percent as f64;
+        items.push((
+            clip(&d.mount, 8),
+            p,
+            format!("{}%", d.use_percent),
+            usage_color(t, p),
+        ));
+    }
+    let rows = Layout::vertical(vec![Constraint::Length(1); items.len()]).split(inner);
+    for ((label, pct, reading, color), row) in items.iter().zip(rows.iter()) {
+        labeled_gauge(frame, t, *row, label, 9, *pct, reading, *color);
+    }
+}
+
+/// PROCESSES · TOP BY MEM: the heaviest processes as proportional gauge bars.
+fn render_top_processes(frame: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let block = panel_block(t, "processes · top by mem", app.domain_color());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.processes.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no process data", Style::new().fg(t.fg_dim))),
+            inner,
+        );
+        return;
+    }
+    let mut procs: Vec<_> = app.processes.iter().collect();
+    procs.sort_by(|a, b| {
+        b.mem_percent
+            .partial_cmp(&a.mem_percent)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let n = (inner.height as usize).min(procs.len());
+    let rows = Layout::vertical(vec![Constraint::Length(1); n]).split(inner);
+    for (p, row) in procs.iter().take(n).zip(rows.iter()) {
+        labeled_gauge(
             frame,
-            &app.theme,
-            *cell,
-            card.accent,
-            card.title,
-            card.status,
-            &card.headline,
-            detail,
+            t,
+            *row,
+            &clip(&short_cmd(&p.command), 14),
+            15,
+            p.mem_percent,
+            &format!("{:.1}%", p.mem_percent),
+            t.magenta,
         );
     }
 }
 
-/// Build the cockpit verdicts. Every value comes from a real collector; cards for
-/// areas with no data report an idle state rather than inventing numbers.
-fn domain_cards(app: &App, snap: &SystemSnapshot) -> Vec<DomainCard> {
-    let mut cards = Vec::new();
+/// EXPOSURE · BY RISK: listening sockets ranked by severity, with scope + owner.
+fn render_exposure_overview(frame: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let block = panel_block(t, "exposure · by risk", app.domain_color());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    // Services: failed units (the only service tier always collected).
-    let failed = app.failed_units.len();
-    cards.push(DomainCard {
-        accent: app.theme.domain(Domain::Services),
-        title: "Services",
-        status: if failed > 0 {
-            StatusLevel::Crit
+    if app.exposures.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no listening sockets", Style::new().fg(t.fg_dim))),
+            inner,
+        );
+        return;
+    }
+    let mut ex: Vec<_> = app.exposures.iter().collect();
+    ex.sort_by(|a, b| {
+        b.severity
+            .partial_cmp(&a.severity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut lines = Vec::new();
+    for e in ex.iter().take(inner.height as usize) {
+        let color = t.severity(e.severity);
+        let proto = match e.listener.protocol {
+            Protocol::Tcp => "tcp",
+            Protocol::Udp => "udp",
+        };
+        let (scope, scope_color) = match e.scope {
+            BindScope::External => (
+                "extern",
+                if e.severity >= Severity::High {
+                    t.critical
+                } else {
+                    t.high
+                },
+            ),
+            BindScope::Loopback => ("loop", t.accent),
+        };
+        let proc = e
+            .listener
+            .process
+            .as_ref()
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "—".to_owned());
+        lines.push(Line::from(vec![
+            Span::styled("● ", Style::new().fg(color)),
+            Span::styled(
+                format!("{proto}:{:<5}", e.listener.port),
+                Style::new().fg(t.fg).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!(" {scope:<6} "), Style::new().fg(scope_color)),
+            Span::styled(clip(&proc, 14), Style::new().fg(t.magenta)),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// RECENT · ALERTS & EVENTS: the latest log lines, colored by severity.
+fn render_recent_alerts(frame: &mut Frame, app: &App, area: Rect) {
+    let t = &app.theme;
+    let block = panel_block(t, "recent · alerts & events", app.domain_color());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.logs.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no recent log lines", Style::new().fg(t.fg_dim))),
+            inner,
+        );
+        return;
+    }
+    let msg_width = (inner.width as usize).saturating_sub(28);
+    let mut lines = Vec::new();
+    for e in app.logs.iter().take(inner.height as usize) {
+        let color = log_priority_color(app, e);
+        let lvl = if e.priority <= 3 {
+            "ERR"
+        } else if e.priority == 4 {
+            "WARN"
+        } else if e.priority <= 6 {
+            "INFO"
         } else {
-            StatusLevel::Ok
-        },
-        headline: if failed > 0 {
-            format!("{failed} failed")
-        } else {
-            "all up".to_owned()
-        },
-        detail: String::new(),
-    });
-
-    // Network: externally reachable, sensitive exposures.
-    let risky = app.risky_exposure_count();
-    let listening = app.exposures.len();
-    cards.push(if app.network.is_none() && listening == 0 {
-        DomainCard {
-            accent: app.theme.domain(Domain::Network),
-            title: "Network",
-            status: StatusLevel::Idle,
-            headline: "no data".to_owned(),
-            detail: String::new(),
-        }
-    } else {
-        DomainCard {
-            accent: app.theme.domain(Domain::Network),
-            title: "Network",
-            status: if risky > 0 {
-                StatusLevel::Crit
-            } else {
-                StatusLevel::Ok
-            },
-            headline: if risky > 0 {
-                format!("{risky} risky")
-            } else {
-                "no risky ports".to_owned()
-            },
-            detail: format!("{listening} listening"),
-        }
-    });
-
-    // Docker: running containers (informational; risks live in the Docker tab).
-    let running = app.containers.iter().filter(|c| c.is_running()).count();
-    cards.push(if !app.docker_available {
-        DomainCard {
-            accent: app.theme.domain(Domain::Docker),
-            title: "Docker",
-            status: StatusLevel::Idle,
-            headline: "not installed".to_owned(),
-            detail: String::new(),
-        }
-    } else {
-        DomainCard {
-            accent: app.theme.domain(Domain::Docker),
-            title: "Docker",
-            status: if app.containers.is_empty() {
-                StatusLevel::Idle
-            } else {
-                StatusLevel::Ok
-            },
-            headline: format!("{running} running"),
-            detail: format!("{} total", app.containers.len()),
-        }
-    });
-
-    // Security: active findings by severity.
-    let [crit, high, med, ..] = app.finding_counts();
-    cards.push(DomainCard {
-        accent: app.theme.domain(Domain::Security),
-        title: "Security",
-        status: if crit > 0 {
-            StatusLevel::Crit
-        } else if high > 0 {
-            StatusLevel::Warn
-        } else {
-            StatusLevel::Ok
-        },
-        headline: if crit > 0 {
-            format!("{crit} critical")
-        } else if high > 0 {
-            format!("{high} high")
-        } else {
-            "no critical".to_owned()
-        },
-        detail: format!("{high} high · {med} med"),
-    });
-
-    // Logs: error/critical lines in the visible window.
-    let errors = app.logs.iter().filter(|e| e.is_error()).count();
-    cards.push(if app.logs.is_empty() {
-        DomainCard {
-            accent: app.theme.domain(Domain::Logs),
-            title: "Logs",
-            status: StatusLevel::Idle,
-            headline: "no logs".to_owned(),
-            detail: String::new(),
-        }
-    } else {
-        DomainCard {
-            accent: app.theme.domain(Domain::Logs),
-            title: "Logs",
-            status: if errors > 0 {
-                StatusLevel::Warn
-            } else {
-                StatusLevel::Ok
-            },
-            headline: if errors > 0 {
-                format!("{errors} errors")
-            } else {
-                "no errors".to_owned()
-            },
-            detail: "in window".to_owned(),
-        }
-    });
-
-    // Crons: scheduled jobs + systemd timers (informational).
-    let jobs = app.crons.len();
-    let timers = app.timers.len();
-    cards.push(DomainCard {
-        accent: app.theme.domain(Domain::Crons),
-        title: "Crons",
-        status: if jobs == 0 && timers == 0 {
-            StatusLevel::Idle
-        } else {
-            StatusLevel::Ok
-        },
-        headline: format!("{jobs} jobs"),
-        detail: format!("{timers} timers"),
-    });
-
-    // Databases: detected instances, flagging externally reachable ones.
-    let dbs = app.databases.instances.len();
-    let exposed = app
-        .databases
-        .instances
-        .iter()
-        .filter(|i| i.is_externally_reachable())
-        .count();
-    cards.push(if dbs == 0 {
-        DomainCard {
-            accent: app.theme.domain(Domain::Databases),
-            title: "Databases",
-            status: StatusLevel::Idle,
-            headline: "none".to_owned(),
-            detail: String::new(),
-        }
-    } else {
-        DomainCard {
-            accent: app.theme.domain(Domain::Databases),
-            title: "Databases",
-            status: if exposed > 0 {
-                StatusLevel::Crit
-            } else {
-                StatusLevel::Ok
-            },
-            headline: if exposed > 0 {
-                format!("{exposed} exposed")
-            } else {
-                format!("{dbs} instances")
-            },
-            detail: if exposed > 0 {
-                format!("{dbs} instances")
-            } else {
-                String::new()
-            },
-        }
-    });
-
-    // System: load relative to core count, plus uptime/users context.
-    let load_pct = if snap.cpu.cores > 0 {
-        (snap.load.one / snap.cpu.cores as f64 * 100.0).min(100.0)
-    } else {
-        0.0
-    };
-    cards.push(DomainCard {
-        accent: app.theme.domain(Domain::System),
-        title: "System",
-        status: usage_status(load_pct),
-        headline: format!("load {:.2}", snap.load.one),
-        detail: format!(
-            "up {} · {} users",
-            human_uptime(snap.uptime_secs),
-            snap.users.len()
-        ),
-    });
-
-    // Updates: pending package updates, security ones highlighted. No domain hue
-    // (it spans the host), so it uses the brand accent.
-    let pkg = &app.packages;
-    cards.push(if !pkg.available {
-        DomainCard {
-            accent: app.theme.accent,
-            title: "Updates",
-            status: StatusLevel::Idle,
-            headline: "n/a".to_owned(),
-            detail: String::new(),
-        }
-    } else {
-        DomainCard {
-            accent: app.theme.accent,
-            title: "Updates",
-            status: if pkg.security > 0 {
-                StatusLevel::Crit
-            } else if pkg.pending > 0 {
-                StatusLevel::Warn
-            } else {
-                StatusLevel::Ok
-            },
-            headline: if pkg.security > 0 {
-                format!("{} security", pkg.security)
-            } else if pkg.pending > 0 {
-                format!("{} pending", pkg.pending)
-            } else {
-                "up to date".to_owned()
-            },
-            detail: if pkg.security > 0 {
-                format!("{} pending", pkg.pending)
-            } else {
-                String::new()
-            },
-        }
-    });
-
-    cards
+            "DBG"
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{} ", e.time), Style::new().fg(t.fg_dim)),
+            Span::styled(
+                format!("{lvl:<4} "),
+                Style::new().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(clip(&e.identifier, 13), Style::new().fg(t.magenta)),
+            Span::raw(" "),
+            Span::styled(clip(&e.message, msg_width), Style::new().fg(t.fg)),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Per-host session notes, persisted in the local state store. The newest notes
@@ -3041,14 +3095,16 @@ fn render_session_notes(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
-/// A rounded, titled panel block in the theme's surface style.
+/// A square, titled panel block in the theme's surface style. The dense CRT
+/// look: single-line borders and an UPPERCASE accented title.
 fn panel_block(theme: &Theme, title: &str, accent: ratatui::style::Color) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(Style::new().fg(theme.border))
+        .style(Style::new().bg(theme.bg_elev))
         .title(Span::styled(
-            format!(" {title} "),
+            format!(" {} ", title.to_uppercase()),
             Style::new().fg(accent).add_modifier(Modifier::BOLD),
         ))
 }
@@ -3062,40 +3118,6 @@ fn usage_color(theme: &Theme, percent: f64) -> ratatui::style::Color {
     } else {
         theme.accent
     }
-}
-
-/// The four top metric tiles: CPU, RAM, DISK, LOAD.
-fn render_metric_tiles(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
-    let cells = Layout::horizontal([Constraint::Ratio(1, 4); 4]).split(area);
-    let t = &app.theme;
-
-    let cpu = snap.cpu.busy_percent;
-    meter_gauge(frame, t, cells[0], "CPU", cpu, &format!("{cpu:.0}%"), usage_color(t, cpu));
-
-    let ram = snap.memory.used_percent();
-    meter_gauge(frame, t, cells[1], "RAM", ram, &format!("{ram:.0}%"), usage_color(t, ram));
-
-    let worst = snap.disks.iter().max_by_key(|d| d.use_percent);
-    let (dpct, dlabel) = match worst {
-        Some(d) => (d.use_percent as f64, format!("{}% {}", d.use_percent, d.mount)),
-        None => (0.0, "no disks".to_owned()),
-    };
-    meter_gauge(frame, t, cells[2], "DISK", dpct, &dlabel, usage_color(t, dpct));
-
-    let load_pct = if snap.cpu.cores > 0 {
-        (snap.load.one / snap.cpu.cores as f64 * 100.0).min(100.0)
-    } else {
-        0.0
-    };
-    meter_gauge(
-        frame,
-        t,
-        cells[3],
-        "LOAD",
-        load_pct,
-        &format!("{:.2} / {}c", snap.load.one, snap.cpu.cores),
-        usage_color(t, load_pct),
-    );
 }
 
 /// Health-score panel: the score, a gauge, and the deduction breakdown.
@@ -3148,54 +3170,6 @@ fn render_health_panel(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines), rows[1]);
 }
 
-/// Worst-first findings list with severity-colored left edge bars (spec §14).
-fn render_findings_panel(frame: &mut Frame, app: &App, area: Rect) {
-    let block = panel_block(&app.theme, "Top findings", app.domain_color());
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let t = app.theme;
-
-    if app.findings.is_empty() {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                "no findings — clean",
-                Style::new().fg(t.accent),
-            )),
-            inner,
-        );
-        return;
-    }
-
-    let max = (inner.height as usize / 2).max(1);
-    let mut lines: Vec<Line> = Vec::new();
-    for f in app.findings.iter().take(max) {
-        let color = t.severity(f.severity);
-        let sev = format!("{:?}", f.severity).to_uppercase();
-        lines.push(Line::from(vec![
-            Span::styled("▌ ", Style::new().fg(color)),
-            Span::styled(
-                format!("{sev:<5} "),
-                Style::new().fg(color).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(f.title.clone(), Style::new().fg(t.fg_strong)),
-        ]));
-        // Prefer evidence; fall back to the recommendation; never leak the raw id.
-        if let Some(evidence) = f.evidence.first() {
-            lines.push(Line::from(Span::styled(
-                format!("    {evidence}"),
-                Style::new().fg(t.fg_muted),
-            )));
-        } else if !f.recommendation.is_empty() {
-            lines.push(Line::from(Span::styled(
-                format!("    → {}", f.recommendation),
-                Style::new().fg(t.fg_dim),
-            )));
-        }
-    }
-    frame.render_widget(Paragraph::new(lines), inner);
-}
-
-
 fn finding_line(app: &App, check: &systui_collectors::Check) -> Line<'static> {
     let color = app.theme.severity(check.severity);
     let label = format!("{:?}", check.severity).to_uppercase();
@@ -3215,18 +3189,76 @@ fn render_system(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect
     let cols =
         Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)]).split(area);
 
-    // Clean by default: identity + memory, the "what is this host" essentials.
+    // Clean by default: identity + load history on the left, memory on the right.
     // Dense adds the disks and logged-in users panels.
     if app.dense {
-        let left = Layout::vertical([Constraint::Length(10), Constraint::Min(0)]).split(cols[0]);
+        let left = Layout::vertical([
+            Constraint::Length(10),
+            Constraint::Length(6),
+            Constraint::Min(0),
+        ])
+        .split(cols[0]);
         let right = Layout::vertical([Constraint::Length(7), Constraint::Min(0)]).split(cols[1]);
         render_system_identity(frame, app, snap, left[0]);
-        render_system_disks(frame, app, snap, left[1]);
+        render_system_load(frame, app, snap, left[1]);
+        render_system_disks(frame, app, snap, left[2]);
         render_system_memory(frame, app, snap, right[0]);
         render_system_users(frame, app, snap, right[1]);
     } else {
-        render_system_identity(frame, app, snap, cols[0]);
+        let left = Layout::vertical([Constraint::Length(10), Constraint::Min(0)]).split(cols[0]);
+        render_system_identity(frame, app, snap, left[0]);
+        render_system_load(frame, app, snap, left[1]);
         render_system_memory(frame, app, snap, cols[1]);
+    }
+}
+
+/// LOAD · CPU history: the 1/5/15 load averages with a live CPU-busy sparkline.
+fn render_system_load(frame: &mut Frame, app: &App, snap: &SystemSnapshot, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "load · cpu history", app.domain_color());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
+    let sat = if snap.cpu.cores > 0 {
+        snap.load.one / snap.cpu.cores as f64
+    } else {
+        snap.load.one
+    };
+    let sat_color = usage_color(&t, sat * 100.0);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{:.2}", snap.load.one),
+                Style::new().fg(sat_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  ·  {:.2}  ·  {:.2}", snap.load.five, snap.load.fifteen),
+                Style::new().fg(t.fg_muted),
+            ),
+            Span::styled(
+                format!("   {} cores · sat {sat:.2}", snap.cpu.cores),
+                Style::new().fg(t.fg_dim),
+            ),
+        ])),
+        rows[0],
+    );
+    if app.cpu_history.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("gathering history…", Style::new().fg(t.fg_dim))),
+            rows[1],
+        );
+    } else {
+        frame.render_widget(
+            Sparkline::default()
+                .data(&app.cpu_history)
+                .max(100)
+                .style(Style::new().fg(t.accent)),
+            rows[1],
+        );
     }
 }
 
@@ -3426,6 +3458,7 @@ fn human_uptime(secs: u64) -> String {
 
 /// Status bar: contextual key hints on the left, a live indicator on the right.
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+    frame.render_widget(Block::default().style(Style::new().bg(app.theme.bg_elev)), area);
     let hints: &[(&str, &str)] = match app.current_tab() {
         Tab::Crons => &[
             ("r", "refresh"),
@@ -3515,7 +3548,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
-    let cols = Layout::horizontal([Constraint::Min(10), Constraint::Length(40)]).split(area);
+    let cols = Layout::horizontal([Constraint::Min(10), Constraint::Length(46)]).split(area);
     // A transient status message (e.g. an export result) takes over the hint row.
     if let Some(msg) = &app.status_message {
         frame.render_widget(
@@ -3541,10 +3574,10 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         .fg(app.theme.accent)
         .add_modifier(Modifier::BOLD);
     let right = Line::from(vec![
-        Span::styled("V ", key_style),
+        Span::styled("view ", Style::new().fg(app.theme.fg_dim)),
         Span::styled(
-            format!("{}  ", app.visual_style.label()),
-            Style::new().fg(app.theme.fg_dim),
+            format!("{}  ", app.current_tab().title().to_lowercase()),
+            Style::new().fg(app.theme.accent).add_modifier(Modifier::BOLD),
         ),
         Span::styled("T ", key_style),
         Span::styled(
@@ -3552,7 +3585,11 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             Style::new().fg(app.theme.fg_dim),
         ),
         Span::styled(format!("{dot} "), Style::new().fg(color)),
-        Span::styled(format!("{label} "), Style::new().fg(app.theme.fg_muted)),
+        Span::styled(format!("{label}  "), Style::new().fg(app.theme.fg_muted)),
+        Span::styled(
+            format!("v{} ", env!("CARGO_PKG_VERSION")),
+            Style::new().fg(app.theme.fg_dim),
+        ),
     ]);
     frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), cols[1]);
 }
@@ -3585,7 +3622,7 @@ fn render_help(frame: &mut Frame, app: &App) {
         ("/", "search logs (Esc to clear)"),
         ("l", "cycle log level (Logs tab)"),
         ("e", "export the current logs to JSON (Logs tab)"),
-        ("T", "cycle theme (dark / midnight / light)"),
+        ("T", "cycle theme (phosphor / ember)"),
         ("V", "cycle visual style (sober / rich)"),
         ("D", "toggle dense mode (more detail per screen)"),
         ("?", "toggle this help"),
@@ -3680,15 +3717,102 @@ mod tests {
     #[test]
     fn renders_chrome_and_empty_state() {
         let app = App::new("prod-01", ExecutionMode::ReadOnly);
-        // 120 cols so the full 10-tab bar (through "Security") is visible.
+        // 120 cols so the full 10-tab bar (through "security") is visible.
         let out = render_to_string(&app, 120, 24);
-        assert!(out.contains("SysTUI"));
+        assert!(out.contains('█')); // ASCII SYSTOOLS wordmark
         assert!(out.contains("prod-01"));
         assert!(out.contains("READ-ONLY"));
-        assert!(out.contains("Dashboard"));
-        assert!(out.contains("Security"));
+        assert!(out.contains("dashboard"));
+        assert!(out.contains("security"));
         assert!(out.contains("q quit"));
         assert!(out.contains("No data yet"));
+    }
+
+    #[test]
+    #[ignore = "manual: prints the rendered overview to stdout"]
+    fn dump_overview() {
+        use systui_collectors::{Check, HealthReport, HostCapabilities};
+        use systui_core::Severity;
+        let mut app = App::new("aurora-prod-01", ExecutionMode::Privileged);
+        app.snapshot = Some(sample_snapshot());
+        app.capabilities = Some(HostCapabilities {
+            user: "root".to_owned(),
+            uid: Some(0),
+            can_sudo: true,
+        });
+        app.health = Some(HealthReport {
+            score: 67,
+            checks: vec![
+                Check {
+                    severity: Severity::High,
+                    message: "2 failed services".to_owned(),
+                    points: 14,
+                },
+                Check {
+                    severity: Severity::Medium,
+                    message: "3 security updates pending".to_owned(),
+                    points: 8,
+                },
+            ],
+        });
+        app.cpu_history = (0..60).map(|i| 30 + (i * 7 % 40) as u64).collect();
+        app.mem_history = (0..60).map(|i| 50 + (i * 3 % 25) as u64).collect();
+        let proc = |pid, user: &str, cpu, mem, cmd: &str| systui_collectors::Process {
+            pid,
+            ppid: 1,
+            user: user.to_owned(),
+            cpu_percent: cpu,
+            mem_percent: mem,
+            command: cmd.to_owned(),
+        };
+        app.processes = vec![
+            proc(1602, "postgres", 3.2, 28.4, "/usr/lib/postgresql/15/bin/postgres -D /var/lib"),
+            proc(3104, "prom", 8.2, 15.1, "/usr/bin/prometheus --config.file=/etc/prom.yml"),
+            proc(2890, "root", 6.7, 11.6, "nginx: master process /usr/sbin/nginx"),
+            proc(3204, "grafana", 1.4, 9.7, "grafana-server --homepath=/usr/share/grafana"),
+            proc(1812, "redis", 1.1, 4.3, "redis-server *:6379"),
+            proc(1442, "alvaro", 12.4, 2.6, "systools --tui"),
+        ];
+        let listener = |port, ip: &str, name: &str| systui_collectors::Listener {
+            protocol: systui_collectors::Protocol::Tcp,
+            local_ip: ip.to_owned(),
+            port,
+            process: Some(systui_collectors::ProcessRef {
+                pid: 0,
+                name: name.to_owned(),
+            }),
+            unit: None,
+        };
+        let expo = |port, ip: &str, name: &str, scope, sev| systui_collectors::ExposureEntry {
+            listener: listener(port, ip, name),
+            scope,
+            sensitive_service: None,
+            severity: sev,
+            evidence: String::new(),
+        };
+        app.exposures = vec![
+            expo(9090, "0.0.0.0", "prometheus", BindScope::External, Severity::High),
+            expo(2376, "0.0.0.0", "dockerd", BindScope::External, Severity::Critical),
+            expo(443, "0.0.0.0", "nginx", BindScope::External, Severity::Low),
+            expo(22, "0.0.0.0", "sshd", BindScope::External, Severity::Medium),
+            expo(5432, "127.0.0.1", "postgres", BindScope::Loopback, Severity::Info),
+        ];
+        let log = |time: &str, prio, id: &str, msg: &str| LogEntry {
+            time: time.to_owned(),
+            priority: prio,
+            identifier: id.to_owned(),
+            message: msg.to_owned(),
+        };
+        app.logs = vec![
+            log("12:42:11", 3, "systools-collect", "docker collector timed out (3.0s)"),
+            log("12:41:03", 4, "fail2ban", "banned 2 IPs in /24"),
+            log("12:40:55", 6, "docker", "log-shipper restarted (back-off 14s)"),
+            log("12:38:00", 6, "apt", "cache refreshed · 3 security updates"),
+            log("12:35:18", 4, "exposure", "dockerd :2376 reachable from LAN"),
+        ];
+        app.view_state = ViewState::Ready;
+        app.select_tab(0);
+        println!("\n{}", render_to_string(&app, 120, 38));
     }
 
     #[test]
@@ -3722,6 +3846,37 @@ mod tests {
         assert!(out.contains("Help"));
         assert!(out.contains("next tab"));
         assert!(out.contains("quit"));
+    }
+
+    #[test]
+    #[ignore = "manual: prints the rendered cron tab to stdout"]
+    fn dump_cron() {
+        use systui_collectors::{CronEntry, CronSource};
+        let mut app = App::new("aurora-prod-01", ExecutionMode::Privileged);
+        app.snapshot = Some(sample_snapshot());
+        let cron = |sched: &str, user: &str, cmd: &str, src| CronEntry {
+            schedule: sched.to_owned(),
+            user: Some(user.to_owned()),
+            command: cmd.to_owned(),
+            source: src,
+            origin: "/etc/crontab".to_owned(),
+            enabled: true,
+        };
+        app.crons = vec![
+            cron("17 * * * *", "root", "run-parts /etc/cron.hourly", CronSource::System),
+            cron("25 6 * * *", "root", "run-parts /etc/cron.daily", CronSource::System),
+            cron("*/5 * * * *", "alvaro", "/home/alvaro/bin/sync-notes.sh", CronSource::User),
+            cron("0 */2 * * *", "alvaro", "/srv/systools/scripts/snapshot.sh", CronSource::User),
+            cron("30 3 * * *", "postgres", "/usr/bin/pg_dump -Fc db_main", CronSource::CronD),
+            cron("5-55/10 * * * *", "root", "debian-sa1 1 1", CronSource::CronD),
+        ];
+        app.now = chrono::NaiveDate::from_ymd_opt(2026, 5, 29)
+            .unwrap()
+            .and_hms_opt(8, 49, 0)
+            .unwrap();
+        app.view_state = ViewState::Ready;
+        app.select_tab(7); // Crons
+        println!("\n{}", render_to_string(&app, 120, 38));
     }
 
     fn sample_snapshot() -> SystemSnapshot {
@@ -3784,9 +3939,9 @@ mod tests {
         app.view_state = ViewState::Ready;
 
         let out = render_to_string(&app, 100, 24);
-        // The hostname now lives in the chrome (host label "local"); the body
-        // shows the metric tiles for the snapshot.
-        assert!(out.contains("local"));
+        // The hostname from the snapshot is shown in the top-bar meta grid; the
+        // pulse row + gauges show the snapshot vitals.
+        assert!(out.contains("prod-01"));
         assert!(out.contains("CPU"));
         assert!(out.contains("RAM"));
         assert!(out.contains("DISK"));
@@ -3807,9 +3962,10 @@ mod tests {
         assert!(out.contains("Kernel"));
         assert!(out.contains("6.1.0-18-amd64"));
         // Multi-panel layout: identity, memory gauges, disks and logged-in users.
-        assert!(out.contains("Memory"));
-        assert!(out.contains("Disks"));
-        assert!(out.contains("Logged in"));
+        // Panel titles render UPPERCASE in the CRT look.
+        assert!(out.contains("MEMORY"));
+        assert!(out.contains("DISKS"));
+        assert!(out.contains("LOGGED IN"));
         assert!(out.contains("admin"));
         // New vitals: CPU model and virtualization.
         assert!(out.contains("Xeon"));
@@ -3855,7 +4011,7 @@ mod tests {
         // Detail panel reflects the selected process (top of the CPU sort: node).
         // Render tall: a CPU bar chart now sits above the table on this tab.
         let out = render_to_string(&app, 110, 28);
-        assert!(out.contains("Process")); // detail panel title
+        assert!(out.contains("PROCESS")); // detail panel title (uppercase)
         assert!(out.contains("Parent")); // parent row
         assert!(out.contains("sshd (880)")); // node's parent resolved by ppid
 
@@ -3918,18 +4074,61 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_cockpit_shows_domain_status_cards() {
+    fn dashboard_shows_graphical_panels() {
         let mut app = App::new("local", ExecutionMode::ReadOnly);
         app.snapshot = Some(sample_snapshot());
         app.view_state = ViewState::Ready;
 
         let out = render_to_string(&app, 120, 36);
-        // The cockpit replaces the dense at-a-glance grid with accented cards.
-        assert!(out.contains("Status"));
-        assert!(out.contains("Services"));
-        assert!(out.contains("Security"));
-        // With no failures collected, Services reports a clean verdict.
-        assert!(out.contains("all up"));
+        // The overview is a graphical grid of titled panels (no text status cards).
+        assert!(out.contains("SYSTEM · PULSE"));
+        assert!(out.contains("MEMORY · DISKS"));
+        assert!(out.contains("PROCESSES · TOP BY MEM"));
+        assert!(out.contains("EXPOSURE · BY RISK"));
+        assert!(out.contains("RECENT · ALERTS & EVENTS"));
+        // Pulse + gauge readings come from the real snapshot.
+        assert!(out.contains("RAM"));
+        assert!(out.contains("UPTIME"));
+    }
+
+    #[test]
+    fn dashboard_pulse_and_panels_show_real_data() {
+        use systui_collectors::{ExposureEntry, Listener, Process, ProcessRef, Protocol};
+        let mut app = App::new("local", ExecutionMode::ReadOnly);
+        app.snapshot = Some(sample_snapshot());
+        app.processes = vec![Process {
+            pid: 1602,
+            ppid: 1,
+            user: "postgres".into(),
+            cpu_percent: 3.2,
+            mem_percent: 28.4,
+            command: "/usr/lib/postgresql/15/bin/postgres".into(),
+        }];
+        app.exposures = vec![ExposureEntry {
+            listener: Listener {
+                protocol: Protocol::Tcp,
+                local_ip: "0.0.0.0".into(),
+                port: 9090,
+                process: Some(ProcessRef {
+                    pid: 3104,
+                    name: "prometheus".into(),
+                }),
+                unit: None,
+            },
+            scope: BindScope::External,
+            sensitive_service: None,
+            severity: Severity::High,
+            evidence: String::new(),
+        }];
+        app.view_state = ViewState::Ready;
+
+        let out = render_to_string(&app, 120, 36);
+        // Process bar uses the basename + real mem%; exposure shows port/scope/proc.
+        assert!(out.contains("postgres"));
+        assert!(out.contains("28.4%"));
+        assert!(out.contains("tcp:9090"));
+        assert!(out.contains("extern"));
+        assert!(out.contains("prometheus"));
     }
 
     #[test]
@@ -3954,8 +4153,9 @@ mod tests {
 
         let out = render_to_string(&app, 120, 32);
         assert!(out.contains("was 91 7d ago"));
-        assert!(out.contains("Session notes"));
-        assert!(out.contains("reviewed nginx errors"));
+        assert!(out.contains("SESSION NOTES"));
+        // The notes column is narrow, so the text may wrap; check a contiguous run.
+        assert!(out.contains("reviewed nginx"));
     }
 
     #[test]
@@ -3980,75 +4180,8 @@ mod tests {
         app.dense = true; // the analysis rail (saved searches) lives in dense mode
         app.state.add_search("nginx timeout");
         let out = render_to_string(&app, 130, 30);
-        assert!(out.contains("Saved searches"));
+        assert!(out.contains("SAVED SEARCHES"));
         assert!(out.contains("nginx timeout"));
-    }
-
-    #[test]
-    fn dashboard_updates_card_highlights_security() {
-        use systui_collectors::PackageUpdates;
-        let mut app = App::new("local", ExecutionMode::ReadOnly);
-        app.snapshot = Some(sample_snapshot());
-        app.packages = PackageUpdates {
-            manager: "apt".to_owned(),
-            pending: 23,
-            security: 2,
-            available: true,
-        };
-        app.view_state = ViewState::Ready;
-        app.dense = true; // the secondary "pending" detail shows in dense mode
-
-        // The visual dashboard (gauges + history chart) leaves the cockpit cards
-        // lower down; render tall so the cards have room for their detail line.
-        let out = render_to_string(&app, 120, 44);
-        assert!(out.contains("Updates"));
-        assert!(out.contains("2 security"));
-        assert!(out.contains("23 pending"));
-    }
-
-    #[test]
-    fn dense_mode_reveals_card_detail() {
-        use systui_collectors::PackageUpdates;
-        let mut app = App::new("local", ExecutionMode::ReadOnly);
-        app.snapshot = Some(sample_snapshot());
-        app.packages = PackageUpdates {
-            manager: "apt".to_owned(),
-            pending: 23,
-            security: 2,
-            available: true,
-        };
-        app.view_state = ViewState::Ready;
-
-        // Clean default: only the verdict headline, no secondary detail.
-        let clean = render_to_string(&app, 120, 44);
-        assert!(clean.contains("2 security"));
-        assert!(!clean.contains("23 pending"));
-
-        // Dense reveals the breakdown/totals line.
-        app.dense = true;
-        let dense = render_to_string(&app, 120, 44);
-        assert!(dense.contains("23 pending"));
-    }
-
-    #[test]
-    fn dashboard_shows_failed_unit_count() {
-        use systui_collectors::ServiceUnit;
-        let mut app = App::new("local", ExecutionMode::ReadOnly);
-        app.snapshot = Some(sample_snapshot());
-        app.failed_units = vec![ServiceUnit {
-            name: "nginx.service".to_owned(),
-            load: "loaded".to_owned(),
-            active: "failed".to_owned(),
-            sub: "failed".to_owned(),
-            description: "web server".to_owned(),
-        }];
-        app.view_state = ViewState::Ready;
-
-        // The multi-panel dashboard (incl. the session-notes panel) targets a
-        // tall terminal like the prototype's; render at a realistic height.
-        let out = render_to_string(&app, 120, 36);
-        assert!(out.contains("Services"));
-        assert!(out.contains("1 failed"));
     }
 
     #[test]
@@ -4173,7 +4306,7 @@ mod tests {
         app.view_state = ViewState::Ready;
 
         let out = render_to_string(&app, 100, 30);
-        assert!(out.contains("Health score"));
+        assert!(out.contains("HEALTH SCORE"));
         assert!(out.contains("72"));
         assert!(out.contains("/100"));
         assert!(out.contains("CRITICAL"));
@@ -4238,16 +4371,16 @@ mod tests {
         app.dense = true; // interfaces/connections panels live in dense mode
 
         // The exposure map is information-dense; render wide (the prototype is 200 cols).
-        let out = render_to_string(&app, 130, 30);
-        assert!(out.contains("Interfaces"));
+        let out = render_to_string(&app, 130, 34);
+        assert!(out.contains("INTERFACES"));
         assert!(out.contains("eth0"));
         assert!(out.contains("192.168.1.1")); // gateway
-        assert!(out.contains("Exposure map"));
+        assert!(out.contains("EXPOSURE MAP"));
         assert!(out.contains("CRIT")); // redis on 0.0.0.0:6379
         assert!(out.contains("6379"));
         assert!(out.contains("redis.service"));
         // Connections panel lists the real established peer, not just a count.
-        assert!(out.contains("Connections"));
+        assert!(out.contains("CONNECTIONS"));
         assert!(out.contains("10.0.0.2:51000"));
     }
 
@@ -4264,10 +4397,10 @@ mod tests {
 
         let out = render_to_string(&app, 130, 30);
         // The primary exposure map is shown…
-        assert!(out.contains("Exposure map"));
+        assert!(out.contains("EXPOSURE MAP"));
         assert!(out.contains("6379"));
         // …but the secondary rail panels are hidden until dense mode.
-        assert!(!out.contains("Interfaces"));
+        assert!(!out.contains("INTERFACES"));
         assert!(!out.contains("Connections"));
     }
 
@@ -4291,7 +4424,7 @@ mod tests {
 
         // Render tall: a severity bar chart now bands the top of the Network tab.
         let out = render_to_string(&app, 130, 40);
-        assert!(out.contains("Firewall"));
+        assert!(out.contains("FIREWALL"));
         assert!(out.contains("nftables"));
         assert!(out.contains("6 active"));
     }
@@ -4308,7 +4441,7 @@ mod tests {
 
         // Before running, the panel invites the user to probe.
         let out = render_to_string(&app, 130, 30);
-        assert!(out.contains("Connectivity tests"));
+        assert!(out.contains("CONNECTIVITY TESTS"));
         assert!(out.contains("press c to test"));
 
         // After a run, results are listed with their reachability.
@@ -4374,28 +4507,6 @@ mod tests {
         app.select_tab(9);
         let out = render_to_string(&app, 100, 24);
         assert!(out.contains("no findings"));
-    }
-
-    #[test]
-    fn dashboard_shows_security_summary() {
-        use systui_core::{Finding, ModuleId, Severity};
-        let mut app = App::new("local", ExecutionMode::ReadOnly);
-        app.snapshot = Some(sample_snapshot());
-        app.findings = vec![Finding::new(
-            "net.sensitive-port.6379",
-            Severity::Critical,
-            ModuleId::Network,
-            "Sensitive service exposed",
-        )];
-        app.view_state = ViewState::Ready;
-
-        // The cockpit's findings rail targets a wide terminal like the prototype.
-        let out = render_to_string(&app, 120, 40);
-        // The Security cockpit card summarises the critical finding…
-        assert!(out.contains("Security"));
-        assert!(out.contains("1 critical"));
-        // …and the finding itself surfaces in the Top findings panel.
-        assert!(out.contains("Sensitive service exposed"));
     }
 
     #[test]
@@ -4527,7 +4638,7 @@ mod tests {
         assert!(out.contains("redis"));
         assert!(out.contains("redis:latest"));
         assert!(out.contains("unhealthy"));
-        assert!(out.contains("Risk checks"));
+        assert!(out.contains("RISK CHECKS"));
         // The privileged container surfaces in the detail panel and as a RISK badge.
         assert!(out.contains("privileged"));
         assert!(out.contains("RISK"));
@@ -4561,10 +4672,10 @@ mod tests {
 
         // Render tall: a CPU bar chart now bands the top of the Docker tab.
         let out = render_to_string(&app, 120, 44);
-        assert!(out.contains("Compose projects"));
+        assert!(out.contains("COMPOSE PROJECTS"));
         assert!(out.contains("acme-stack"));
         assert!(out.contains("5 services"));
-        assert!(out.contains("Image hygiene"));
+        assert!(out.contains("IMAGE HYGIENE"));
         assert!(out.contains("23 images"));
         assert!(out.contains("2 dangling"));
         // A writable mode invites the prune.
@@ -4682,7 +4793,8 @@ mod tests {
         app.select_tab(8); // Databases
         app.dense = true; // the operational detail pane lives in dense mode
 
-        let out = render_to_string(&app, 120, 34);
+        // Taller CRT header → render a bit taller so the dense panels all fit.
+        let out = render_to_string(&app, 120, 40);
         assert!(out.contains("Redis"));
         assert!(out.contains("0.0.0.0:6379"));
         assert!(out.contains("external"));

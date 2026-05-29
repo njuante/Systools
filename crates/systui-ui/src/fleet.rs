@@ -451,7 +451,7 @@ pub fn render_fleet(frame: &mut Frame, overview: &FleetOverview, theme: &Theme, 
 fn render_title(frame: &mut Frame, overview: &FleetOverview, theme: &Theme, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(Style::new().fg(theme.border));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -570,7 +570,7 @@ fn render_host_card(
     let border = if selected { theme.accent } else { theme.border };
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(Style::new().fg(border));
     let inner = block.inner(area);
     frame.render_widget(block, area);

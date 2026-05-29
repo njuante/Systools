@@ -2,9 +2,10 @@
 //!
 //! [`Theme`] is the single source of truth for every color in the TUI: screen
 //! code reads colors from here, and there are no inline `Color::Rgb(...)` calls
-//! elsewhere. Three themes ship today — an enriched dark, a neon "midnight" and
-//! a light theme — selected at runtime via [`ThemeKind`] and cycled with the
-//! theme key. The selection is persisted in `[general] theme` of the config.
+//! elsewhere. Two CRT-terminal palettes ship — **phosphor** (cool greens/cyans
+//! on near-black) and **ember** (warm ambers/reds on warm black) — selected at
+//! runtime via [`ThemeKind`] and cycled with the theme key. The selection is
+//! persisted in `[general] theme` of the config.
 //!
 //! On top of the base tokens, each theme exposes a set of **domain hues**
 //! (teal/cyan/blue/indigo/violet/magenta/rose). Screens tint their panels by
@@ -16,61 +17,54 @@ use ratatui::style::Color;
 /// Which palette is active. Cycled at runtime and persisted in the config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeKind {
-    /// Enriched dark theme: dark identity, high contrast, green accent.
-    DarkRich,
-    /// Deep navy base with saturated neon accents.
-    Midnight,
-    /// Light theme for bright environments.
-    Light,
+    /// Phosphor: cool greens/cyans on near-black. The default identity.
+    Phosphor,
+    /// Ember: warm ambers/reds on warm black.
+    Ember,
 }
 
 impl ThemeKind {
     /// All themes, in cycle order.
-    pub const ALL: [ThemeKind; 3] = [ThemeKind::DarkRich, ThemeKind::Midnight, ThemeKind::Light];
+    pub const ALL: [ThemeKind; 2] = [ThemeKind::Phosphor, ThemeKind::Ember];
 
     /// The next theme in the cycle, wrapping around.
     pub const fn next(self) -> Self {
         match self {
-            ThemeKind::DarkRich => ThemeKind::Midnight,
-            ThemeKind::Midnight => ThemeKind::Light,
-            ThemeKind::Light => ThemeKind::DarkRich,
+            ThemeKind::Phosphor => ThemeKind::Ember,
+            ThemeKind::Ember => ThemeKind::Phosphor,
         }
     }
 
     /// Stable name written to / read from the config file.
     pub const fn config_name(self) -> &'static str {
         match self {
-            ThemeKind::DarkRich => "dark",
-            ThemeKind::Midnight => "midnight",
-            ThemeKind::Light => "light",
+            ThemeKind::Phosphor => "phosphor",
+            ThemeKind::Ember => "ember",
         }
     }
 
     /// Short human label shown in the UI (status bar / help).
     pub const fn label(self) -> &'static str {
         match self {
-            ThemeKind::DarkRich => "dark",
-            ThemeKind::Midnight => "midnight",
-            ThemeKind::Light => "light",
+            ThemeKind::Phosphor => "phosphor",
+            ThemeKind::Ember => "ember",
         }
     }
 
     /// Resolve a config theme name to a [`ThemeKind`]. Unknown names (and the
-    /// legacy `"dark_green"`) fall back to the enriched dark theme.
+    /// retired `dark`/`midnight`/`light` themes) fall back to phosphor.
     pub fn from_config_name(name: &str) -> Self {
         match name.trim().to_ascii_lowercase().as_str() {
-            "midnight" | "neon" => ThemeKind::Midnight,
-            "light" => ThemeKind::Light,
-            _ => ThemeKind::DarkRich,
+            "ember" => ThemeKind::Ember,
+            _ => ThemeKind::Phosphor,
         }
     }
 
     /// Build the concrete [`Theme`] for this kind.
     pub const fn theme(self) -> Theme {
         match self {
-            ThemeKind::DarkRich => Theme::dark_rich(),
-            ThemeKind::Midnight => Theme::midnight(),
-            ThemeKind::Light => Theme::light(),
+            ThemeKind::Phosphor => Theme::phosphor(),
+            ThemeKind::Ember => Theme::ember(),
         }
     }
 }
@@ -158,128 +152,90 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// Enriched dark theme: dark identity, lifted contrast, green accent.
-    pub const fn dark_rich() -> Self {
+    /// Phosphor: cool greens/cyans on near-black. The default CRT identity.
+    pub const fn phosphor() -> Self {
         Self::build(
-            ThemeKind::DarkRich,
+            ThemeKind::Phosphor,
             Surface {
-                bg: Color::Rgb(0x11, 0x15, 0x1c),
-                bg_elev: Color::Rgb(0x18, 0x1d, 0x27),
-                bg_elev_2: Color::Rgb(0x1f, 0x25, 0x31),
-                bg_hover: Color::Rgb(0x23, 0x2b, 0x3a),
-                bg_sel: Color::Rgb(0x27, 0x34, 0x4a),
-                border: Color::Rgb(0x2c, 0x34, 0x42),
-                border_soft: Color::Rgb(0x22, 0x2a, 0x36),
-                border_strong: Color::Rgb(0x3a, 0x44, 0x56),
-                fg: Color::Rgb(0xe3, 0xe8, 0xf0),
-                fg_strong: Color::Rgb(0xf4, 0xf7, 0xfb),
-                fg_muted: Color::Rgb(0x94, 0xa0, 0xb2),
-                fg_dim: Color::Rgb(0x5a, 0x65, 0x77),
-                accent: Color::Rgb(0x5f, 0xd3, 0x9a),
-                accent_dim: Color::Rgb(0x3f, 0x8a, 0x5e),
+                bg: Color::Rgb(0x06, 0x0a, 0x0a),
+                bg_elev: Color::Rgb(0x0a, 0x12, 0x13),
+                bg_elev_2: Color::Rgb(0x0f, 0x1b, 0x1c),
+                bg_hover: Color::Rgb(0x14, 0x26, 0x28),
+                bg_sel: Color::Rgb(0x14, 0x3d, 0x3a),
+                border: Color::Rgb(0x28, 0x4b, 0x50),
+                border_soft: Color::Rgb(0x1d, 0x33, 0x36),
+                border_strong: Color::Rgb(0x28, 0x4b, 0x50),
+                fg: Color::Rgb(0xc8, 0xe6, 0xdc),
+                fg_strong: Color::Rgb(0xe4, 0xf6, 0xee),
+                fg_muted: Color::Rgb(0x8a, 0xa9, 0xa1),
+                fg_dim: Color::Rgb(0x4a, 0x6b, 0x66),
+                accent: Color::Rgb(0x5c, 0xe3, 0x9a),
+                accent_dim: Color::Rgb(0x2f, 0x7a, 0x55),
             },
             SeverityColors {
-                critical: Color::Rgb(0xf0, 0x72, 0x6f),
-                high: Color::Rgb(0xf0, 0xb2, 0x4e),
-                medium: Color::Rgb(0xf2, 0xd9, 0x7a),
-                low: Color::Rgb(0x74, 0xa6, 0xff),
+                critical: Color::Rgb(0xff, 0x6b, 0x6b),
+                high: Color::Rgb(0xff, 0xd1, 0x66),
+                medium: Color::Rgb(0xf0, 0xb8, 0x5a),
+                low: Color::Rgb(0x6f, 0xd3, 0xe8),
             },
             Domains {
                 teal: Color::Rgb(0x4f, 0xd6, 0xc4),
-                cyan: Color::Rgb(0x56, 0xc6, 0xe8),
-                blue: Color::Rgb(0x6a, 0xa6, 0xff),
-                indigo: Color::Rgb(0x8b, 0x9c, 0xff),
+                cyan: Color::Rgb(0x6f, 0xd3, 0xe8),
+                blue: Color::Rgb(0x74, 0xa6, 0xff),
+                indigo: Color::Rgb(0x9a, 0xa8, 0xff),
                 violet: Color::Rgb(0xb7, 0x94, 0xff),
-                magenta: Color::Rgb(0xe5, 0x8f, 0xdc),
-                rose: Color::Rgb(0xf0, 0x8b, 0xb0),
+                magenta: Color::Rgb(0xd1, 0x8c, 0xff),
+                rose: Color::Rgb(0xff, 0x8b, 0xb0),
             },
         )
     }
 
-    /// Deep navy base with saturated neon accents.
-    pub const fn midnight() -> Self {
+    /// Ember: warm ambers/reds on warm black.
+    pub const fn ember() -> Self {
         Self::build(
-            ThemeKind::Midnight,
+            ThemeKind::Ember,
             Surface {
-                bg: Color::Rgb(0x0a, 0x0e, 0x1a),
-                bg_elev: Color::Rgb(0x11, 0x17, 0x26),
-                bg_elev_2: Color::Rgb(0x18, 0x20, 0x33),
-                bg_hover: Color::Rgb(0x1c, 0x26, 0x40),
-                bg_sel: Color::Rgb(0x23, 0x34, 0x55),
-                border: Color::Rgb(0x28, 0x35, 0x56),
-                border_soft: Color::Rgb(0x1d, 0x27, 0x3f),
-                border_strong: Color::Rgb(0x3a, 0x4d, 0x77),
-                fg: Color::Rgb(0xdd, 0xe6, 0xf5),
-                fg_strong: Color::Rgb(0xf2, 0xf6, 0xff),
-                fg_muted: Color::Rgb(0x8b, 0x9b, 0xbd),
-                fg_dim: Color::Rgb(0x56, 0x68, 0x8c),
-                accent: Color::Rgb(0x4a, 0xde, 0x80),
-                accent_dim: Color::Rgb(0x2f, 0x9e, 0x5c),
+                bg: Color::Rgb(0x0a, 0x07, 0x06),
+                bg_elev: Color::Rgb(0x12, 0x0c, 0x09),
+                bg_elev_2: Color::Rgb(0x1a, 0x12, 0x0d),
+                bg_hover: Color::Rgb(0x24, 0x18, 0x11),
+                bg_sel: Color::Rgb(0x3a, 0x24, 0x12),
+                border: Color::Rgb(0x4a, 0x2f, 0x1f),
+                border_soft: Color::Rgb(0x2a, 0x1c, 0x14),
+                border_strong: Color::Rgb(0x4a, 0x2f, 0x1f),
+                fg: Color::Rgb(0xf0, 0xd8, 0xb6),
+                fg_strong: Color::Rgb(0xfc, 0xe8, 0xc8),
+                fg_muted: Color::Rgb(0xb0, 0x92, 0x77),
+                fg_dim: Color::Rgb(0x74, 0x5a, 0x44),
+                accent: Color::Rgb(0xff, 0xae, 0x42),
+                accent_dim: Color::Rgb(0xb8, 0x7a, 0x2a),
             },
             SeverityColors {
-                critical: Color::Rgb(0xfb, 0x71, 0x85),
-                high: Color::Rgb(0xfb, 0xbf, 0x24),
-                medium: Color::Rgb(0xfc, 0xd3, 0x4d),
-                low: Color::Rgb(0x60, 0xa5, 0xfa),
+                critical: Color::Rgb(0xff, 0x5e, 0x3a),
+                high: Color::Rgb(0xff, 0xb8, 0x4a),
+                medium: Color::Rgb(0xf0, 0xa8, 0x68),
+                low: Color::Rgb(0xb8, 0xd3, 0x6a),
             },
             Domains {
-                teal: Color::Rgb(0x2d, 0xd4, 0xbf),
-                cyan: Color::Rgb(0x22, 0xd3, 0xee),
-                blue: Color::Rgb(0x60, 0xa5, 0xfa),
-                indigo: Color::Rgb(0x81, 0x8c, 0xf8),
-                violet: Color::Rgb(0xc0, 0x84, 0xfc),
-                magenta: Color::Rgb(0xe8, 0x79, 0xf9),
-                rose: Color::Rgb(0xfb, 0x7e, 0xb0),
+                teal: Color::Rgb(0x6c, 0xc0, 0xb0),
+                cyan: Color::Rgb(0x6f, 0xb8, 0xd0),
+                blue: Color::Rgb(0x8f, 0xb0, 0xe0),
+                indigo: Color::Rgb(0xb0, 0xa0, 0xe0),
+                violet: Color::Rgb(0xd6, 0xa0, 0xe0),
+                magenta: Color::Rgb(0xff, 0x7a, 0xb8),
+                rose: Color::Rgb(0xff, 0x9a, 0x8a),
             },
         )
     }
 
-    /// Light theme for bright environments. Accents darkened for contrast.
-    pub const fn light() -> Self {
-        Self::build(
-            ThemeKind::Light,
-            Surface {
-                bg: Color::Rgb(0xf4, 0xf6, 0xfa),
-                bg_elev: Color::Rgb(0xff, 0xff, 0xff),
-                bg_elev_2: Color::Rgb(0xee, 0xf1, 0xf6),
-                bg_hover: Color::Rgb(0xe6, 0xeb, 0xf3),
-                bg_sel: Color::Rgb(0xd8, 0xe4, 0xf5),
-                border: Color::Rgb(0xcf, 0xd6, 0xe2),
-                border_soft: Color::Rgb(0xe0, 0xe5, 0xee),
-                border_strong: Color::Rgb(0xb3, 0xbc, 0xcc),
-                fg: Color::Rgb(0x1f, 0x27, 0x33),
-                fg_strong: Color::Rgb(0x0c, 0x11, 0x18),
-                fg_muted: Color::Rgb(0x5a, 0x66, 0x78),
-                fg_dim: Color::Rgb(0x8a, 0x94, 0xa6),
-                accent: Color::Rgb(0x1f, 0x9d, 0x57),
-                accent_dim: Color::Rgb(0x15, 0x7a, 0x42),
-            },
-            SeverityColors {
-                critical: Color::Rgb(0xd8, 0x3a, 0x3a),
-                high: Color::Rgb(0xc7, 0x7d, 0x12),
-                medium: Color::Rgb(0xb5, 0x8a, 0x00),
-                low: Color::Rgb(0x25, 0x63, 0xeb),
-            },
-            Domains {
-                teal: Color::Rgb(0x0f, 0x9e, 0x8e),
-                cyan: Color::Rgb(0x0e, 0x8f, 0xb0),
-                blue: Color::Rgb(0x25, 0x63, 0xeb),
-                indigo: Color::Rgb(0x4f, 0x46, 0xe5),
-                violet: Color::Rgb(0x7c, 0x3a, 0xed),
-                magenta: Color::Rgb(0xb5, 0x27, 0x9b),
-                rose: Color::Rgb(0xc4, 0x3a, 0x72),
-            },
-        )
-    }
-
-    /// Backwards-compatible alias for the default dark theme.
+    /// Backwards-compatible alias for the default theme (now phosphor).
     pub const fn dark() -> Self {
-        Self::dark_rich()
+        Self::phosphor()
     }
 
     /// Backwards-compatible alias used by older call sites.
     pub const fn dark_green() -> Self {
-        Self::dark_rich()
+        Self::phosphor()
     }
 
     /// Assemble a theme from its surface, severity and domain groups, deriving
@@ -355,7 +311,7 @@ impl Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::dark_rich()
+        Self::phosphor()
     }
 }
 
@@ -402,13 +358,13 @@ mod tests {
 
     #[test]
     fn cycle_visits_every_theme_and_wraps() {
-        let mut k = ThemeKind::DarkRich;
+        let mut k = ThemeKind::Phosphor;
         let mut seen = Vec::new();
         for _ in 0..ThemeKind::ALL.len() {
             seen.push(k);
             k = k.next();
         }
-        assert_eq!(k, ThemeKind::DarkRich, "cycle wraps back to the start");
+        assert_eq!(k, ThemeKind::Phosphor, "cycle wraps back to the start");
         for kind in ThemeKind::ALL {
             assert!(seen.contains(&kind), "cycle visits {kind:?}");
         }
@@ -422,13 +378,14 @@ mod tests {
     }
 
     #[test]
-    fn unknown_and_legacy_names_fall_back_to_dark() {
+    fn unknown_and_legacy_names_fall_back_to_phosphor() {
         assert_eq!(
             ThemeKind::from_config_name("dark_green"),
-            ThemeKind::DarkRich
+            ThemeKind::Phosphor
         );
-        assert_eq!(ThemeKind::from_config_name("nonsense"), ThemeKind::DarkRich);
-        assert_eq!(ThemeKind::from_config_name("MIDNIGHT"), ThemeKind::Midnight);
+        assert_eq!(ThemeKind::from_config_name("nonsense"), ThemeKind::Phosphor);
+        assert_eq!(ThemeKind::from_config_name("midnight"), ThemeKind::Phosphor);
+        assert_eq!(ThemeKind::from_config_name("EMBER"), ThemeKind::Ember);
     }
 
     #[test]
@@ -440,7 +397,7 @@ mod tests {
 
     #[test]
     fn domains_have_distinct_hues() {
-        let t = Theme::dark_rich();
+        let t = Theme::phosphor();
         let domains = [
             Domain::Dashboard,
             Domain::System,

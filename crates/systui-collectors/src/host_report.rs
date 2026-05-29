@@ -84,8 +84,8 @@ mod tests {
                 b"cpu  1 0 1 8 0 0 0 0 0 0\ncpu0 1 0 1 8 0 0 0 0 0 0\n".to_vec(),
             )
             .with_stdout(
-                "ps -eo pid,ppid,user,pcpu,pmem,comm",
-                "  PID PPID USER %CPU %MEM COMMAND\n  1 0 root 0.0 0.1 systemd\n",
+                "ps -eo pid,ppid,user,pcpu,pmem,rss,comm",
+                "  PID PPID USER %CPU %MEM RSS COMMAND\n  1 0 root 0.0 0.1 8200 systemd\n",
             )
     }
 

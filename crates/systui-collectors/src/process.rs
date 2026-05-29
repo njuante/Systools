@@ -13,6 +13,9 @@ pub struct Process {
     pub user: String,
     pub cpu_percent: f64,
     pub mem_percent: f64,
+    /// Resident set size in kB (from `ps rss`). `0` when unavailable.
+    #[serde(default)]
+    pub rss_kb: u64,
     pub command: String,
 }
 
@@ -53,7 +56,7 @@ impl Collector for ProcessCollector {
     }
 
     async fn collect(&self, transport: &dyn Transport) -> Result<Vec<Process>> {
-        let spec = CommandSpec::new("ps").args(["-eo", "pid,ppid,user,pcpu,pmem,comm"]);
+        let spec = CommandSpec::new("ps").args(["-eo", "pid,ppid,user,pcpu,pmem,rss,comm"]);
         let output = transport.run(&spec).await?.into_result("ps")?;
         Ok(parse_ps(&output.stdout))
     }
@@ -120,7 +123,7 @@ fn parse_ps(s: &str) -> Vec<Process> {
 
 fn parse_ps_line(line: &str) -> Option<Process> {
     let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 6 {
+    if parts.len() < 7 {
         return None;
     }
     // The header row's first field ("PID") fails to parse and is skipped.
@@ -131,7 +134,8 @@ fn parse_ps_line(line: &str) -> Option<Process> {
         user: parts[2].to_owned(),
         cpu_percent: parts[3].parse().unwrap_or(0.0),
         mem_percent: parts[4].parse().unwrap_or(0.0),
-        command: parts[5..].join(" "),
+        rss_kb: parts[5].parse().unwrap_or(0),
+        command: parts[6..].join(" "),
     })
 }
 
@@ -160,7 +164,7 @@ mod tests {
     use super::*;
     use systui_transport::MockTransport;
 
-    const PS_CMD: &str = "ps -eo pid,ppid,user,pcpu,pmem,comm";
+    const PS_CMD: &str = "ps -eo pid,ppid,user,pcpu,pmem,rss,comm";
 
     #[test]
     fn parses_ps_output_and_skips_header() {
@@ -171,6 +175,7 @@ mod tests {
         assert_eq!(nginx.ppid, 842);
         assert_eq!(nginx.user, "www-data");
         assert_eq!(nginx.cpu_percent, 5.6);
+        assert_eq!(nginx.rss_kb, 192_800);
     }
 
     #[test]
@@ -182,6 +187,7 @@ mod tests {
                 user: "root".into(),
                 cpu_percent: 0.0,
                 mem_percent: 0.0,
+                rss_kb: 0,
                 command: "systemd".into(),
             },
             Process {
@@ -190,6 +196,7 @@ mod tests {
                 user: "root".into(),
                 cpu_percent: 0.0,
                 mem_percent: 0.0,
+                rss_kb: 0,
                 command: "sshd".into(),
             },
             Process {
@@ -198,6 +205,7 @@ mod tests {
                 user: "admin".into(),
                 cpu_percent: 0.0,
                 mem_percent: 0.0,
+                rss_kb: 0,
                 command: "bash".into(),
             },
             Process {
@@ -206,6 +214,7 @@ mod tests {
                 user: "root".into(),
                 cpu_percent: 0.0,
                 mem_percent: 0.0,
+                rss_kb: 0,
                 command: "cron".into(),
             },
         ];

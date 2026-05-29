@@ -1039,7 +1039,45 @@ fn render_processes(frame: &mut Frame, app: &App, area: Rect) {
     let cols =
         Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).split(rows[1]);
     render_process_list(frame, app, cols[0]);
-    render_process_detail(frame, app, cols[1]);
+    let right = Layout::vertical([Constraint::Percentage(58), Constraint::Percentage(42)]).split(cols[1]);
+    render_process_detail(frame, app, right[0]);
+    render_process_treemap(frame, app, right[1]);
+}
+
+/// PROCESSES · RSS TREEMAP: the heaviest processes by resident memory as a
+/// squarified treemap. The selected process is accented.
+fn render_process_treemap(frame: &mut Frame, app: &App, area: Rect) {
+    let t = app.theme;
+    let block = panel_block(&t, "top by RSS · treemap", app.domain_color());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut procs: Vec<_> = app.processes.iter().collect();
+    procs.sort_by(|a, b| b.rss_kb.cmp(&a.rss_kb));
+    // Domain hues cycled across tiles so adjacent processes are distinguishable.
+    let palette = [t.teal, t.cyan, t.blue, t.indigo, t.violet, t.magenta, t.rose, t.high];
+    let items: Vec<(String, String, u64, ratatui::style::Color)> = procs
+        .iter()
+        .filter(|p| p.rss_kb > 0)
+        .take(12)
+        .enumerate()
+        .map(|(rank, p)| {
+            (
+                short_cmd(&p.command),
+                human_kb(p.rss_kb),
+                p.rss_kb,
+                palette[rank % palette.len()],
+            )
+        })
+        .collect();
+    if items.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("no RSS data", Style::new().fg(t.fg_dim))),
+            inner,
+        );
+        return;
+    }
+    crate::widgets::treemap(frame, &t, inner, &items);
 }
 
 /// A bar chart of the top processes by CPU — the heaviest consumers at a glance.
@@ -3757,12 +3795,13 @@ mod tests {
         });
         app.cpu_history = (0..60).map(|i| 30 + (i * 7 % 40) as u64).collect();
         app.mem_history = (0..60).map(|i| 50 + (i * 3 % 25) as u64).collect();
-        let proc = |pid, user: &str, cpu, mem, cmd: &str| systui_collectors::Process {
+        let proc = |pid, user: &str, cpu, mem: f64, cmd: &str| systui_collectors::Process {
             pid,
             ppid: 1,
             user: user.to_owned(),
             cpu_percent: cpu,
             mem_percent: mem,
+            rss_kb: (mem * 6_400.0) as u64,
             command: cmd.to_owned(),
         };
         app.processes = vec![
@@ -3879,6 +3918,37 @@ mod tests {
         println!("\n{}", render_to_string(&app, 120, 38));
     }
 
+    #[test]
+    #[ignore = "manual: prints the rendered processes tab to stdout"]
+    fn dump_process() {
+        use systui_collectors::Process;
+        let mut app = App::new("aurora-prod-01", ExecutionMode::Privileged);
+        app.snapshot = Some(sample_snapshot());
+        let p = |pid, ppid, user: &str, cpu, mem: f64, rss, cmd: &str| Process {
+            pid,
+            ppid,
+            user: user.to_owned(),
+            cpu_percent: cpu,
+            mem_percent: mem,
+            rss_kb: rss,
+            command: cmd.to_owned(),
+        };
+        app.processes = vec![
+            p(1, 0, "root", 0.1, 0.2, 8_200, "/sbin/init"),
+            p(821, 1, "root", 0.5, 0.3, 17_800, "/usr/sbin/sshd -D"),
+            p(1602, 1, "postgres", 3.2, 28.4, 281_000, "/usr/lib/postgresql/15/bin/postgres"),
+            p(3104, 1, "prom", 8.2, 15.1, 151_200, "/usr/bin/prometheus"),
+            p(2890, 1, "root", 6.7, 11.6, 192_800, "nginx: master process"),
+            p(3204, 1, "grafana", 1.4, 9.7, 96_800, "grafana-server"),
+            p(1812, 1, "redis", 1.1, 4.3, 43_200, "redis-server *:6379"),
+            p(1442, 821, "alvaro", 12.4, 2.6, 52_800, "systools --tui"),
+        ];
+        app.dense = true;
+        app.view_state = ViewState::Ready;
+        app.select_tab(2);
+        println!("\n{}", render_to_string(&app, 120, 38));
+    }
+
     fn sample_snapshot() -> SystemSnapshot {
         use systui_collectors::{CpuUsage, LoadAverage, LoggedUser, Memory, Swap};
         SystemSnapshot {
@@ -3985,6 +4055,7 @@ mod tests {
                 user: "root".into(),
                 cpu_percent: 0.1,
                 mem_percent: 0.2,
+                rss_kb: 8_200,
                 command: "systemd".into(),
             },
             Process {
@@ -3993,6 +4064,7 @@ mod tests {
                 user: "root".into(),
                 cpu_percent: 0.4,
                 mem_percent: 1.1,
+                rss_kb: 14_200,
                 command: "sshd".into(),
             },
             Process {
@@ -4001,6 +4073,7 @@ mod tests {
                 user: "admin".into(),
                 cpu_percent: 12.4,
                 mem_percent: 0.8,
+                rss_kb: 52_800,
                 command: "node".into(),
             },
         ];
@@ -4010,7 +4083,7 @@ mod tests {
 
         // Detail panel reflects the selected process (top of the CPU sort: node).
         // Render tall: a CPU bar chart now sits above the table on this tab.
-        let out = render_to_string(&app, 110, 28);
+        let out = render_to_string(&app, 110, 36);
         assert!(out.contains("PROCESS")); // detail panel title (uppercase)
         assert!(out.contains("Parent")); // parent row
         assert!(out.contains("sshd (880)")); // node's parent resolved by ppid
@@ -4019,7 +4092,7 @@ mod tests {
         app.toggle_process_view();
         assert_eq!(app.process_view, ProcessView::Tree);
         assert_eq!(app.processes_selected, 0); // reset on toggle → systemd
-        let tree = render_to_string(&app, 110, 28);
+        let tree = render_to_string(&app, 110, 36);
         assert!(tree.contains("· tree"));
         assert!(tree.contains("Children")); // systemd has children
         // The tree is drawn with connector glyphs, not bare indentation.
@@ -4048,6 +4121,7 @@ mod tests {
                 user: "root".to_owned(),
                 cpu_percent: 0.1,
                 mem_percent: 0.2,
+                rss_kb: 8_200,
                 command: "systemd".to_owned(),
             },
             Process {
@@ -4056,6 +4130,7 @@ mod tests {
                 user: "admin".to_owned(),
                 cpu_percent: 12.4,
                 mem_percent: 0.8,
+                rss_kb: 52_800,
                 command: "node".to_owned(),
             },
         ];
@@ -4102,6 +4177,7 @@ mod tests {
             user: "postgres".into(),
             cpu_percent: 3.2,
             mem_percent: 28.4,
+            rss_kb: 281_000,
             command: "/usr/lib/postgresql/15/bin/postgres".into(),
         }];
         app.exposures = vec![ExposureEntry {

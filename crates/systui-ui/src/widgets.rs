@@ -295,6 +295,162 @@ pub fn severity_bars(frame: &mut Frame, theme: &Theme, area: Rect, counts: [u64;
     bar_chart(frame, theme, area, "Findings by severity", 6, &items);
 }
 
+/// A squarified treemap of labelled, colored values laid into `area`. Each tile's
+/// area is proportional to its value (Bruls et al. squarify). Tiles wide/tall
+/// enough get a name and a value label drawn in a contrasting color. `items` is
+/// `(name, value_label, value, color)`; render largest-first for the best layout.
+pub fn treemap(frame: &mut Frame, theme: &Theme, area: Rect, items: &[(String, String, u64, Color)]) {
+    if area.width == 0 || area.height == 0 || items.is_empty() {
+        return;
+    }
+    let total: f64 = items.iter().map(|(_, _, v, _)| *v as f64).sum();
+    if total <= 0.0 {
+        return;
+    }
+    let (w, h) = (f64::from(area.width), f64::from(area.height));
+    let scale = (w * h) / total;
+    // (original index, scaled area), preserving caller order.
+    let scaled: Vec<(usize, f64)> = items
+        .iter()
+        .enumerate()
+        .map(|(i, (_, _, v, _))| (i, (*v as f64) * scale))
+        .collect();
+
+    let mut out: Vec<(usize, RectF)> = Vec::with_capacity(items.len());
+    squarify(&scaled, RectF { x: 0.0, y: 0.0, w, h }, &mut out);
+
+    for (idx, rf) in out {
+        let x0 = rf.x.round() as u16;
+        let y0 = rf.y.round() as u16;
+        let x1 = (rf.x + rf.w).round() as u16;
+        let y1 = (rf.y + rf.h).round() as u16;
+        let tw = x1.saturating_sub(x0);
+        let th = y1.saturating_sub(y0);
+        if tw == 0 || th == 0 {
+            continue;
+        }
+        let tile = Rect {
+            x: area.x + x0,
+            y: area.y + y0,
+            width: tw.min(area.width.saturating_sub(x0)),
+            height: th.min(area.height.saturating_sub(y0)),
+        };
+        let (name, vlabel, _, color) = &items[idx];
+        // Fill the tile, leaving a 1-cell gutter via an inset block border color.
+        frame.render_widget(
+            Block::default().style(Style::new().bg(*color)),
+            tile,
+        );
+        let mut lines = Vec::new();
+        if tile.width >= 4 {
+            let max = tile.width.saturating_sub(1) as usize;
+            lines.push(Line::from(Span::styled(
+                clip_label(name, max),
+                Style::new().fg(theme.bg).add_modifier(Modifier::BOLD),
+            )));
+            if tile.height >= 2 {
+                lines.push(Line::from(Span::styled(
+                    clip_label(vlabel, max),
+                    Style::new().fg(theme.bg),
+                )));
+            }
+        }
+        if !lines.is_empty() {
+            let inner = Rect {
+                x: tile.x + 1,
+                width: tile.width.saturating_sub(1),
+                ..tile
+            };
+            frame.render_widget(Paragraph::new(lines), inner);
+        }
+    }
+}
+
+/// A float rectangle used by the treemap layout.
+#[derive(Clone, Copy)]
+struct RectF {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+fn clip_label(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        s.to_owned()
+    } else {
+        chars[..max].iter().collect()
+    }
+}
+
+/// Worst aspect ratio of a row of tile areas laid along `side` (Bruls et al.).
+fn tm_worst(row: &[f64], side: f64) -> f64 {
+    let sum: f64 = row.iter().sum();
+    if sum <= 0.0 || side <= 0.0 {
+        return f64::MAX;
+    }
+    let max = row.iter().cloned().fold(0.0_f64, f64::max);
+    let min = row.iter().cloned().fold(f64::MAX, f64::min);
+    let s2 = sum * sum;
+    (side * side * max / s2).max(s2 / (side * side * min))
+}
+
+/// Squarified treemap layout. Appends `(index, rect)` for every input tile.
+fn squarify(items: &[(usize, f64)], mut rect: RectF, out: &mut Vec<(usize, RectF)>) {
+    let mut i = 0;
+    let mut row: Vec<(usize, f64)> = Vec::new();
+    while i < items.len() {
+        let side = rect.w.min(rect.h);
+        let next = items[i];
+        let cur: Vec<f64> = row.iter().map(|r| r.1).collect();
+        let mut with_next = cur.clone();
+        with_next.push(next.1);
+        if row.is_empty() || tm_worst(&with_next, side) <= tm_worst(&cur, side) {
+            row.push(next);
+            i += 1;
+        } else {
+            tm_place_row(&row, &mut rect, out);
+            row.clear();
+        }
+    }
+    if !row.is_empty() {
+        tm_place_row(&row, &mut rect, out);
+    }
+}
+
+/// Place a finished row along the shorter side of `rect`, then shrink `rect`.
+fn tm_place_row(row: &[(usize, f64)], rect: &mut RectF, out: &mut Vec<(usize, RectF)>) {
+    let sum: f64 = row.iter().map(|r| r.1).sum();
+    if sum <= 0.0 {
+        return;
+    }
+    if rect.w >= rect.h {
+        let row_w = sum / rect.h;
+        let mut yy = rect.y;
+        for &(idx, area) in row {
+            let th = area / row_w;
+            out.push((idx, RectF { x: rect.x, y: yy, w: row_w, h: th }));
+            yy += th;
+        }
+        rect.x += row_w;
+        rect.w -= row_w;
+    } else {
+        let row_h = sum / rect.w;
+        let mut xx = rect.x;
+        for &(idx, area) in row {
+            let tw = area / row_h;
+            out.push((idx, RectF { x: xx, y: rect.y, w: tw, h: row_h }));
+            xx += tw;
+        }
+        rect.y += row_h;
+        rect.h -= row_h;
+    }
+}
+
 /// Lay an area out into a grid of `cols` columns and as many rows as needed for
 /// `count` cells, returning the per-cell rects in row-major order. Rows share the
 /// height evenly. Useful for card grids.

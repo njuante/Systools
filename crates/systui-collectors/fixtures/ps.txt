@@ -1,7 +1,7 @@
-    PID    PPID USER         %CPU %MEM COMMAND
-      1       0 root          0.1  0.2 systemd
-    842       1 root          2.3  1.5 dockerd
-   1132     842 www-data      5.6  3.1 nginx
-   2201       1 postgres      0.0  4.2 postgres
-   3300       1 admin        12.4  0.8 node
-   4410    3300 admin         0.0  0.1 bash
+    PID    PPID USER         %CPU %MEM    RSS COMMAND
+      1       0 root          0.1  0.2   8200 systemd
+    842       1 root          2.3  1.5 114200 dockerd
+   1132     842 www-data      5.6  3.1 192800 nginx
+   2201       1 postgres      0.0  4.2 281000 postgres
+   3300       1 admin        12.4  0.8  52800 node
+   4410    3300 admin         0.0  0.1   4800 bash
